@@ -2,6 +2,9 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.1.1  2026-04-12T04:00:39+01:00
+    - Fix Github Actions
+ 
 0.1.0  2026-04-12T03:54:47+01:00
     - Fix Border focus subscription crash: replaced `return False without
       $focused` (which targets the enclosing method, not the closure) with
