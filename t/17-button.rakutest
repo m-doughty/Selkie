@@ -1,0 +1,80 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Button;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+plan 8;
+
+subtest "construction" => {
+    plan 3;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    is $b.label, 'OK', "label set";
+    ok $b.focusable, "focusable by default";
+    nok $b.is-focused, "not focused initially";
+};
+
+subtest "on-press returns Supply" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    isa-ok $b.on-press, Supply, "on-press is Supply";
+};
+
+subtest "enter triggers press when focused" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    $b.set-focused(True);
+    my $pressed = False;
+    $b.on-press.tap: -> $ { $pressed = True };
+    $b.handle-event(key-event(id => NCKEY_ENTER));
+    ok $pressed, "enter triggers press";
+};
+
+subtest "space triggers press when focused" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    $b.set-focused(True);
+    my $pressed = False;
+    $b.on-press.tap: -> $ { $pressed = True };
+    $b.handle-event(key-event(id => NCKEY_SPACE));
+    ok $pressed, "space triggers press";
+};
+
+subtest "no press when not focused" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    my $pressed = False;
+    $b.on-press.tap: -> $ { $pressed = True };
+    $b.handle-event(key-event(id => NCKEY_ENTER));
+    nok $pressed, "no press when unfocused";
+};
+
+subtest "set-focused marks dirty" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    $b.clear-dirty;
+    $b.set-focused(True);
+    ok $b.is-dirty, "dirty after focus change";
+};
+
+subtest "unrelated key not consumed" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    $b.set-focused(True);
+    nok $b.handle-event(key-event(id => 'x'.ord)), "x not consumed";
+};
+
+subtest "keybind on button works" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    $b.set-focused(True);
+    my $called = False;
+    $b.on-key: 'ctrl+q', -> $ { $called = True };
+    $b.handle-event(key-event(id => 'q'.ord, modifiers => Set(Mod-Ctrl)));
+    ok $called, "keybind fires";
+};

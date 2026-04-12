@@ -1,0 +1,77 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::ConfirmModal;
+use Selkie::Widget::Modal;
+use Selkie::Widget::Button;
+
+plan 7;
+
+subtest "build returns Modal" => {
+    plan 1;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    my $modal = $cm.build(title => 'Delete?', message => 'Are you sure?');
+    isa-ok $modal, Selkie::Widget::Modal, "returns Modal";
+};
+
+subtest "on-result returns Supply" => {
+    plan 1;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build;
+    isa-ok $cm.on-result, Supply, "on-result is Supply";
+};
+
+subtest "yes and no buttons exist" => {
+    plan 2;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build;
+    isa-ok $cm.yes-button, Selkie::Widget::Button, "yes button";
+    isa-ok $cm.no-button, Selkie::Widget::Button, "no button";
+};
+
+subtest "custom labels" => {
+    plan 2;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build(yes-label => 'Delete', no-label => 'Cancel');
+    is $cm.yes-button.label, 'Delete', "custom yes label";
+    is $cm.no-button.label, 'Cancel', "custom no label";
+};
+
+subtest "yes button emits True" => {
+    plan 1;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build;
+    my $result;
+    $cm.on-result.tap: -> $v { $result = $v };
+    $cm.yes-button.set-focused(True);
+    use Selkie::Event;
+    use Notcurses::Native::Types;
+    $cm.yes-button.handle-event(Selkie::Event.new(
+        id => NCKEY_ENTER, modifiers => Set.new,
+        input-type => NCTYPE_PRESS, event-type => KeyEvent,
+    ));
+    ok $result, "yes emits True";
+};
+
+subtest "no button emits False" => {
+    plan 1;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build;
+    my $result = True;
+    $cm.on-result.tap: -> $v { $result = $v };
+    $cm.no-button.set-focused(True);
+    use Selkie::Event;
+    use Notcurses::Native::Types;
+    $cm.no-button.handle-event(Selkie::Event.new(
+        id => NCKEY_ENTER, modifiers => Set.new,
+        input-type => NCTYPE_PRESS, event-type => KeyEvent,
+    ));
+    nok $result, "no emits False";
+};
+
+subtest "modal accessible" => {
+    plan 1;
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    my $modal = $cm.build;
+    ok $cm.modal === $modal, "modal accessor works";
+};

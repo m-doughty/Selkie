@@ -1,0 +1,235 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Select;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+sub mouse-event(UInt :$id --> Selkie::Event) {
+    Selkie::Event.new(:$id, modifiers => Set.new, input-type => NCTYPE_PRESS, event-type => MouseEvent);
+}
+
+plan 22;
+
+subtest "construction with defaults" => {
+    plan 5;
+    my $s = Selkie::Widget::Select.new;
+    ok $s.focusable, "focusable by default";
+    is $s.selected, 0, "selected starts at 0";
+    nok $s.is-open, "closed by default";
+    nok $s.is-focused, "not focused initially";
+    is $s.placeholder, '', "empty placeholder by default";
+};
+
+subtest "construction with placeholder" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new(placeholder => 'Choose...');
+    is $s.placeholder, 'Choose...', "placeholder set";
+};
+
+subtest "on-change returns Supply" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    isa-ok $s.on-change, Supply, "on-change is Supply";
+};
+
+subtest "set-items populates list" => {
+    plan 3;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    is $s.items.elems, 3, "3 items";
+    is $s.selected-value, 'Alpha', "first item selected";
+    ok $s.is-dirty, "dirty after set-items";
+};
+
+subtest "set-items resets state" => {
+    plan 3;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.select-index(2);
+    $s.set-items(<X Y>);
+    is $s.selected, 0, "selected reset to 0";
+    nok $s.is-open, "closed after set-items";
+    is $s.selected-value, 'X', "new first item";
+};
+
+subtest "select-index changes selection" => {
+    plan 2;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.select-index(2);
+    is $s.selected, 2, "selected is 2";
+    is $s.selected-value, 'Gamma', "label is Gamma";
+};
+
+subtest "select-index clamps to bounds" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.select-index(10);
+    is $s.selected, 1, "clamped to last index";
+};
+
+subtest "select-index emits on-change" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    my $emitted = -1;
+    $s.on-change.tap: -> $v { $emitted = $v };
+    $s.select-index(1);
+    is $emitted, 1, "emitted index 1";
+};
+
+subtest "select-index with same value does not emit" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    my $count = 0;
+    $s.on-change.tap: -> $ { $count++ };
+    $s.select-index(0);
+    is $count, 0, "no emit when selecting current";
+};
+
+subtest "enter opens dropdown when focused and closed" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.set-focused(True);
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    ok $s.is-open, "open after enter";
+};
+
+subtest "space opens dropdown when focused and closed" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.set-focused(True);
+    $s.handle-event(key-event(id => NCKEY_SPACE));
+    ok $s.is-open, "open after space";
+};
+
+subtest "open does nothing with no items" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-focused(True);
+    $s.open;
+    nok $s.is-open, "stays closed with no items";
+};
+
+subtest "no open when not focused" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    nok $s.is-open, "stays closed when unfocused";
+};
+
+subtest "down arrow moves cursor when open" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.set-focused(True);
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_DOWN));
+    # Cursor starts at selected (0), now should be 1
+    # We confirm by selecting — enter should change selected to 1
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    is $s.selected, 1, "cursor moved down, selected on enter";
+};
+
+subtest "up arrow moves cursor when open" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.select-index(2);
+    $s.set-focused(True);
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_UP));
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    is $s.selected, 1, "cursor moved up, selected on enter";
+};
+
+subtest "esc closes without selecting" => {
+    plan 2;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.set-focused(True);
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_DOWN));
+    $s.handle-event(key-event(id => NCKEY_ESC));
+    nok $s.is-open, "closed after esc";
+    is $s.selected, 0, "selection unchanged";
+};
+
+subtest "enter in dropdown selects and closes" => {
+    plan 3;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma>);
+    $s.set-focused(True);
+    my $emitted = -1;
+    $s.on-change.tap: -> $v { $emitted = $v };
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_DOWN));
+    $s.handle-event(key-event(id => NCKEY_DOWN));
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    nok $s.is-open, "closed after selection";
+    is $s.selected, 2, "selected is 2";
+    is $emitted, 2, "on-change emitted";
+};
+
+subtest "selecting same item does not emit" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.set-focused(True);
+    my $count = 0;
+    $s.on-change.tap: -> $ { $count++ };
+    $s.open;
+    # Cursor starts at selected (0), enter without moving
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    is $count, 0, "no emit when selecting current";
+};
+
+subtest "losing focus closes dropdown" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.set-focused(True);
+    $s.open;
+    $s.set-focused(False);
+    nok $s.is-open, "closed when focus lost";
+};
+
+subtest "open dropdown consumes all keys" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta>);
+    $s.set-focused(True);
+    $s.open;
+    ok $s.handle-event(key-event(id => 'x'.ord)), "random key consumed when open";
+};
+
+subtest "home and end keys when open" => {
+    plan 2;
+    my $s = Selkie::Widget::Select.new;
+    $s.set-items(<Alpha Beta Gamma Delta>);
+    $s.set-focused(True);
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_END));
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    is $s.selected, 3, "end goes to last";
+    $s.open;
+    $s.handle-event(key-event(id => NCKEY_HOME));
+    $s.handle-event(key-event(id => NCKEY_ENTER));
+    is $s.selected, 0, "home goes to first";
+};
+
+subtest "max-visible can be configured" => {
+    plan 1;
+    my $s = Selkie::Widget::Select.new(max-visible => 4);
+    is $s.max-visible, 4, "max-visible set to 4";
+};

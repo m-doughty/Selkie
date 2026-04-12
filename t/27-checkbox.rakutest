@@ -1,0 +1,128 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Checkbox;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+plan 14;
+
+subtest "construction with defaults" => {
+    plan 4;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Enable');
+    is $cb.label, 'Enable', "label set";
+    ok $cb.focusable, "focusable by default";
+    nok $cb.checked, "unchecked by default";
+    nok $cb.is-focused, "not focused initially";
+};
+
+subtest "on-change returns Supply" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    isa-ok $cb.on-change, Supply, "on-change is Supply";
+};
+
+subtest "toggle flips checked state" => {
+    plan 2;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.toggle;
+    ok $cb.checked, "checked after first toggle";
+    $cb.toggle;
+    nok $cb.checked, "unchecked after second toggle";
+};
+
+subtest "toggle emits on-change" => {
+    plan 2;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    my @values;
+    $cb.on-change.tap: -> $v { @values.push($v) };
+    $cb.toggle;
+    $cb.toggle;
+    is @values[0], True, "first emit is True";
+    is @values[1], False, "second emit is False";
+};
+
+subtest "set-checked updates state" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.set-checked(True);
+    ok $cb.checked, "checked after set-checked(True)";
+};
+
+subtest "set-checked emits on-change" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    my $emitted = False;
+    $cb.on-change.tap: -> $ { $emitted = True };
+    $cb.set-checked(True);
+    ok $emitted, "on-change emitted";
+};
+
+subtest "set-checked with same value does not emit" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    my $count = 0;
+    $cb.on-change.tap: -> $ { $count++ };
+    $cb.set-checked(False);
+    is $count, 0, "no emit when setting same value";
+};
+
+subtest "space toggles when focused" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.set-focused(True);
+    $cb.handle-event(key-event(id => NCKEY_SPACE));
+    ok $cb.checked, "space toggles checkbox";
+};
+
+subtest "enter toggles when focused" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.set-focused(True);
+    $cb.handle-event(key-event(id => NCKEY_ENTER));
+    ok $cb.checked, "enter toggles checkbox";
+};
+
+subtest "no toggle when not focused" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.handle-event(key-event(id => NCKEY_SPACE));
+    nok $cb.checked, "no toggle when unfocused";
+};
+
+subtest "set-focused marks dirty" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.clear-dirty;
+    $cb.set-focused(True);
+    ok $cb.is-dirty, "dirty after focus change";
+};
+
+subtest "toggle marks dirty" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.clear-dirty;
+    $cb.toggle;
+    ok $cb.is-dirty, "dirty after toggle";
+};
+
+subtest "unrelated key not consumed" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.set-focused(True);
+    nok $cb.handle-event(key-event(id => 'x'.ord)), "x not consumed";
+};
+
+subtest "keybind on checkbox works" => {
+    plan 1;
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Test');
+    $cb.set-focused(True);
+    my $called = False;
+    $cb.on-key: 'ctrl+q', -> $ { $called = True };
+    $cb.handle-event(key-event(id => 'q'.ord, modifiers => Set(Mod-Ctrl)));
+    ok $called, "keybind fires";
+};

@@ -1,0 +1,46 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Sizing;
+
+plan 6;
+
+subtest "fixed sizing" => {
+    plan 2;
+    my $s = Sizing.fixed(10);
+    is $s.mode, SizeFixed, "mode is fixed";
+    is $s.value, 10, "value is 10";
+};
+
+subtest "percent sizing" => {
+    plan 2;
+    my $s = Sizing.percent(50);
+    is $s.mode, SizePercent, "mode is percent";
+    is $s.value, 50, "value is 50";
+};
+
+subtest "flex sizing with weight" => {
+    plan 2;
+    my $s = Sizing.flex(2);
+    is $s.mode, SizeFlex, "mode is flex";
+    is $s.value, 2, "weight is 2";
+};
+
+subtest "flex sizing default weight" => {
+    plan 2;
+    my $s = Sizing.flex;
+    is $s.mode, SizeFlex, "mode is flex";
+    is $s.value, 1, "default weight is 1";
+};
+
+subtest "percent with decimal" => {
+    plan 1;
+    my $s = Sizing.percent(33.3);
+    is-approx $s.value, 33.3, "fractional percent";
+};
+
+subtest "fixed zero" => {
+    plan 1;
+    my $s = Sizing.fixed(0);
+    is $s.value, 0, "zero is valid";
+};

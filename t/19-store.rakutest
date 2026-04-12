@@ -1,0 +1,326 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+use Selkie::Widget;
+
+# Concrete stub for testing
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+plan 21;
+
+subtest "empty store" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    is $s.db.elems, 0, "empty db";
+    nok $s.get-in('x').defined, "get-in returns Nil for missing";
+};
+
+subtest "get-in / assoc-in" => {
+    plan 3;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('a', 'b', 'c', value => 42);
+    is $s.get-in('a', 'b', 'c'), 42, "nested set/get";
+    is $s.get-in('a', 'b').keys.sort.join(','), 'c', "intermediate hash exists";
+    nok $s.get-in('a', 'x').defined, "missing path returns Nil";
+};
+
+subtest "assoc-in overwrites" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('x', value => 1);
+    $s.assoc-in('x', value => 2);
+    is $s.get-in('x'), 2, "overwrite works";
+};
+
+subtest "dispatch + handler + :db fx" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.register-handler('set-name', -> $store, %ev {
+        (db => { user => { name => %ev<name> } },);
+    });
+    $s.dispatch('set-name', name => 'Matt');
+    $s.tick;
+    is $s.get-in('user', 'name'), 'Matt', "handler updated db";
+    nok $s.get-in('user', 'age').defined, "unset paths still nil";
+};
+
+subtest "deep merge preserves existing keys" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('user', 'name', value => 'Matt');
+    $s.assoc-in('user', 'age', value => 30);
+    $s.register-handler('update', -> $store, %ev {
+        (db => { user => { name => 'Updated' } },);
+    });
+    $s.dispatch('update');
+    $s.tick;
+    is $s.get-in('user', 'name'), 'Updated', "name updated";
+    is $s.get-in('user', 'age'), 30, "age preserved";
+};
+
+subtest "event chaining via :dispatch fx" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.register-handler('first', -> $store, %ev {
+        (dispatch => { event => 'second', val => 'from-first' },);
+    });
+    $s.register-handler('second', -> $store, %ev {
+        (db => { result => %ev<val> },);
+    });
+    $s.dispatch('first');
+    $s.tick;
+    is $s.get-in('result'), 'from-first', "chained event processed";
+};
+
+subtest "multiple handlers on same event" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.register-handler('multi', -> $store, %ev {
+        (db => { a => 1 },);
+    });
+    $s.register-handler('multi', -> $store, %ev {
+        (db => { b => 2 },);
+    });
+    $s.dispatch('multi');
+    $s.tick;
+    is $s.get-in('a'), 1, "first handler ran";
+    is $s.get-in('b'), 2, "second handler ran";
+};
+
+subtest "no handler for event is fine" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.dispatch('nonexistent');
+    lives-ok { $s.tick }, "tick with no handler doesn't die";
+};
+
+subtest "path subscription marks dirty on change" => {
+    plan 3;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('name-sub', ('user', 'name'), $w);
+    $w.clear-dirty;
+    nok $w.is-dirty, "widget clean before tick";
+
+    $s.register-handler('set', -> $store, %ev {
+        (db => { user => { name => 'Changed' } },);
+    });
+    $s.dispatch('set');
+    $s.tick;
+    ok $w.is-dirty, "widget dirty after subscribed path changed";
+
+    $w.clear-dirty;
+    $s.tick;  # tick again with no changes
+    nok $w.is-dirty, "widget NOT dirty when value unchanged";
+};
+
+subtest "path subscription ignores unrelated changes" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('name-sub', ('user', 'name'), $w);
+    # First tick primes the subscription (UNSET → current value)
+    $s.tick;
+    $w.clear-dirty;
+
+    $s.register-handler('set-age', -> $store, %ev {
+        (db => { user => { age => 30 } },);
+    });
+    $s.dispatch('set-age');
+    $s.tick;
+    nok $w.is-dirty, "widget NOT dirty when different path changed";
+};
+
+subtest "computed subscription" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.assoc-in('first', value => 'Hello');
+    $s.assoc-in('second', value => 'World');
+
+    $s.subscribe-computed('full', -> $store {
+        ($store.get-in('first') // '') ~ ' ' ~ ($store.get-in('second') // '');
+    }, $w);
+    $w.clear-dirty;
+
+    $s.register-handler('change', -> $store, %ev {
+        (db => { first => 'Hi' },);
+    });
+    $s.dispatch('change');
+    $s.tick;
+    ok $w.is-dirty, "computed sub fires when input changes";
+
+    $w.clear-dirty;
+    $s.tick;
+    nok $w.is-dirty, "computed sub stable when no change";
+};
+
+subtest "unsubscribe" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('temp', ('x',), $w);
+    $s.unsubscribe('temp');
+    $w.clear-dirty;
+
+    $s.register-handler('set-x', -> $store, %ev {
+        (db => { x => 1 },);
+    });
+    $s.dispatch('set-x');
+    $s.tick;
+    nok $w.is-dirty, "unsubscribed widget not notified";
+};
+
+subtest "unsubscribe-widget removes all subs for widget" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('sub1', ('a',), $w);
+    $s.subscribe('sub2', ('b',), $w);
+    $s.unsubscribe-widget($w);
+    $w.clear-dirty;
+
+    $s.register-handler('set', -> $store, %ev {
+        (db => { a => 1, b => 2 },);
+    });
+    $s.dispatch('set');
+    $s.tick;
+    nok $w.is-dirty, "all subs removed for widget";
+};
+
+subtest "handler receives current db state" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('count', value => 5);
+    $s.register-handler('inc', -> $store, %ev {
+        (db => { count => ($store.get-in('count') // 0) + 1 },);
+    });
+    $s.dispatch('inc');
+    $s.tick;
+    is $s.get-in('count'), 6, "handler saw existing state";
+};
+
+subtest "async fx dispatches on success" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.register-handler('start', -> $store, %ev {
+        (async => {
+            work       => -> { 42 },
+            on-success => 'done',
+        },);
+    });
+    $s.register-handler('done', -> $store, %ev {
+        (db => { result => %ev<result> },);
+    });
+    $s.dispatch('start');
+    $s.tick;
+    # async runs on a thread — wait for it
+    sleep 0.1;
+    $s.tick;  # process the dispatched 'done' event
+    is $s.get-in('result'), 42, "async result delivered";
+};
+
+subtest "async fx dispatches on failure" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.register-handler('start', -> $store, %ev {
+        (async => {
+            work       => -> { die "boom" },
+            on-failure => 'failed',
+        },);
+    });
+    $s.register-handler('failed', -> $store, %ev {
+        (db => { error => %ev<error> },);
+    });
+    $s.dispatch('start');
+    $s.tick;
+    sleep 0.1;
+    $s.tick;
+    ok $s.get-in('error').defined, "failure event dispatched";
+};
+
+subtest "get-in returns Array elements correctly" => {
+    plan 4;
+    my $s = Selkie::Store.new;
+    my @items = <alpha beta gamma>;
+    $s.assoc-in('list', value => @items);
+    my $got = $s.get-in('list');
+    ok $got ~~ Positional, "get-in returns something Positional";
+    is $got.elems, 3, "correct number of elements";
+    is $got[0], 'alpha', "first element accessible";
+
+    # Critical: assigning get-in result to @ variable must decontainerize
+    my @assigned = $s.get-in('list');
+    is @assigned[0], 'alpha', "@ assignment extracts first element (not nested array)";
+};
+
+subtest "get-in returns objects correctly" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    class TestObj { has Str $.name; }
+    my @objs = TestObj.new(name => 'one'), TestObj.new(name => 'two');
+    $s.assoc-in('items', value => @objs);
+    $s.assoc-in('current', value => @objs[0]);
+
+    my $current = $s.get-in('current');
+    is $current.name, 'one', "get-in returns the object, not array";
+
+    # Store Array then access element by index
+    my @from-store = $s.get-in('items');
+    is @from-store[0].name, 'one', "array element is the object, not nested";
+};
+
+subtest "handler gets decontainerized values via get-in" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my @items = <alpha beta gamma>;
+    $s.assoc-in('app', 'items', value => @items);
+    $s.assoc-in('app', 'current', value => @items[0]);
+
+    my $saw-items-count;
+    my $saw-current;
+    $s.register-handler('check', -> $store, %ev {
+        my @i = $store.get-in('app', 'items') // [];
+        $saw-items-count = @i.elems;
+        $saw-current = $store.get-in('app', 'current');
+        ();
+    });
+    $s.dispatch('check');
+    $s.tick;
+    is $saw-items-count, 3, "handler sees array elements directly via get-in";
+    is $saw-current, 'alpha', "handler sees scalar value via get-in";
+};
+
+subtest "handler array indexing works via get-in" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    class TestItem { has Str $.label; }
+    my @items = TestItem.new(label => 'first'), TestItem.new(label => 'second');
+    $s.assoc-in('things', value => @items);
+
+    my $got-label;
+    $s.register-handler('pick', -> $store, %ev {
+        my @things = $store.get-in('things') // [];
+        $got-label = @things[0].label;
+        ();
+    });
+    $s.dispatch('pick');
+    $s.tick;
+    is $got-label, 'first', "handler can index array and call methods on elements";
+};
+
+subtest "infinite dispatch loop protection" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $count = 0;
+    $s.register-handler('loop', -> $store, %ev {
+        $count++;
+        (dispatch => { event => 'loop' },);
+    });
+    $s.dispatch('loop');
+    $s.tick;
+    ok $count <= 100, "loop capped at 100 iterations (ran $count)";
+};

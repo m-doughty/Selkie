@@ -1,0 +1,59 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Theme;
+use Selkie::Style;
+
+plan 6;
+
+subtest "default theme construction" => {
+    plan 1;
+    my $t = Selkie::Theme.default;
+    ok $t.defined, "default theme created";
+};
+
+subtest "default theme has all required slots" => {
+    plan 12;
+    my $t = Selkie::Theme.default;
+    ok $t.base.defined, "base defined";
+    ok $t.border.defined, "border defined";
+    ok $t.border-focused.defined, "border-focused defined";
+    ok $t.text.defined, "text defined";
+    ok $t.text-dim.defined, "text-dim defined";
+    ok $t.text-highlight.defined, "text-highlight defined";
+    ok $t.input.defined, "input defined";
+    ok $t.input-focused.defined, "input-focused defined";
+    ok $t.input-placeholder.defined, "input-placeholder defined";
+    ok $t.scrollbar-track.defined, "scrollbar-track defined";
+    ok $t.scrollbar-thumb.defined, "scrollbar-thumb defined";
+    ok $t.divider.defined, "divider defined";
+};
+
+subtest "default theme colors are set" => {
+    plan 4;
+    my $t = Selkie::Theme.default;
+    ok $t.base.fg.defined, "base has fg";
+    ok $t.base.bg.defined, "base has bg";
+    ok $t.text.fg.defined, "text has fg";
+    ok $t.border-focused.fg.defined, "border-focused has fg";
+};
+
+subtest "custom slot - missing key returns base" => {
+    plan 1;
+    my $t = Selkie::Theme.default;
+    is $t.slot("nonexistent").fg, $t.base.fg, "missing slot returns base style";
+};
+
+subtest "custom slot - set and retrieve" => {
+    plan 1;
+    my $custom = Selkie::Style.new(fg => 0x123456);
+    my $t = Selkie::Theme.default;
+    $t.custom<my-slot> = $custom;
+    is $t.slot("my-slot").fg, 0x123456, "custom slot retrieved";
+};
+
+subtest "default theme border-focused is bold" => {
+    plan 1;
+    my $t = Selkie::Theme.default;
+    ok $t.border-focused.bold, "border-focused is bold";
+};

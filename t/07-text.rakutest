@@ -1,0 +1,103 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+plan 12;
+
+subtest "construction defaults" => {
+    plan 2;
+    my $t = Selkie::Widget::Text.new;
+    is $t.text, '', "empty text by default";
+    ok $t.is-dirty, "starts dirty";
+};
+
+subtest "construction with text" => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => 'hello');
+    is $t.text, 'hello', "text set at construction";
+};
+
+subtest "set-text updates text and marks dirty" => {
+    plan 3;
+    my $t = Selkie::Widget::Text.new;
+    $t.clear-dirty;
+    $t.set-text('new text');
+    is $t.text, 'new text', "text updated";
+    ok $t.is-dirty, "marked dirty";
+    $t.set-text('another');
+    is $t.text, 'another', "text updated again";
+};
+
+subtest "logical-height - single line within width" => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => 'hello');
+    $t.resize(10, 80);
+    is $t.logical-height, 1, "single line fits in 80 cols";
+};
+
+subtest "logical-height - multiple lines" => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => "line one\nline two\nline three");
+    $t.resize(10, 80);
+    is $t.logical-height, 3, "three newline-separated lines";
+};
+
+subtest "logical-height - word wrap at column boundary" => {
+    plan 1;
+    # 20 chars wrapped at 10 cols = 2 lines
+    my $t = Selkie::Widget::Text.new(text => 'a' x 20);
+    $t.resize(10, 10);
+    is $t.logical-height, 2, "20 chars at width 10 wraps to 2 lines";
+};
+
+subtest "logical-height - exact fit no extra line" => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => 'a' x 10);
+    $t.resize(10, 10);
+    is $t.logical-height, 1, "10 chars at width 10 fits in 1 line";
+};
+
+subtest "logical-height - empty text" => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => '');
+    $t.resize(10, 80);
+    is $t.logical-height, 1, "empty text yields 1 line (empty line)";
+};
+
+subtest "word wrap - long line splits correctly" => {
+    plan 1;
+    # 25 chars at width 10 → ceil(25/10) = 3 lines
+    my $t = Selkie::Widget::Text.new(text => 'a' x 25);
+    $t.resize(10, 10);
+    is $t.logical-height, 3, "25 chars at width 10 wraps to 3 lines";
+};
+
+subtest "word wrap - multiple lines with wrapping" => {
+    plan 1;
+    my $text = ('b' x 15) ~ "\n" ~ ('c' x 8);
+    my $t = Selkie::Widget::Text.new(text => $text);
+    $t.resize(10, 10);
+    # First line: 15 chars → 2 wrapped lines (10 + 5)
+    # Second line: 8 chars → 1 line
+    is $t.logical-height, 3, "mixed wrapping across newlines";
+};
+
+subtest "resize triggers rewrap when width changes" => {
+    plan 2;
+    my $t = Selkie::Widget::Text.new(text => 'a' x 20);
+    $t.resize(10, 20);
+    is $t.logical-height, 1, "20 chars at width 20 = 1 line";
+    $t.resize(10, 10);
+    is $t.logical-height, 2, "20 chars at width 10 = 2 lines after resize";
+};
+
+subtest "resize does not rewrap when only height changes" => {
+    plan 2;
+    my $t = Selkie::Widget::Text.new(text => 'a' x 20);
+    $t.resize(10, 10);
+    is $t.logical-height, 2, "2 lines at width 10";
+    $t.resize(20, 10);
+    is $t.logical-height, 2, "still 2 lines after height-only change";
+};

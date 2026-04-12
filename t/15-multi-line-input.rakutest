@@ -1,0 +1,352 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::MultiLineInput;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Str :$char, Set :$modifiers = Set.new,
+              NcInputType :$input-type = NCTYPE_PRESS --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$char, :$modifiers, :$input-type, event-type => KeyEvent);
+}
+
+use Selkie::Sizing;
+
+plan 30;
+
+subtest "construction defaults" => {
+    plan 5;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    is $mli.text, '', "empty text";
+    ok $mli.focusable, "focusable by default";
+    is $mli.max-lines, 6, "default max-lines";
+    is $mli.line-count, 1, "starts with 1 line";
+    is $mli.desired-height, 1, "desired height 1";
+};
+
+subtest "set-text" => {
+    plan 3;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text("hello\nworld");
+    is $mli.text, "hello\nworld", "text set";
+    is $mli.line-count, 2, "2 lines";
+    is $mli.cursor-row, 1, "cursor at last line";
+};
+
+subtest "set-text marks dirty" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.clear-dirty;
+    $mli.set-text("hi");
+    ok $mli.is-dirty, "dirty after set-text";
+};
+
+subtest "clear empties text" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text("stuff");
+    $mli.clear;
+    is $mli.text, '', "empty after clear";
+    is $mli.line-count, 1, "1 line after clear";
+};
+
+subtest "on-submit and on-change are Supplies" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    isa-ok $mli.on-submit, Supply, "on-submit is Supply";
+    isa-ok $mli.on-change, Supply, "on-change is Supply";
+};
+
+subtest "on-change emits on set-text" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    my $received = '';
+    $mli.on-change.tap: -> $v { $received = $v };
+    $mli.set-text("hi");
+    sleep 0.05;
+    is $received, "hi", "change emitted";
+};
+
+subtest "desired-height caps at max-lines" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(max-lines => 3);
+    $mli.set-text("a\nb\nc\nd\ne");
+    is $mli.desired-height, 3, "capped at max-lines";
+};
+
+subtest "desired-height matches line count when under max" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(max-lines => 6);
+    $mli.set-text("a\nb\nc");
+    is $mli.desired-height, 3, "matches 3 lines";
+};
+
+subtest "handle-event returns False when not focused" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    nok $mli.handle-event(key-event(id => 'a'.ord, char => 'a')), "not consumed unfocused";
+};
+
+subtest "typing characters" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    for 'h', 'i' -> $c {
+        $mli.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    is $mli.text, "hi", "characters typed";
+};
+
+subtest "ctrl+enter submits" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    my $submitted = '';
+    $mli.on-submit.tap: -> $v { $submitted = $v };
+    $mli.set-text("hello");
+    my $consumed = $mli.handle-event(key-event(
+        id => NCKEY_ENTER,
+        modifiers => Set(Mod-Ctrl),
+    ));
+    ok $consumed, "ctrl+enter consumed";
+    sleep 0.05;
+    is $submitted, "hello", "submit emitted with text";
+};
+
+subtest "enter inserts newline" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(6, 40);
+    $mli.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $mli.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    $mli.handle-event(key-event(id => NCKEY_ENTER));
+    for 'd', 'e' -> $c {
+        $mli.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    is $mli.text, "abc\nde", "newline inserted";
+    is $mli.line-count, 2, "2 lines";
+};
+
+subtest "backspace within line" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc");
+    $mli.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $mli.text, "ab", "last char deleted";
+};
+
+subtest "backspace at line start joins with previous" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    # Cursor is at end of "def" (row 1, col 3)
+    # Move to beginning of line 2
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    # Backspace joins lines
+    $mli.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $mli.text, "abcdef", "lines joined";
+    is $mli.line-count, 1, "1 line after join";
+};
+
+subtest "backspace at start of first line is no-op" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("");
+    $mli.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $mli.text, "", "still empty";
+};
+
+subtest "delete within line" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc");
+    # Move to beginning
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    $mli.handle-event(key-event(id => NCKEY_DEL));
+    is $mli.text, "bc", "first char deleted";
+};
+
+subtest "delete at line end joins with next" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    # Move cursor to row 0 end
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    $mli.handle-event(key-event(id => NCKEY_END));
+    $mli.handle-event(key-event(id => NCKEY_DEL));
+    is $mli.text, "abcdef", "lines joined by delete";
+    is $mli.line-count, 1, "1 line";
+};
+
+subtest "left arrow moves cursor" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $mli.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    $mli.handle-event(key-event(id => NCKEY_LEFT));
+    $mli.handle-event(key-event(id => 'x'.ord, char => 'x'));
+    is $mli.text, "abxc", "inserted at cursor after left";
+};
+
+subtest "left arrow wraps to previous line" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    # Cursor at row 1 col 3
+    # Move to home (col 0)
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    # Left wraps to end of previous line
+    $mli.handle-event(key-event(id => NCKEY_LEFT));
+    is $mli.cursor-row, 0, "wrapped to previous row";
+    is $mli.cursor-col, 3, "at end of previous line";
+};
+
+subtest "right arrow wraps to next line" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    # Move to row 0 end
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    $mli.handle-event(key-event(id => NCKEY_END));
+    # Right wraps to start of next line
+    $mli.handle-event(key-event(id => NCKEY_RIGHT));
+    is $mli.cursor-row, 1, "wrapped to next row";
+    is $mli.cursor-col, 0, "at start of next line";
+};
+
+subtest "up arrow" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    # At row 1 col 3
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    is $mli.cursor-row, 0, "moved up";
+    is $mli.cursor-col, 3, "col preserved";
+};
+
+subtest "up arrow clamps col to shorter line" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("ab\ndefgh");
+    # At row 1 col 5
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    is $mli.cursor-row, 0, "moved up";
+    is $mli.cursor-col, 2, "col clamped to line length";
+};
+
+subtest "down arrow" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abc\ndef");
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    $mli.handle-event(key-event(id => NCKEY_DOWN));
+    is $mli.cursor-row, 1, "moved down";
+};
+
+subtest "home and end" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("abcdef");
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    is $mli.cursor-col, 0, "home moves to start";
+    $mli.handle-event(key-event(id => NCKEY_END));
+    is $mli.cursor-col, 6, "end moves to end";
+};
+
+subtest "ctrl modifier bubbles up" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    nok $mli.handle-event(key-event(
+        id => 'q'.ord, char => 'q',
+        modifiers => Set(Mod-Ctrl),
+    )), "ctrl+key not consumed";
+};
+
+subtest "on-change emits on character input" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    my $received = '';
+    $mli.on-change.tap: -> $v { $received = $v };
+    $mli.handle-event(key-event(id => 'a'.ord, char => 'a'));
+    sleep 0.05;
+    is $received, "a", "change emitted on typing";
+};
+
+subtest "auto-expand sizing on newline" => {
+    plan 3;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(1), max-lines => 6);
+    $mli.resize(1, 40);
+    $mli.set-focused(True);
+    is $mli.sizing.value, 1, "starts at height 1";
+    # Shift+Enter to add a line
+    $mli.handle-event(key-event(id => NCKEY_ENTER));
+    is $mli.sizing.value, 2, "grows to 2 after newline";
+    $mli.handle-event(key-event(id => NCKEY_ENTER));
+    is $mli.sizing.value, 3, "grows to 3 after second newline";
+};
+
+subtest "auto-shrink sizing on backspace join" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(1), max-lines => 6);
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("line1\nline2\nline3");
+    is $mli.sizing.value, 3, "3 lines = height 3";
+    # Cursor is at end of line3. Go to start of line3 and backspace to join.
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    $mli.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $mli.sizing.value, 2, "shrinks to 2 after join";
+};
+
+subtest "sizing capped at max-lines" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(1), max-lines => 3);
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("a\nb\nc\nd\ne");
+    is $mli.sizing.value, 3, "capped at max-lines";
+};
+
+subtest "clear shrinks back to 1" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(1), max-lines => 6);
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("a\nb\nc");
+    $mli.clear;
+    is $mli.sizing.value, 1, "back to 1 after clear";
+};

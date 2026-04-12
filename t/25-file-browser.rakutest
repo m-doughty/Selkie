@@ -1,0 +1,143 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::FileBrowser;
+use Selkie::Widget::Modal;
+use Selkie::Widget::TextInput;
+use Selkie::Widget::ListView;
+
+plan 12;
+
+# Use /tmp as a known-to-exist directory for testing
+my $test-dir = $*TMPDIR.Str;
+
+subtest "build returns a Modal" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    my $modal = $fb.build(start-dir => $test-dir);
+    isa-ok $modal, Selkie::Widget::Modal, "build returns Modal";
+};
+
+subtest "focusable-widget returns TextInput" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    isa-ok $fb.focusable-widget, Selkie::Widget::TextInput, "focusable is TextInput";
+};
+
+subtest "list accessor returns ListView" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    isa-ok $fb.list, Selkie::Widget::ListView, "list is ListView";
+};
+
+subtest "initial text is start-dir with trailing slash" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    my $resolved = $test-dir.IO.resolve.Str;
+    is $fb.path-input.text, "$resolved/", "text is resolved start-dir/";
+};
+
+subtest "list populated with directory entries" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    ok $fb.list.items.elems > 0, "list has entries";
+};
+
+subtest "list contains .. for non-root directories" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    ok $fb.list.items[0] eq '..', "first entry is ..";
+};
+
+subtest "dotfiles hidden by default" => {
+    plan 1;
+    # Create a temp dir with a dotfile
+    my $dir = $*TMPDIR.child("selkie-test-{$*PID}");
+    $dir.mkdir;
+    $dir.child('.hidden').spurt('x');
+    $dir.child('visible.txt').spurt('x');
+
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $dir.Str);
+    my @items = $fb.list.items;
+    nok @items.grep('.hidden'), "dotfile not in list";
+
+    # Cleanup
+    $dir.child('.hidden').unlink;
+    $dir.child('visible.txt').unlink;
+    $dir.rmdir;
+};
+
+subtest "show-dotfiles includes dotfiles" => {
+    plan 1;
+    my $dir = $*TMPDIR.child("selkie-test-{$*PID}");
+    $dir.mkdir;
+    $dir.child('.hidden').spurt('x');
+    $dir.child('visible.txt').spurt('x');
+
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $dir.Str, show-dotfiles => True);
+    my @items = $fb.list.items;
+    ok @items.grep('.hidden'), "dotfile in list with show-dotfiles";
+
+    $dir.child('.hidden').unlink;
+    $dir.child('visible.txt').unlink;
+    $dir.rmdir;
+};
+
+subtest "extension filtering" => {
+    plan 2;
+    my $dir = $*TMPDIR.child("selkie-test-{$*PID}");
+    $dir.mkdir;
+    $dir.child('data.json').spurt('{}');
+    $dir.child('image.png').spurt('x');
+    $dir.child('readme.txt').spurt('x');
+
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $dir.Str, extensions => <json png>);
+    my @items = $fb.list.items;
+    ok @items.grep('data.json'), "json file included";
+    nok @items.grep('readme.txt'), "txt file excluded";
+
+    $dir.child('data.json').unlink;
+    $dir.child('image.png').unlink;
+    $dir.child('readme.txt').unlink;
+    $dir.rmdir;
+};
+
+subtest "on-select supply exists" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $test-dir);
+    isa-ok $fb.on-select, Supply, "on-select returns a Supply";
+};
+
+subtest "default start-dir is HOME" => {
+    plan 1;
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build;
+    my $expected = $*HOME.resolve.Str;
+    ok $fb.path-input.text.starts-with($expected), "defaults to HOME";
+};
+
+subtest "directories included in listing" => {
+    plan 1;
+    my $dir = $*TMPDIR.child("selkie-test-{$*PID}");
+    $dir.mkdir;
+    $dir.child('subdir').mkdir;
+    $dir.child('file.txt').spurt('x');
+
+    my $fb = Selkie::Widget::FileBrowser.new;
+    $fb.build(start-dir => $dir.Str, extensions => ('json',));
+    my @items = $fb.list.items;
+    ok @items.grep('subdir'), "directories included even with extension filter";
+
+    $dir.child('file.txt').unlink;
+    $dir.child('subdir').rmdir;
+    $dir.rmdir;
+};

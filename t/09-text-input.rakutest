@@ -1,0 +1,246 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::TextInput;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+# Helper to create a key event
+sub key-event(UInt :$id, Str :$char, Set :$modifiers = Set.new,
+              NcInputType :$input-type = NCTYPE_PRESS --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$char, :$modifiers, :$input-type, event-type => KeyEvent);
+}
+
+plan 22;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $ti = Selkie::Widget::TextInput.new;
+    is $ti.text, '', "empty buffer by default";
+    ok $ti.focusable, "focusable by default";
+    is $ti.placeholder, '', "no placeholder by default";
+};
+
+subtest "construction with placeholder" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new(placeholder => 'Type here...');
+    is $ti.placeholder, 'Type here...', "placeholder set";
+};
+
+subtest "set-text sets buffer" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.set-text('hello');
+    is $ti.text, 'hello', "text set";
+};
+
+subtest "set-text marks dirty" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.clear-dirty;
+    $ti.set-text('hello');
+    ok $ti.is-dirty, "dirty after set-text";
+};
+
+subtest "clear empties buffer" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.set-text('hello');
+    $ti.clear;
+    is $ti.text, '', "buffer empty after clear";
+};
+
+subtest "on-submit returns Supply" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    isa-ok $ti.on-submit, Supply, "on-submit is a Supply";
+};
+
+subtest "on-change returns Supply" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    isa-ok $ti.on-change, Supply, "on-change is a Supply";
+};
+
+subtest "on-change emits on set-text" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    my $received = '';
+    $ti.on-change.tap: -> $v { $received = $v };
+    $ti.set-text('hi');
+    sleep 0.05;
+    is $received, 'hi', "change event emitted";
+};
+
+subtest "handle-event returns False when not focused" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    my $ev = key-event(id => 'a'.ord, char => 'a');
+    nok $ti.handle-event($ev), "not consumed when unfocused";
+};
+
+subtest "typing a character" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    my $ev = key-event(id => 'a'.ord, char => 'a');
+    ok $ti.handle-event($ev), "event consumed";
+    is $ti.text, 'a', "character added to buffer";
+};
+
+subtest "typing multiple characters" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'h', 'e', 'l', 'l', 'o' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    is $ti.text, 'hello', "multiple characters form word";
+};
+
+subtest "backspace deletes character before cursor" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    $ti.set-text('abc');
+    $ti.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $ti.text, 'ab', "last character deleted";
+};
+
+subtest "backspace at start does nothing" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    $ti.set-text('');
+    $ti.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $ti.text, '', "buffer unchanged";
+};
+
+subtest "delete key removes character at cursor" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    # Type 'abc', cursor at end (position 3)
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    # Move cursor left to position 2 (before 'c')
+    $ti.handle-event(key-event(id => NCKEY_LEFT));
+    # Delete removes 'c'
+    $ti.handle-event(key-event(id => NCKEY_DEL));
+    is $ti.text, 'ab', "character at cursor deleted";
+};
+
+subtest "left arrow moves cursor" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    # Move left twice (cursor at position 1, between 'a' and 'b')
+    $ti.handle-event(key-event(id => NCKEY_LEFT));
+    $ti.handle-event(key-event(id => NCKEY_LEFT));
+    # Type 'x' at position 1
+    $ti.handle-event(key-event(id => 'x'.ord, char => 'x'));
+    is $ti.text, 'axbc', "character inserted at cursor position";
+};
+
+subtest "right arrow moves cursor" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    # Move to beginning
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    # Move right once (cursor at position 1)
+    $ti.handle-event(key-event(id => NCKEY_RIGHT));
+    # Type 'x' at position 1
+    $ti.handle-event(key-event(id => 'x'.ord, char => 'x'));
+    is $ti.text, 'axbc', "right arrow advances cursor";
+};
+
+subtest "home moves cursor to start" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event(id => 'x'.ord, char => 'x'));
+    is $ti.text, 'xabc', "character inserted at start after home";
+};
+
+subtest "end moves cursor to end" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event(id => NCKEY_END));
+    $ti.handle-event(key-event(id => 'x'.ord, char => 'x'));
+    is $ti.text, 'abcx', "character appended after end";
+};
+
+subtest "enter emits submit" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    my $submitted = '';
+    $ti.on-submit.tap: -> $v { $submitted = $v };
+    for 'h', 'i' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    my $consumed = $ti.handle-event(key-event(id => NCKEY_ENTER));
+    ok $consumed, "enter consumed";
+    sleep 0.05;
+    is $submitted, 'hi', "submit emitted with buffer contents";
+};
+
+subtest "ctrl modifier bubbles up (not consumed by input)" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    my $ev = key-event(
+        id => 'q'.ord,
+        char => 'q',
+        modifiers => Set(Mod-Ctrl),
+    );
+    # With no keybinds registered on the widget, ctrl+q should not be consumed
+    nok $ti.handle-event($ev), "ctrl+key not consumed by text input";
+};
+
+subtest "mask-char hides text" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new(mask-char => '*');
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    for 'a', 'b', 'c' -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    is $ti.text, 'abc', "actual text preserved";
+    is $ti.mask-char, '*', "mask-char set";
+};
+
+subtest "mask-char not set by default" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    nok $ti.mask-char.defined, "no mask by default";
+};

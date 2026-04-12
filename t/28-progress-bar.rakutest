@@ -1,0 +1,117 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::ProgressBar;
+
+plan 14;
+
+subtest "construction with defaults" => {
+    plan 4;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    is $pb.value, 0.0, "value starts at 0";
+    ok $pb.show-percentage, "show-percentage on by default";
+    nok $pb.indeterminate, "not indeterminate by default";
+    nok $pb.focusable, "not focusable by default";
+};
+
+subtest "set-value clamps to 0..1" => {
+    plan 3;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.set-value(0.5);
+    is $pb.value, 0.5, "0.5 accepted";
+    $pb.set-value(1.5);
+    is $pb.value, 1.0, "clamped to 1.0";
+    $pb.set-value(-0.3);
+    is $pb.value, 0.0, "clamped to 0.0";
+};
+
+subtest "set-value marks dirty" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.clear-dirty;
+    $pb.set-value(0.5);
+    ok $pb.is-dirty, "dirty after set-value";
+};
+
+subtest "set-value with same value does not mark dirty" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.set-value(0.5);
+    $pb.clear-dirty;
+    $pb.set-value(0.5);
+    nok $pb.is-dirty, "not dirty when value unchanged";
+};
+
+subtest "set-value accepts Int" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.set-value(1);
+    is $pb.value, 1.0, "Int coerced to Rat";
+};
+
+subtest "set-value accepts Num" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.set-value(0.75e0);
+    is $pb.value, 0.75, "Num coerced to Rat";
+};
+
+subtest "custom fill and empty chars" => {
+    plan 2;
+    my $pb = Selkie::Widget::ProgressBar.new(fill-char => '#', empty-char => '-');
+    is $pb.fill-char, '#', "custom fill char";
+    is $pb.empty-char, '-', "custom empty char";
+};
+
+subtest "indeterminate mode can be set" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new(indeterminate => True);
+    ok $pb.indeterminate, "indeterminate mode on";
+};
+
+subtest "tick does nothing when not indeterminate" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.clear-dirty;
+    $pb.tick;
+    nok $pb.is-dirty, "tick no-op in determinate mode";
+};
+
+subtest "tick advances animation in indeterminate mode" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new(indeterminate => True, frames-per-step => 1);
+    # Need a plane for bar-width calculation, but we can test that tick marks dirty
+    # Without a plane, cols returns 0 so bar-width is 0 and tick returns early
+    # This test verifies the frame counting works
+    $pb.clear-dirty;
+    # With cols=0, tick won't mark dirty (bar-width=0 early return)
+    $pb.tick;
+    nok $pb.is-dirty, "tick with zero width is no-op";
+};
+
+subtest "frames-per-step controls animation speed" => {
+    plan 2;
+    my $pb = Selkie::Widget::ProgressBar.new(indeterminate => True, frames-per-step => 3);
+    is $pb.frames-per-step, 3, "frames-per-step set";
+    my $default = Selkie::Widget::ProgressBar.new(indeterminate => True);
+    is $default.frames-per-step, 4, "default frames-per-step is 4";
+};
+
+subtest "value 0 gives all empty" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    is $pb.value, 0.0, "starts at 0 (all empty)";
+};
+
+subtest "value 1 gives all filled" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new;
+    $pb.set-value(1.0);
+    is $pb.value, 1.0, "fully filled";
+};
+
+subtest "show-percentage can be disabled" => {
+    plan 1;
+    my $pb = Selkie::Widget::ProgressBar.new(show-percentage => False);
+    nok $pb.show-percentage, "show-percentage disabled";
+};

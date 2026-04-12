@@ -1,0 +1,118 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Widget::Border;
+
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class TestContainer does Selkie::Container {
+    method render() { self!render-children; self.clear-dirty }
+}
+
+plan 12;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $b = Selkie::Widget::Border.new;
+    nok $b.content.defined, "no content initially";
+    is $b.title, '', "empty title";
+    nok $b.has-focus, "no focus by default";
+};
+
+subtest "set-content" => {
+    plan 3;
+    my $b = Selkie::Widget::Border.new;
+    my $w = TestWidget.new;
+    $b.set-content($w);
+    ok $b.content === $w, "content set";
+    ok $w.parent === $b, "parent set";
+    ok $b.is-dirty, "dirty after set-content";
+};
+
+subtest "set-content replaces previous" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    $b.set-content(TestWidget.new);
+    my $w2 = TestWidget.new;
+    $b.set-content($w2);
+    ok $b.content === $w2, "content replaced";
+};
+
+subtest "set-title" => {
+    plan 2;
+    my $b = Selkie::Widget::Border.new;
+    $b.set-title("Test Panel");
+    is $b.title, "Test Panel", "title set";
+    ok $b.is-dirty, "dirty after set-title";
+};
+
+subtest "title via constructor" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new(title => "Panel");
+    is $b.title, "Panel", "title from constructor";
+};
+
+subtest "set-has-focus" => {
+    plan 3;
+    my $b = Selkie::Widget::Border.new;
+    $b.clear-dirty;
+    $b.set-has-focus(True);
+    ok $b.has-focus, "focus set";
+    ok $b.is-dirty, "dirty after focus change";
+    $b.clear-dirty;
+    $b.set-has-focus(True);
+    nok $b.is-dirty, "no-op when same value";
+};
+
+subtest "focusable-descendants - no content" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    is $b.focusable-descendants.List.elems, 0, "no descendants without content";
+};
+
+subtest "focusable-descendants - focusable content" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    $b.set-content(TestWidget.new(focusable => True));
+    is $b.focusable-descendants.List.elems, 1, "finds focusable content";
+};
+
+subtest "focusable-descendants - container content" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new(focusable => True));
+    $c.add(TestWidget.new(focusable => True));
+    $b.set-content($c);
+    is $b.focusable-descendants.List.elems, 2, "finds descendants in container";
+};
+
+subtest "focusable-descendants - non-focusable content" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    $b.set-content(TestWidget.new);
+    is $b.focusable-descendants.List.elems, 0, "non-focusable not included";
+};
+
+subtest "dirty propagates through border" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    my $w = TestWidget.new;
+    $b.set-content($w);
+    $b.clear-dirty;
+    $w.clear-dirty;
+    $w.mark-dirty;
+    ok $b.is-dirty, "border dirty when content dirty";
+};
+
+subtest "destroy cleans up content" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    $b.set-content(TestWidget.new);
+    $b.destroy;
+    nok $b.content.defined, "content cleared after destroy";
+};

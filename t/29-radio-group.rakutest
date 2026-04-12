@@ -1,0 +1,173 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::RadioGroup;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+sub mouse-event(UInt :$id --> Selkie::Event) {
+    Selkie::Event.new(:$id, modifiers => Set.new, input-type => NCTYPE_PRESS, event-type => MouseEvent);
+}
+
+plan 17;
+
+subtest "construction with defaults" => {
+    plan 3;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    ok $rg.focusable, "focusable by default";
+    is $rg.selected, 0, "selected starts at 0";
+    is $rg.cursor, 0, "cursor starts at 0";
+};
+
+subtest "set-items populates list" => {
+    plan 3;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    is $rg.items.elems, 3, "3 items";
+    is $rg.selected-label, 'Alpha', "first item selected";
+    ok $rg.is-dirty, "dirty after set-items";
+};
+
+subtest "set-items resets cursor and selected" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    $rg.select-index(2);
+    $rg.set-items(<X Y>);
+    is $rg.selected, 0, "selected reset to 0";
+    is $rg.cursor, 0, "cursor reset to 0";
+};
+
+subtest "on-change returns Supply" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    isa-ok $rg.on-change, Supply, "on-change is Supply";
+};
+
+subtest "select-index changes selection" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    $rg.select-index(2);
+    is $rg.selected, 2, "selected is 2";
+    is $rg.selected-label, 'Gamma', "label is Gamma";
+};
+
+subtest "select-index clamps to bounds" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta>);
+    $rg.select-index(10);
+    is $rg.selected, 1, "clamped to last index";
+};
+
+subtest "select-index emits on-change" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    my $emitted = -1;
+    $rg.on-change.tap: -> $v { $emitted = $v };
+    $rg.select-index(1);
+    is $emitted, 1, "emitted index 1";
+};
+
+subtest "select-index with same value does not emit" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta>);
+    my $count = 0;
+    $rg.on-change.tap: -> $ { $count++ };
+    $rg.select-index(0);
+    is $count, 0, "no emit when selecting current index";
+};
+
+subtest "down arrow moves cursor" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    is $rg.cursor, 1, "cursor moved to 1";
+    is $rg.selected, 0, "selected unchanged (still 0)";
+};
+
+subtest "up arrow moves cursor" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_UP));
+    is $rg.cursor, 1, "cursor moved back to 1";
+};
+
+subtest "cursor does not exceed bounds" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta>);
+    $rg.handle-event(key-event(id => NCKEY_UP));
+    is $rg.cursor, 0, "cursor stays at 0 on up";
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    is $rg.cursor, 1, "cursor stays at last on down";
+};
+
+subtest "enter selects at cursor" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    my $emitted = -1;
+    $rg.on-change.tap: -> $v { $emitted = $v };
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_ENTER));
+    is $rg.selected, 1, "selected is now 1";
+    is $emitted, 1, "on-change emitted 1";
+};
+
+subtest "space selects at cursor" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma>);
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_DOWN));
+    $rg.handle-event(key-event(id => NCKEY_SPACE));
+    is $rg.selected, 2, "space selected index 2";
+};
+
+subtest "enter on already selected does not emit" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta>);
+    my $count = 0;
+    $rg.on-change.tap: -> $ { $count++ };
+    $rg.handle-event(key-event(id => NCKEY_ENTER));
+    is $count, 0, "no emit when re-selecting current";
+};
+
+subtest "home and end keys" => {
+    plan 2;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    $rg.set-items(<Alpha Beta Gamma Delta>);
+    $rg.handle-event(key-event(id => NCKEY_END));
+    is $rg.cursor, 3, "end goes to last";
+    $rg.handle-event(key-event(id => NCKEY_HOME));
+    is $rg.cursor, 0, "home goes to first";
+};
+
+subtest "empty items ignores navigation" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    nok $rg.handle-event(key-event(id => NCKEY_DOWN)), "down ignored with no items";
+};
+
+subtest "keybind on radio group works" => {
+    plan 1;
+    my $rg = Selkie::Widget::RadioGroup.new;
+    my $called = False;
+    $rg.on-key: 'ctrl+q', -> $ { $called = True };
+    $rg.handle-event(key-event(id => 'q'.ord, modifiers => Set(Mod-Ctrl)));
+    ok $called, "keybind fires";
+};

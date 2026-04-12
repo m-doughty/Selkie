@@ -1,0 +1,200 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::CardList;
+use Selkie::Widget;
+use Selkie::Layout::VBox;
+use Selkie::Event;
+use Selkie::Sizing;
+use Notcurses::Native::Types;
+
+class StubWidget does Selkie::Widget {
+    has Bool $.clipped-top = False;
+    has Bool $.clipped-bottom = False;
+    method render() { self.clear-dirty }
+    method set-clipped(Bool :$top = False, Bool :$bottom = False) {
+        $!clipped-top = $top;
+        $!clipped-bottom = $bottom;
+    }
+}
+
+sub key-event(UInt :$id --> Selkie::Event) {
+    Selkie::Event.new(:$id, char => Str, modifiers => Set.new,
+        input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+sub add-stub($cl, Int :$height = 5) {
+    my $widget = StubWidget.new;
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.fixed($height));
+    $cl.add-item($widget, :$root, :$height);
+    $widget;
+}
+
+plan 17;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    is $cl.count, 0, "no items initially";
+    is $cl.selected, 0, "selected at 0";
+    ok $cl.focusable, "focusable by default";
+};
+
+subtest "add-item increases count" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl);
+    is $cl.count, 1, "one item";
+    add-stub($cl);
+    is $cl.count, 2, "two items";
+};
+
+subtest "clear-items resets everything" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl);
+    add-stub($cl);
+    $cl.select-index(1);
+    $cl.clear-items;
+    is $cl.count, 0, "no items";
+    is $cl.selected, 0, "selection reset";
+    ok $cl.is-dirty, "marked dirty";
+};
+
+subtest "select-index clamps to bounds" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^5;
+    $cl.select-index(3);
+    is $cl.selected, 3, "selected 3";
+    $cl.select-index(100);
+    is $cl.selected, 4, "clamped to last";
+    $cl.select-index(-5);
+    is $cl.selected, 0, "clamped to first";
+};
+
+subtest "select-first and select-last" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^5;
+    $cl.select-last;
+    is $cl.selected, 4, "select-last goes to end";
+    $cl.select-first;
+    is $cl.selected, 0, "select-first goes to start";
+};
+
+subtest "on-select fires on select-index" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^3;
+    my $got;
+    $cl.on-select.tap: -> $idx { $got = $idx };
+    $cl.select-index(2);
+    is $got, 2, "on-select emitted correct index";
+};
+
+subtest "set-item-height updates height" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl, height => 5);
+    $cl.set-item-height(0, 10);
+    ok $cl.is-dirty, "marked dirty after height change";
+};
+
+subtest "set-item-height out of bounds is safe" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    lives-ok { $cl.set-item-height(99, 10) }, "no error for invalid index";
+};
+
+subtest "selected-item returns correct widget" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    my $w1 = add-stub($cl);
+    my $w2 = add-stub($cl);
+    $cl.select-index(0);
+    ok $cl.selected-item === $w1, "first widget selected";
+    $cl.select-index(1);
+    ok $cl.selected-item === $w2, "second widget selected";
+};
+
+subtest "handle-event up/down navigation" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^3;
+    $cl.select-index(0);
+    $cl.handle-event(key-event(id => NCKEY_DOWN));
+    is $cl.selected, 1, "down moved to 1";
+    $cl.handle-event(key-event(id => NCKEY_UP));
+    is $cl.selected, 0, "up moved back to 0";
+};
+
+subtest "handle-event home/end" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^5;
+    $cl.select-index(2);
+    $cl.handle-event(key-event(id => NCKEY_END));
+    is $cl.selected, 4, "end goes to last";
+    $cl.handle-event(key-event(id => NCKEY_HOME));
+    is $cl.selected, 0, "home goes to first";
+};
+
+subtest "up at top stays at top" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^3;
+    $cl.select-index(0);
+    $cl.handle-event(key-event(id => NCKEY_UP));
+    is $cl.selected, 0, "stayed at 0";
+};
+
+subtest "down at bottom stays at bottom" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^3;
+    $cl.select-last;
+    $cl.handle-event(key-event(id => NCKEY_DOWN));
+    is $cl.selected, 2, "stayed at end";
+};
+
+subtest "navigation on empty list is safe" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    lives-ok {
+        $cl.handle-event(key-event(id => NCKEY_DOWN));
+        $cl.handle-event(key-event(id => NCKEY_UP));
+        $cl.select-index(0);
+        $cl.select-first;
+        $cl.select-last;
+    }, "no errors on empty list";
+};
+
+subtest "keybinds checked before items" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    # No items — keybind should still fire
+    my $fired = False;
+    $cl.on-key: 'a', -> $ { $fired = True };
+    $cl.handle-event(key-event(id => 'a'.ord));
+    ok $fired, "keybind fires on empty list";
+};
+
+subtest "selected-item on empty list" => {
+    plan 1;
+    my $cl = Selkie::Widget::CardList.new;
+    nok $cl.selected-item.defined, "selected-item is Nil on empty list";
+};
+
+subtest "multiple on-select taps accumulate" => {
+    plan 2;
+    my $cl = Selkie::Widget::CardList.new;
+    add-stub($cl) for ^3;
+    my $a;
+    my $b;
+    $cl.on-select.tap: -> $idx { $a = $idx };
+    $cl.on-select.tap: -> $idx { $b = $idx };
+    $cl.select-index(1);
+    is $a, 1, "first tap got index";
+    is $b, 1, "second tap got index";
+};

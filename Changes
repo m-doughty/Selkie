@@ -1,0 +1,63 @@
+Revision history for Selkie
+
+{{$NEXT}}
+
+0.1.0  2026-04-12T03:54:47+01:00
+    - Fix Border focus subscription crash: replaced `return False without
+      $focused` (which targets the enclosing method, not the closure) with
+      a ternary. Bug crashed Selkie::App into raw mode on first focus tick.
+    - examples/: counter, settings, file-viewer, tasks, job-runner, chat —
+      a curated set covering every widget and store pattern.
+    - Checkbox widget: focusable toggle with [x]/[ ] indicator, on-change Supply
+    - ProgressBar widget: determinate (0..1 value with percentage) and
+      indeterminate (bouncing animation via tick) modes, customizable
+      fill/empty characters
+    - RadioGroup widget: single-selection from labeled options with (●)/( )
+      indicators, keyboard navigation, scrollbar support, on-change Supply
+    - Select widget: dropdown picker with child-plane overlay, open/close
+      state management, cursor navigation, Esc to cancel, focus-loss auto-close
+    - Initial framework with core widget tree architecture
+    - Style and Theme system with semantic style slots
+    - Event system with keybind parsing and modifier support
+    - Layout widgets: VBox, HBox, Split
+    - Content widgets: Text, TextStream, TextInput, ScrollView, Image
+    - Virtual scrolling with render-only-visible-rows strategy
+    - App lifecycle with event loop and dirty-tracking render cycle
+    - Automatic memory management for all notcurses handles
+    - ListView widget with keyboard navigation and selection Supply
+    - Image widget supports set-file for dynamic image swapping
+    - Image browser example with split pane file list + image preview
+    - Fix callsame not dispatching to role methods in Widget, Container,
+      Split — replaced with private helper methods (!apply-resize,
+      !destroy-plane) that compose correctly across roles
+    - Comprehensive test suite: Widget role, Container role, Text,
+      TextStream, TextInput, ListView, ScrollView (137 tests total)
+    - ScreenManager for named screen switching with scoped focus
+    - Modal overlay widget with focus trapping and close Supply
+    - RichText widget with inline-styled spans and span-aware word wrapping
+    - MultiLineInput widget with 2D cursor, Shift+Enter for newlines,
+      desired-height for dynamic layout, and submit/change Supplies
+    - App integration: ScreenManager replaces single root, modal support
+      with show-modal/close-modal, focus scoping to active screen/modal
+    - Border widget with auto-focus highlighting via store subscription
+    - Button widget with activation Supply
+    - ConfirmModal: yes/no dialog with focus on no-button by default
+    - CardList widget: cursor-navigated scrollable list of variable-height
+      widgets with top/bottom clipping and scroll tracking
+    - Reactive Store (re-frame style): centralized state with event dispatch,
+      handlers, effects (:db, :dispatch, :async), path/computed/callback
+      subscriptions, and per-frame tick processing
+    - Widget/App store integration: auto-propagation through widget tree,
+      convenience dispatch/subscribe methods, on-store-attached hook
+    - Focus management via store: Tab/Shift-Tab cycling, modal focus
+      scoping, Border self-manages highlight via focus subscription
+    - Error recovery: App.run wraps event loop in CATCH for terminal restore
+    - Viewport hierarchy: layouts pass absolute position and bounds to
+      children for correct clipping
+    - Toast widget: temporary overlay messages with auto-dismiss
+    - Default keybinds: Tab, Shift-Tab, Esc (close modal), Ctrl-Q (quit)
+    - FileBrowser modal: shell-style path completion with Tab, type to
+      filter, Enter to navigate/select, configurable extensions and
+      show-dotfiles parameter
+    - TextInput: set-text-silent for programmatic updates without emitting,
+      keybind check in default branch for registered keys (up/down etc)

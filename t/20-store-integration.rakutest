@@ -1,0 +1,156 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Store;
+
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class TestContainer does Selkie::Container {
+    method render() { self!render-children; self.clear-dirty }
+}
+
+plan 10;
+
+subtest "widget has no store by default" => {
+    plan 1;
+    my $w = TestWidget.new;
+    nok $w.store.defined, "no store on standalone widget";
+};
+
+subtest "store propagates on add" => {
+    plan 2;
+    my $store = Selkie::Store.new;
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w = TestWidget.new;
+    $c.add($w);
+    ok $w.store === $store, "child got store from parent";
+    ok $w.store.defined, "store is defined";
+};
+
+subtest "store propagates to nested children" => {
+    plan 1;
+    my $store = Selkie::Store.new;
+    my $outer = TestContainer.new;
+    $outer.set-store($store);
+    my $inner = TestContainer.new;
+    my $leaf = TestWidget.new;
+    $inner.add($leaf);
+    $outer.add($inner);
+    ok $leaf.store === $store, "deeply nested child got store";
+};
+
+subtest "widget.dispatch routes to store" => {
+    plan 1;
+    my $store = Selkie::Store.new;
+    $store.register-handler('test', -> $store, %ev {
+        (db => { got-it => True },);
+    });
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w = TestWidget.new;
+    $c.add($w);
+    $w.dispatch('test');
+    $store.tick;
+    ok $store.get-in('got-it'), "dispatch from widget reached store";
+};
+
+subtest "widget.subscribe creates subscription" => {
+    plan 2;
+    my $store = Selkie::Store.new;
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w = TestWidget.new;
+    $c.add($w);
+    $w.subscribe('my-sub', 'data', 'name');
+    $w.clear-dirty;
+
+    $store.register-handler('set', -> $store, %ev {
+        (db => { data => { name => 'hello' } },);
+    });
+    $store.dispatch('set');
+    $store.tick;
+    ok $w.is-dirty, "widget dirtied by subscription";
+
+    $w.clear-dirty;
+    $store.tick;
+    nok $w.is-dirty, "not dirty when unchanged";
+};
+
+subtest "widget.subscribe-computed works" => {
+    plan 1;
+    my $store = Selkie::Store.new;
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w = TestWidget.new;
+    $c.add($w);
+    $w.subscribe-computed('derived', -> $store {
+        ($store.get-in('x') // 0) + ($store.get-in('y') // 0);
+    });
+    $w.clear-dirty;
+
+    $store.register-handler('set-xy', -> $store, %ev {
+        (db => { x => 10, y => 20 },);
+    });
+    $store.dispatch('set-xy');
+    $store.tick;
+    ok $w.is-dirty, "computed subscription fired";
+};
+
+subtest "dispatch without store is safe" => {
+    plan 1;
+    my $w = TestWidget.new;
+    lives-ok { $w.dispatch('anything') }, "dispatch on storeless widget doesn't die";
+};
+
+subtest "subscribe without store is safe" => {
+    plan 1;
+    my $w = TestWidget.new;
+    lives-ok { $w.subscribe('x', 'path') }, "subscribe on storeless widget doesn't die";
+};
+
+subtest "remove unsubscribes widget" => {
+    plan 1;
+    my $store = Selkie::Store.new;
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w = TestWidget.new;
+    $c.add($w);
+    $w.subscribe('temp-sub', 'data');
+    $c.remove($w);
+
+    $w.clear-dirty;
+    $store.register-handler('set', -> $store, %ev {
+        (db => { data => 'changed' },);
+    });
+    $store.dispatch('set');
+    $store.tick;
+    nok $w.is-dirty, "removed widget not notified";
+};
+
+subtest "clear unsubscribes all children" => {
+    plan 1;
+    my $store = Selkie::Store.new;
+    my $c = TestContainer.new;
+    $c.set-store($store);
+    my $w1 = TestWidget.new;
+    my $w2 = TestWidget.new;
+    $c.add($w1);
+    $c.add($w2);
+    $w1.subscribe('sub1', 'data');
+    $w2.subscribe('sub2', 'data');
+    $c.clear;
+
+    $w1.clear-dirty;
+    $w2.clear-dirty;
+    $store.register-handler('set', -> $store, %ev {
+        (db => { data => 'changed' },);
+    });
+    $store.dispatch('set');
+    $store.tick;
+    nok $w1.is-dirty || $w2.is-dirty, "cleared children not notified";
+};

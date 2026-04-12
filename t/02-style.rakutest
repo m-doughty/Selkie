@@ -1,0 +1,102 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Style;
+use Notcurses::Native::Types;
+
+plan 12;
+
+subtest "basic construction" => {
+    plan 6;
+    my $s = Selkie::Style.new(fg => 0xFF0000, bg => 0x0000FF, bold => True);
+    is $s.fg, 0xFF0000, "fg color set";
+    is $s.bg, 0x0000FF, "bg color set";
+    ok $s.bold, "bold set";
+    nok $s.italic, "italic defaults to False";
+    nok $s.underline, "underline defaults to False";
+    nok $s.strikethrough, "strikethrough defaults to False";
+};
+
+subtest "default construction" => {
+    plan 4;
+    my $s = Selkie::Style.new;
+    nok $s.fg.defined, "fg defaults to undefined";
+    nok $s.bg.defined, "bg defaults to undefined";
+    nok $s.bold, "bold defaults to False";
+    nok $s.italic, "italic defaults to False";
+};
+
+subtest "styles bitmask - none" => {
+    plan 1;
+    my $s = Selkie::Style.new;
+    is $s.styles, 0, "no styles yields 0";
+};
+
+subtest "styles bitmask - bold" => {
+    plan 1;
+    my $s = Selkie::Style.new(bold => True);
+    is $s.styles, NCSTYLE_BOLD, "bold flag set";
+};
+
+subtest "styles bitmask - italic" => {
+    plan 1;
+    my $s = Selkie::Style.new(italic => True);
+    is $s.styles, NCSTYLE_ITALIC, "italic flag set";
+};
+
+subtest "styles bitmask - underline" => {
+    plan 1;
+    my $s = Selkie::Style.new(underline => True);
+    is $s.styles, NCSTYLE_UNDERLINE, "underline flag set";
+};
+
+subtest "styles bitmask - strikethrough" => {
+    plan 1;
+    my $s = Selkie::Style.new(strikethrough => True);
+    is $s.styles, NCSTYLE_STRUCK, "strikethrough flag set";
+};
+
+subtest "styles bitmask - combined" => {
+    plan 1;
+    my $s = Selkie::Style.new(bold => True, italic => True, underline => True);
+    is $s.styles, NCSTYLE_BOLD +| NCSTYLE_ITALIC +| NCSTYLE_UNDERLINE, "combined flags";
+};
+
+subtest "merge - override colors" => {
+    plan 2;
+    my $base = Selkie::Style.new(fg => 0xFF0000, bg => 0x0000FF);
+    my $over = Selkie::Style.new(fg => 0x00FF00);
+    my $merged = $base.merge($over);
+    is $merged.fg, 0x00FF00, "fg overridden";
+    is $merged.bg, 0x0000FF, "bg kept from base";
+};
+
+subtest "merge - override flags" => {
+    plan 2;
+    my $base = Selkie::Style.new(bold => True);
+    my $over = Selkie::Style.new(italic => True);
+    my $merged = $base.merge($over);
+    ok $merged.bold, "bold kept from base";
+    ok $merged.italic, "italic added from override";
+};
+
+subtest "merge - empty override" => {
+    plan 3;
+    my $base = Selkie::Style.new(fg => 0xFF0000, bold => True);
+    my $over = Selkie::Style.new;
+    my $merged = $base.merge($over);
+    is $merged.fg, 0xFF0000, "fg unchanged";
+    nok $merged.bg.defined, "bg still undefined";
+    ok $merged.bold, "bold kept";
+};
+
+subtest "merge - full override" => {
+    plan 4;
+    my $base = Selkie::Style.new(fg => 0xFF0000, bg => 0x0000FF, bold => True);
+    my $over = Selkie::Style.new(fg => 0x111111, bg => 0x222222, italic => True, underline => True);
+    my $merged = $base.merge($over);
+    is $merged.fg, 0x111111, "fg overridden";
+    is $merged.bg, 0x222222, "bg overridden";
+    ok $merged.bold, "bold kept via OR";
+    ok $merged.italic, "italic from override";
+};

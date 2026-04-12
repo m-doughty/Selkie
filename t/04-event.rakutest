@@ -1,0 +1,100 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+plan 10;
+
+subtest "Keybind.parse - simple key" => {
+    plan 2;
+    my $kb = Keybind.parse('q', -> $ { });
+    is $kb.id, 'q'.ord, "id is ord of q";
+    is $kb.modifiers.elems, 0, "no modifiers";
+};
+
+subtest "Keybind.parse - ctrl+key" => {
+    plan 2;
+    my $kb = Keybind.parse('ctrl+q', -> $ { });
+    is $kb.id, 'q'.ord, "id is ord of q";
+    ok Mod-Ctrl ∈ $kb.modifiers, "ctrl modifier present";
+};
+
+subtest "Keybind.parse - alt+key" => {
+    plan 2;
+    my $kb = Keybind.parse('alt+s', -> $ { });
+    is $kb.id, 's'.ord, "id is ord of s";
+    ok Mod-Alt ∈ $kb.modifiers, "alt modifier present";
+};
+
+subtest "Keybind.parse - multiple modifiers" => {
+    plan 3;
+    my $kb = Keybind.parse('ctrl+shift+x', -> $ { });
+    is $kb.id, 'x'.ord, "id is ord of x";
+    ok Mod-Ctrl ∈ $kb.modifiers, "ctrl present";
+    ok Mod-Shift ∈ $kb.modifiers, "shift present";
+};
+
+subtest "Keybind.parse - special keys" => {
+    plan 6;
+    is Keybind.parse('enter', -> $ { }).id, NCKEY_ENTER, "enter";
+    is Keybind.parse('tab', -> $ { }).id, NCKEY_TAB, "tab";
+    is Keybind.parse('esc', -> $ { }).id, NCKEY_ESC, "esc";
+    is Keybind.parse('space', -> $ { }).id, NCKEY_SPACE, "space";
+    is Keybind.parse('backspace', -> $ { }).id, NCKEY_BACKSPACE, "backspace";
+    is Keybind.parse('delete', -> $ { }).id, NCKEY_DEL, "delete";
+};
+
+subtest "Keybind.parse - function keys" => {
+    plan 3;
+    is Keybind.parse('f1', -> $ { }).id, NCKEY_F00 + 1, "f1";
+    is Keybind.parse('f12', -> $ { }).id, NCKEY_F00 + 12, "f12";
+    is Keybind.parse('ctrl+f5', -> $ { }).id, NCKEY_F00 + 5, "ctrl+f5";
+};
+
+subtest "Keybind.parse - navigation keys" => {
+    plan 4;
+    is Keybind.parse('up', -> $ { }).id, NCKEY_UP, "up";
+    is Keybind.parse('down', -> $ { }).id, NCKEY_DOWN, "down";
+    is Keybind.parse('left', -> $ { }).id, NCKEY_LEFT, "left";
+    is Keybind.parse('right', -> $ { }).id, NCKEY_RIGHT, "right";
+};
+
+subtest "Keybind.parse - invalid modifier dies" => {
+    plan 1;
+    dies-ok { Keybind.parse('foo+q', -> $ { }) }, "unknown modifier dies";
+};
+
+subtest "Keybind.parse - invalid key dies" => {
+    plan 1;
+    dies-ok { Keybind.parse('f99', -> $ { }) }, "invalid function key dies";
+};
+
+subtest "Keybind.matches" => {
+    plan 3;
+    my $kb = Keybind.parse('ctrl+q', -> $ { });
+
+    my $ev-match = Selkie::Event.new(
+        id => 'q'.ord,
+        modifiers => Set(Mod-Ctrl),
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    ok $kb.matches($ev-match), "matches ctrl+q event";
+
+    my $ev-no-mod = Selkie::Event.new(
+        id => 'q'.ord,
+        modifiers => Set(),
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    nok $kb.matches($ev-no-mod), "does not match plain q";
+
+    my $ev-wrong-mod = Selkie::Event.new(
+        id => 'q'.ord,
+        modifiers => Set(Mod-Alt),
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    nok $kb.matches($ev-wrong-mod), "does not match alt+q";
+};

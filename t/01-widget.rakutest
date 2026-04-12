@@ -1,0 +1,171 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Event;
+use Selkie::Style;
+use Selkie::Theme;
+use Selkie::Sizing;
+use Notcurses::Native::Types;
+
+# Concrete stub for testing the Widget role
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+plan 14;
+
+subtest "construction defaults" => {
+    plan 7;
+    my $w = TestWidget.new;
+    ok $w.is-dirty, "starts dirty";
+    is $w.rows, 0, "rows default 0";
+    is $w.cols, 0, "cols default 0";
+    is $w.y, 0, "y default 0";
+    is $w.x, 0, "x default 0";
+    nok $w.focusable, "not focusable by default";
+    nok $w.plane.defined, "no plane initially";
+};
+
+subtest "construction with sizing" => {
+    plan 2;
+    my $w = TestWidget.new(sizing => Sizing.fixed(5));
+    is $w.sizing.mode, SizeFixed, "sizing mode set";
+    is $w.sizing.value, 5, "sizing value set";
+};
+
+subtest "construction with focusable" => {
+    plan 1;
+    my $w = TestWidget.new(focusable => True);
+    ok $w.focusable, "focusable when set";
+};
+
+subtest "dirty tracking - mark and clear" => {
+    plan 3;
+    my $w = TestWidget.new;
+    ok $w.is-dirty, "starts dirty";
+    $w.clear-dirty;
+    nok $w.is-dirty, "clean after clear-dirty";
+    $w.mark-dirty;
+    ok $w.is-dirty, "dirty after mark-dirty";
+};
+
+subtest "dirty tracking - mark is idempotent" => {
+    plan 1;
+    my $w = TestWidget.new;
+    $w.clear-dirty;
+    $w.mark-dirty;
+    $w.mark-dirty;
+    ok $w.is-dirty, "still dirty after double mark";
+};
+
+subtest "dirty tracking - propagates to parent" => {
+    plan 2;
+    my $parent = TestWidget.new;
+    my $child = TestWidget.new;
+    $child.parent = $parent;
+    $parent.clear-dirty;
+    $child.clear-dirty;
+    nok $parent.is-dirty, "parent starts clean";
+    $child.mark-dirty;
+    ok $parent.is-dirty, "parent dirty after child marked";
+};
+
+subtest "theme - default when no theme set" => {
+    plan 1;
+    my $w = TestWidget.new;
+    my $theme = $w.theme;
+    ok $theme.defined, "gets default theme when none set";
+};
+
+subtest "theme - inherits from parent" => {
+    plan 1;
+    my $custom = Selkie::Theme.default;
+    my $parent = TestWidget.new;
+    $parent.set-theme($custom);
+    my $child = TestWidget.new;
+    $child.parent = $parent;
+    ok $child.theme === $custom, "child inherits parent theme";
+};
+
+subtest "theme - own theme overrides parent" => {
+    plan 1;
+    my $parent-theme = Selkie::Theme.default;
+    my $child-theme = Selkie::Theme.default;
+    my $parent = TestWidget.new;
+    $parent.set-theme($parent-theme);
+    my $child = TestWidget.new;
+    $child.parent = $parent;
+    $child.set-theme($child-theme);
+    ok $child.theme === $child-theme, "own theme takes precedence";
+};
+
+subtest "set-theme marks dirty" => {
+    plan 1;
+    my $w = TestWidget.new;
+    $w.clear-dirty;
+    $w.set-theme(Selkie::Theme.default);
+    ok $w.is-dirty, "dirty after set-theme";
+};
+
+subtest "resize without plane" => {
+    plan 4;
+    my $w = TestWidget.new;
+    $w.clear-dirty;
+    $w.resize(10, 80);
+    is $w.rows, 10, "rows updated";
+    is $w.cols, 80, "cols updated";
+    ok $w.is-dirty, "marked dirty";
+
+    # No-op when same dimensions
+    $w.clear-dirty;
+    $w.resize(10, 80);
+    nok $w.is-dirty, "not dirty when size unchanged";
+};
+
+subtest "reposition without plane" => {
+    plan 4;
+    my $w = TestWidget.new;
+    $w.reposition(5, 10);
+    is $w.y, 5, "y updated";
+    is $w.x, 10, "x updated";
+
+    # No-op when same position
+    $w.reposition(5, 10);
+    is $w.y, 5, "y unchanged";
+    is $w.x, 10, "x unchanged";
+};
+
+subtest "keybind registration and dispatch" => {
+    plan 2;
+    my $w = TestWidget.new;
+    my $called = False;
+    $w.on-key('ctrl+q', -> $ { $called = True });
+
+    my $ev = Selkie::Event.new(
+        id        => 'q'.ord,
+        modifiers => Set(Mod-Ctrl),
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    my $consumed = $w.handle-event($ev);
+    ok $called, "handler invoked";
+    ok $consumed, "event consumed";
+};
+
+subtest "keybind - non-matching event not consumed" => {
+    plan 2;
+    my $w = TestWidget.new;
+    my $called = False;
+    $w.on-key('ctrl+q', -> $ { $called = True });
+
+    my $ev = Selkie::Event.new(
+        id        => 'x'.ord,
+        modifiers => Set(),
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    my $consumed = $w.handle-event($ev);
+    nok $called, "handler not invoked";
+    nok $consumed, "event not consumed";
+};

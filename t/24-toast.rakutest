@@ -1,0 +1,72 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Toast;
+use Selkie::Style;
+
+plan 8;
+
+subtest "initially not visible" => {
+    plan 2;
+    my $t = Selkie::Widget::Toast.new;
+    nok $t.is-visible, "not visible by default";
+    is $t.message, '', "empty message";
+};
+
+subtest "show makes visible" => {
+    plan 2;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('Hello');
+    ok $t.is-visible, "visible after show";
+    is $t.message, 'Hello', "message set";
+};
+
+subtest "tick does not dismiss before duration" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('Test', duration => 10e0);
+    $t.tick;
+    ok $t.is-visible, "still visible before duration expires";
+};
+
+subtest "tick dismisses after duration" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('Test', duration => 0.01e0);
+    sleep 0.02;
+    $t.tick;
+    nok $t.is-visible, "dismissed after duration";
+};
+
+subtest "tick is safe when not visible" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    lives-ok { $t.tick }, "tick on hidden toast is fine";
+};
+
+subtest "show resets timer" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('First', duration => 0.01e0);
+    sleep 0.02;
+    # Don't tick — show again to reset
+    $t.show('Second', duration => 10e0);
+    $t.tick;
+    ok $t.is-visible, "still visible after reset";
+};
+
+subtest "custom style is stored" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    my $style = Selkie::Style.new(fg => 0xFF0000);
+    $t.show('Styled', style => $style);
+    ok $t.is-visible, "show with custom style works";
+};
+
+subtest "show marks dirty" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    $t.clear-dirty;
+    $t.show('Dirty');
+    ok $t.is-dirty, "marked dirty after show";
+};

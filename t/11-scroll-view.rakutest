@@ -1,0 +1,90 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Widget::ScrollView;
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+plan 10;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $sv = Selkie::Widget::ScrollView.new;
+    is $sv.scroll-offset, 0, "scroll offset starts at 0";
+    is $sv.content-height, 0, "content height starts at 0";
+    ok $sv.show-scrollbar, "scrollbar shown by default";
+};
+
+subtest "viewport-height matches rows" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(20, 80);
+    is $sv.viewport-height, 20, "viewport height = rows";
+};
+
+subtest "scroll-to sets offset" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    # Without content, max offset is 0, so scroll-to clamps to 0
+    $sv.scroll-to(5);
+    is $sv.scroll-offset, 0, "clamped to 0 when no content";
+};
+
+subtest "scroll-to clamps to max offset" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    # Add content to make scrolling meaningful
+    # We can't call render without a plane, but we can test the scroll math
+    # directly — content-height is 0 so max offset is 0
+    $sv.scroll-to(999);
+    is $sv.scroll-offset, 0, "clamped when content smaller than viewport";
+};
+
+subtest "scroll-by relative positive" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    lives-ok { $sv.scroll-by(5) }, "scroll-by positive does not die";
+};
+
+subtest "scroll-by clamps negative to zero" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    $sv.scroll-by(-100);
+    is $sv.scroll-offset, 0, "clamped to 0 on large negative scroll";
+};
+
+subtest "scroll-to-start" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    $sv.scroll-to-start;
+    is $sv.scroll-offset, 0, "scroll-to-start sets offset to 0";
+};
+
+subtest "scroll-to-end" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    lives-ok { $sv.scroll-to-end }, "scroll-to-end does not die";
+};
+
+subtest "at-end when no content" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    ok $sv.at-end, "at end when no content (offset 0 >= max offset 0)";
+};
+
+subtest "scroll marks dirty" => {
+    plan 1;
+    my $sv = Selkie::Widget::ScrollView.new;
+    $sv.resize(10, 40);
+    $sv.clear-dirty;
+    $sv.scroll-to(0);
+    ok $sv.is-dirty, "dirty after scroll-to";
+};

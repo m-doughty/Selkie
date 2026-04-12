@@ -1,0 +1,179 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::ScreenManager;
+
+# Concrete stubs for testing
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class TestContainer does Selkie::Container {
+    method render() {
+        self!render-children;
+        self.clear-dirty;
+    }
+}
+
+plan 16;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $sm = Selkie::ScreenManager.new;
+    nok $sm.active-screen.defined, "no active screen initially";
+    nok $sm.active-root.defined, "no active root initially";
+    is $sm.screen-names.elems, 0, "no screens";
+};
+
+subtest "add-screen sets first as active" => {
+    plan 3;
+    my $sm = Selkie::ScreenManager.new;
+    my $root = TestContainer.new;
+    $sm.add-screen('main', $root);
+    is $sm.active-screen, 'main', "first screen becomes active";
+    ok $sm.active-root === $root, "active-root returns the container";
+    is $sm.screen-names.elems, 1, "one screen registered";
+};
+
+subtest "add multiple screens" => {
+    plan 3;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('login', TestContainer.new);
+    $sm.add-screen('main', TestContainer.new);
+    is $sm.screen-names.elems, 2, "two screens";
+    is $sm.active-screen, 'login', "first added remains active";
+    ok $sm.has-screen('main'), "has-screen finds second";
+};
+
+subtest "switch-to changes active screen" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    my $login = TestContainer.new;
+    my $main = TestContainer.new;
+    $sm.add-screen('login', $login);
+    $sm.add-screen('main', $main);
+    $sm.switch-to('main');
+    is $sm.active-screen, 'main', "active screen changed";
+    ok $sm.active-root === $main, "active-root returns new screen";
+};
+
+subtest "switch-to marks new screen dirty" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    my $login = TestContainer.new;
+    my $main = TestContainer.new;
+    $sm.add-screen('login', $login);
+    $sm.add-screen('main', $main);
+    $main.clear-dirty;
+    $sm.switch-to('main');
+    ok $main.is-dirty, "switched-to screen marked dirty";
+};
+
+subtest "switch-to nonexistent screen fails" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('login', TestContainer.new);
+    my $result = $sm.switch-to('nonexistent');
+    ok $result ~~ Failure, "switching to nonexistent screen returns Failure";
+    $result.so;  # mark as handled
+};
+
+subtest "switch-to same screen is no-op" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    my $root = TestContainer.new;
+    $sm.add-screen('main', $root);
+    $root.clear-dirty;
+    $sm.switch-to('main');
+    nok $root.is-dirty, "no-op when switching to already active screen";
+};
+
+subtest "remove-screen" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('login', TestContainer.new);
+    $sm.add-screen('main', TestContainer.new);
+    $sm.switch-to('main');
+    $sm.remove-screen('login');
+    is $sm.screen-names.elems, 1, "one screen remaining";
+    nok $sm.has-screen('login'), "login screen removed";
+};
+
+subtest "remove active screen fails" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('main', TestContainer.new);
+    my $result = $sm.remove-screen('main');
+    ok $result ~~ Failure, "cannot remove active screen";
+    $result.so;
+};
+
+subtest "remove nonexistent screen fails" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    my $result = $sm.remove-screen('nope');
+    ok $result ~~ Failure, "cannot remove nonexistent screen";
+    $result.so;
+};
+
+subtest "has-screen" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('main', TestContainer.new);
+    ok $sm.has-screen('main'), "has-screen true for existing";
+    nok $sm.has-screen('other'), "has-screen false for missing";
+};
+
+subtest "focusable-descendants scoped to active screen" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    my $login = TestContainer.new;
+    my $main = TestContainer.new;
+    $login.add(TestWidget.new(focusable => True));
+    $main.add(TestWidget.new(focusable => True));
+    $main.add(TestWidget.new(focusable => True));
+    $sm.add-screen('login', $login);
+    $sm.add-screen('main', $main);
+
+    is $sm.focusable-descendants.List.elems, 1, "login screen: 1 focusable";
+    $sm.switch-to('main');
+    is $sm.focusable-descendants.List.elems, 2, "main screen: 2 focusable";
+};
+
+subtest "focusable-descendants empty when no screens" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    is $sm.focusable-descendants.List.elems, 0, "empty seq when no screens";
+};
+
+subtest "destroy cleans up all screens" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('a', TestContainer.new);
+    $sm.add-screen('b', TestContainer.new);
+    $sm.destroy;
+    is $sm.screen-names.elems, 0, "no screens after destroy";
+    nok $sm.active-screen.defined, "no active screen after destroy";
+};
+
+subtest "screen-names returns sorted list" => {
+    plan 1;
+    my $sm = Selkie::ScreenManager.new;
+    $sm.add-screen('charlie', TestContainer.new);
+    $sm.add-screen('alpha', TestContainer.new);
+    $sm.add-screen('bravo', TestContainer.new);
+    is-deeply $sm.screen-names, ('alpha', 'bravo', 'charlie'), "names sorted";
+};
+
+subtest "add-screen replaces existing screen" => {
+    plan 2;
+    my $sm = Selkie::ScreenManager.new;
+    my $old = TestContainer.new;
+    my $new = TestContainer.new;
+    $sm.add-screen('main', $old);
+    $sm.add-screen('main', $new);
+    ok $sm.active-root === $new, "root replaced with new container";
+    is $sm.screen-names.elems, 1, "still one screen";
+};

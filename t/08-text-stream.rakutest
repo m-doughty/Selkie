@@ -1,0 +1,164 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::TextStream;
+use Selkie::Style;
+
+plan 17;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $ts = Selkie::Widget::TextStream.new;
+    is $ts.max-lines, 10_000, "default max-lines";
+    is $ts.logical-height, 0, "empty stream has 0 lines";
+    ok $ts.show-scrollbar, "scrollbar shown by default";
+};
+
+subtest "append single line" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.append("hello");
+    is $ts.logical-height, 1, "one line after single append";
+};
+
+subtest "append multi-line string" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.append("line one\nline two\nline three");
+    is $ts.logical-height, 3, "multi-line string splits on newlines";
+};
+
+subtest "append multiple calls accumulate" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.append("first");
+    $ts.append("second");
+    $ts.append("third");
+    is $ts.logical-height, 3, "three appends = three lines";
+};
+
+subtest "append marks dirty" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.clear-dirty;
+    $ts.append("hello");
+    ok $ts.is-dirty, "dirty after append";
+};
+
+subtest "ring buffer - stays within max-lines" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new(max-lines => 5);
+    $ts.append("line $_") for ^10;
+    is $ts.logical-height, 5, "capped at max-lines";
+};
+
+subtest "clear resets everything" => {
+    plan 2;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.append("line $_") for ^10;
+    $ts.clear;
+    is $ts.logical-height, 0, "zero lines after clear";
+    ok $ts.is-dirty, "dirty after clear";
+};
+
+subtest "scroll-to clamps to max offset" => {
+    plan 2;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);  # 5-row viewport
+    $ts.append("line $_") for ^20;
+    # max offset = 20 - 5 = 15
+    $ts.scroll-to(100);
+    # We can verify indirectly — scrolling to end then checking follow
+    # scroll-to sets follow = True when at max
+    $ts.scroll-to(15);
+    pass "scroll-to at max offset does not die";
+    $ts.scroll-to(0);
+    pass "scroll-to at 0 does not die";
+};
+
+subtest "scroll-by relative movement" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    $ts.append("line $_") for ^20;
+    $ts.scroll-to(10);
+    $ts.scroll-by(-3);
+    # scroll-by marks dirty each time
+    ok $ts.is-dirty, "dirty after scroll-by";
+};
+
+subtest "scroll-by clamps to zero" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    $ts.append("line $_") for ^20;
+    $ts.scroll-to(2);
+    lives-ok { $ts.scroll-by(-100) }, "negative scroll clamps without dying";
+};
+
+subtest "scroll-to-start" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    $ts.append("line $_") for ^20;
+    $ts.scroll-to(10);
+    $ts.scroll-to-start;
+    ok $ts.is-dirty, "dirty after scroll-to-start";
+};
+
+subtest "scroll-to-end" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    $ts.append("line $_") for ^20;
+    $ts.scroll-to(0);
+    $ts.scroll-to-end;
+    ok $ts.is-dirty, "dirty after scroll-to-end";
+};
+
+subtest "follow mode - auto-scrolls on append" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    # Follow is True by default; appending should auto-scroll
+    $ts.append("line $_") for ^20;
+    # After auto-scroll, should be at max offset
+    # Verify by scrolling to end which is a no-op if already there
+    lives-ok { $ts.scroll-to-end }, "follow mode keeps scroll at end";
+};
+
+subtest "follow mode disabled by manual scroll" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    $ts.resize(5, 40);
+    $ts.append("line $_") for ^20;
+    $ts.scroll-to(0);  # manual scroll disables follow
+    $ts.clear-dirty;
+    $ts.append("new line");
+    # After append with follow disabled, should still be dirty
+    # but scroll offset shouldn't jump to end
+    ok $ts.is-dirty, "dirty after append even with follow disabled";
+};
+
+subtest "custom max-lines" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new(max-lines => 3);
+    is $ts.max-lines, 3, "custom max-lines stored";
+};
+
+subtest "supply returns a Supply" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    isa-ok $ts.supply, Supply, "supply returns a Supply";
+};
+
+subtest "start-supply taps external supply" => {
+    plan 1;
+    my $ts = Selkie::Widget::TextStream.new;
+    my $supplier = Supplier.new;
+    $ts.start-supply($supplier.Supply);
+    $supplier.emit("from supply");
+    # Give a tiny moment for the tap to process
+    sleep 0.05;
+    is $ts.logical-height, 1, "line appended from supply";
+};

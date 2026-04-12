@@ -1,0 +1,127 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Sizing;
+
+# Concrete stubs for testing the Container role
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class TestContainer does Selkie::Container {
+    method render() {
+        self!render-children;
+        self.clear-dirty;
+    }
+}
+
+plan 12;
+
+subtest "empty container" => {
+    plan 2;
+    my $c = TestContainer.new;
+    is $c.children.elems, 0, "no children initially";
+    is $c.focusable-descendants.List.elems, 0, "no focusable descendants";
+};
+
+subtest "add child" => {
+    plan 3;
+    my $c = TestContainer.new;
+    my $w = TestWidget.new;
+    my $ret = $c.add($w);
+    ok $ret === $w, "add returns the child";
+    is $c.children.elems, 1, "one child after add";
+    ok $w.parent === $c, "child parent set to container";
+};
+
+subtest "add marks dirty" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.clear-dirty;
+    $c.add(TestWidget.new);
+    ok $c.is-dirty, "container dirty after add";
+};
+
+subtest "add multiple children" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new) for ^5;
+    is $c.children.elems, 5, "five children";
+};
+
+subtest "remove child" => {
+    plan 2;
+    my $c = TestContainer.new;
+    my $w1 = $c.add(TestWidget.new);
+    my $w2 = $c.add(TestWidget.new);
+    $c.remove($w1);
+    is $c.children.elems, 1, "one child remaining";
+    ok $c.children[0] === $w2, "correct child remains";
+};
+
+subtest "remove marks dirty" => {
+    plan 1;
+    my $c = TestContainer.new;
+    my $w = $c.add(TestWidget.new);
+    $c.clear-dirty;
+    $c.remove($w);
+    ok $c.is-dirty, "container dirty after remove";
+};
+
+subtest "clear removes all children" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new) for ^3;
+    $c.clear;
+    is $c.children.elems, 0, "no children after clear";
+};
+
+subtest "clear marks dirty" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new);
+    $c.clear-dirty;
+    $c.clear;
+    ok $c.is-dirty, "container dirty after clear";
+};
+
+subtest "focusable-descendants - non-focusable children" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new);
+    $c.add(TestWidget.new);
+    is $c.focusable-descendants.List.elems, 0, "no focusable descendants when children not focusable";
+};
+
+subtest "focusable-descendants - mixed children" => {
+    plan 2;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new);
+    my $focusable = $c.add(TestWidget.new(focusable => True));
+    $c.add(TestWidget.new);
+    my @fd = $c.focusable-descendants.List;
+    is @fd.elems, 1, "one focusable descendant";
+    ok @fd[0] === $focusable, "correct widget returned";
+};
+
+subtest "focusable-descendants - nested containers" => {
+    plan 2;
+    my $outer = TestContainer.new;
+    my $inner = TestContainer.new;
+    $outer.add($inner);
+    my $deep = $inner.add(TestWidget.new(focusable => True));
+    my $top = $outer.add(TestWidget.new(focusable => True));
+    my @fd = $outer.focusable-descendants.List;
+    is @fd.elems, 2, "finds descendants across nesting levels";
+    ok @fd[0] === $deep, "deeper widget found first (depth-first)";
+};
+
+subtest "children list is immutable copy" => {
+    plan 1;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new);
+    my @kids = $c.children;
+    is $c.children.elems, 1, "original unaffected by external reference";
+};

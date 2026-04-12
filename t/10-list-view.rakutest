@@ -1,0 +1,175 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::ListView;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+sub key-event(UInt :$id, Str :$char, Set :$modifiers = Set.new --> Selkie::Event) {
+    Selkie::Event.new(:$id, :$char, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
+}
+
+plan 18;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $lv = Selkie::Widget::ListView.new;
+    is $lv.items.elems, 0, "no items initially";
+    is $lv.cursor, 0, "cursor at 0";
+    ok $lv.focusable, "focusable by default";
+};
+
+subtest "set-items populates list" => {
+    plan 2;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.set-items(['alpha', 'bravo', 'charlie']);
+    is $lv.items.elems, 3, "three items";
+    is $lv.items[1], 'bravo', "correct item at index 1";
+};
+
+subtest "set-items resets cursor" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b', 'c', 'd']);
+    $lv.select-index(3);
+    $lv.set-items(['x', 'y']);
+    is $lv.cursor, 0, "cursor reset after set-items";
+};
+
+subtest "set-items marks dirty" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.clear-dirty;
+    $lv.set-items(['a']);
+    ok $lv.is-dirty, "dirty after set-items";
+};
+
+subtest "selected returns current item" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.set-items(['alpha', 'bravo', 'charlie']);
+    is $lv.selected, 'alpha', "selected is first item";
+};
+
+subtest "selected with empty list" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    nok $lv.selected.defined, "selected undefined for empty list";
+};
+
+subtest "select-index moves cursor" => {
+    plan 2;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['alpha', 'bravo', 'charlie']);
+    $lv.select-index(2);
+    is $lv.cursor, 2, "cursor moved to 2";
+    is $lv.selected, 'charlie', "selected is charlie";
+};
+
+subtest "select-index clamps to bounds" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b', 'c']);
+    $lv.select-index(100);
+    is $lv.cursor, 2, "clamped to last index";
+};
+
+subtest "select-index no-op on empty list" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    lives-ok { $lv.select-index(5) }, "select-index on empty list does not die";
+};
+
+subtest "on-select emits on set-items" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    my $received = '';
+    $lv.on-select.tap: -> $v { $received = $v };
+    $lv.set-items(['alpha', 'bravo']);
+    sleep 0.05;
+    is $received, 'alpha', "select emitted on set-items";
+};
+
+subtest "on-select emits on select-index" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['alpha', 'bravo', 'charlie']);
+    my $received = '';
+    $lv.on-select.tap: -> $v { $received = $v };
+    $lv.select-index(1);
+    sleep 0.05;
+    is $received, 'bravo', "select emitted with new selection";
+};
+
+subtest "on-activate returns Supply" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    isa-ok $lv.on-activate, Supply, "on-activate is a Supply";
+};
+
+subtest "down arrow moves cursor" => {
+    plan 2;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b', 'c']);
+    my $consumed = $lv.handle-event(key-event(id => NCKEY_DOWN));
+    ok $consumed, "event consumed";
+    is $lv.cursor, 1, "cursor moved down";
+};
+
+subtest "up arrow moves cursor" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b', 'c']);
+    $lv.select-index(2);
+    $lv.handle-event(key-event(id => NCKEY_UP));
+    is $lv.cursor, 1, "cursor moved up";
+};
+
+subtest "down arrow stops at bottom" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b']);
+    $lv.select-index(1);
+    $lv.handle-event(key-event(id => NCKEY_DOWN));
+    is $lv.cursor, 1, "cursor stays at bottom";
+};
+
+subtest "up arrow stops at top" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b']);
+    $lv.handle-event(key-event(id => NCKEY_UP));
+    is $lv.cursor, 0, "cursor stays at top";
+};
+
+subtest "home and end keys" => {
+    plan 2;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['a', 'b', 'c', 'd', 'e']);
+    $lv.handle-event(key-event(id => NCKEY_END));
+    is $lv.cursor, 4, "end moves to last item";
+    $lv.handle-event(key-event(id => NCKEY_HOME));
+    is $lv.cursor, 0, "home moves to first item";
+};
+
+subtest "enter emits activate" => {
+    plan 1;
+    my $lv = Selkie::Widget::ListView.new;
+    $lv.resize(10, 40);
+    $lv.set-items(['alpha', 'bravo']);
+    my $activated = '';
+    $lv.on-activate.tap: -> $v { $activated = $v };
+    $lv.handle-event(key-event(id => NCKEY_ENTER));
+    sleep 0.05;
+    is $activated, 'alpha', "activate emits selected item";
+};

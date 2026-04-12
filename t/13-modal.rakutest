@@ -1,0 +1,152 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Widget::Modal;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class TestContainer does Selkie::Container {
+    method render() {
+        self!render-children;
+        self.clear-dirty;
+    }
+}
+
+plan 14;
+
+subtest "construction defaults" => {
+    plan 4;
+    my $m = Selkie::Widget::Modal.new;
+    is $m.width-ratio, 0.8, "default width ratio";
+    is $m.height-ratio, 0.6, "default height ratio";
+    ok $m.dim-background, "dim background by default";
+    nok $m.content.defined, "no content initially";
+};
+
+subtest "custom ratios" => {
+    plan 2;
+    my $m = Selkie::Widget::Modal.new(width-ratio => 0.5, height-ratio => 0.4);
+    is $m.width-ratio, 0.5, "custom width ratio";
+    is $m.height-ratio, 0.4, "custom height ratio";
+};
+
+subtest "set-content" => {
+    plan 3;
+    my $m = Selkie::Widget::Modal.new;
+    my $w = TestWidget.new;
+    $m.set-content($w);
+    ok $m.content === $w, "content set";
+    ok $w.parent === $m, "parent set on content";
+    ok $m.is-dirty, "modal marked dirty";
+};
+
+subtest "set-content replaces previous" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    my $w1 = TestWidget.new;
+    my $w2 = TestWidget.new;
+    $m.set-content($w1);
+    $m.set-content($w2);
+    ok $m.content === $w2, "content replaced";
+};
+
+subtest "on-close returns Supply" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    isa-ok $m.on-close, Supply, "on-close is a Supply";
+};
+
+subtest "close emits on Supply" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    my $closed = False;
+    $m.on-close.tap: -> $ { $closed = True };
+    $m.close;
+    sleep 0.05;
+    ok $closed, "close emits event";
+};
+
+subtest "focusable-descendants - no content" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    is $m.focusable-descendants.List.elems, 0, "no focusable descendants without content";
+};
+
+subtest "focusable-descendants - focusable content" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    $m.set-content(TestWidget.new(focusable => True));
+    is $m.focusable-descendants.List.elems, 1, "finds focusable content";
+};
+
+subtest "focusable-descendants - container content" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    my $c = TestContainer.new;
+    $c.add(TestWidget.new(focusable => True));
+    $c.add(TestWidget.new(focusable => True));
+    $m.set-content($c);
+    is $m.focusable-descendants.List.elems, 2, "finds focusable descendants in container content";
+};
+
+subtest "focusable-descendants - non-focusable content" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    $m.set-content(TestWidget.new);
+    is $m.focusable-descendants.List.elems, 0, "non-focusable content not included";
+};
+
+subtest "handle-event checks own keybinds" => {
+    plan 2;
+    my $m = Selkie::Widget::Modal.new;
+    $m.set-content(TestWidget.new);
+    my $called = False;
+    $m.on-key: 'esc', -> $ { $called = True };
+    my $ev = Selkie::Event.new(
+        id        => NCKEY_ESC,
+        modifiers => Set.new,
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    ok $m.handle-event($ev), "esc keybind consumed";
+    ok $called, "keybind handler fired";
+};
+
+subtest "handle-event passes through unmatched keys" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    $m.set-content(TestWidget.new);
+    my $ev = Selkie::Event.new(
+        id        => 'x'.ord,
+        char      => 'x',
+        modifiers => Set.new,
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    nok $m.handle-event($ev), "unmatched key passes through (focus trap is in App)";
+};
+
+subtest "unmatched key with no keybinds" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new;
+    $m.set-content(TestWidget.new);
+    my $ev = Selkie::Event.new(
+        id        => NCKEY_F00 + 12,
+        modifiers => Set.new,
+        input-type => NCTYPE_PRESS,
+        event-type => KeyEvent,
+    );
+    nok $m.handle-event($ev), "F12 passes through";
+};
+
+subtest "dim-background can be disabled" => {
+    plan 1;
+    my $m = Selkie::Widget::Modal.new(dim-background => False);
+    nok $m.dim-background, "dim background disabled";
+};

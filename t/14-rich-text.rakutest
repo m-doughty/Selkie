@@ -1,0 +1,243 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::RichText;
+use Selkie::Widget::RichText::Span;
+use Selkie::Style;
+
+plan 24;
+
+# Tests use the public API: logical-height, spans, set-content, resize.
+
+subtest "construction defaults" => {
+    plan 2;
+    my $rt = Selkie::Widget::RichText.new;
+    is $rt.spans.elems, 0, "no spans initially";
+    ok $rt.is-dirty, "starts dirty";
+};
+
+subtest "set-content stores spans" => {
+    plan 2;
+    my $rt = Selkie::Widget::RichText.new;
+    my @spans = (Selkie::Widget::RichText::Span.new(text => "hello"),);
+    $rt.set-content(@spans);
+    is $rt.spans.elems, 1, "one span stored";
+    is $rt.spans[0].text, "hello", "span text correct";
+};
+
+subtest "set-content marks dirty" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.clear-dirty;
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "x"),));
+    ok $rt.is-dirty, "dirty after set-content";
+};
+
+subtest "logical-height - single short span" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "hello"),));
+    is $rt.logical-height, 1, "short text = 1 line";
+};
+
+subtest "logical-height - empty content" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content(());
+    is $rt.logical-height, 1, "empty content = 1 line (blank)";
+};
+
+subtest "logical-height - multiple spans on one line" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "hello "),
+        Selkie::Widget::RichText::Span.new(text => "world"),
+    ));
+    is $rt.logical-height, 1, "two short spans = 1 line";
+};
+
+subtest "logical-height - span wraps at column boundary" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a" x 20),));
+    is $rt.logical-height, 2, "20 chars at width 10 = 2 lines";
+};
+
+subtest "logical-height - exact fit" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a" x 10),));
+    is $rt.logical-height, 1, "10 chars at width 10 = 1 line";
+};
+
+subtest "logical-height - wrap at 3 lines" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a" x 25),));
+    is $rt.logical-height, 3, "25 chars at width 10 = 3 lines";
+};
+
+subtest "logical-height - newline in span" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "line one\nline two"),));
+    is $rt.logical-height, 2, "newline creates 2 lines";
+};
+
+subtest "logical-height - multiple newlines" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a\nb\nc"),));
+    is $rt.logical-height, 3, "two newlines = 3 lines";
+};
+
+subtest "logical-height - newline at end" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "hello\n"),));
+    is $rt.logical-height, 2, "trailing newline adds empty line";
+};
+
+subtest "span splits across wrap boundary" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 5);
+    # Two spans: "abc" + "defgh" = "abcdefgh" at width 5
+    # Should wrap: "abcde" / "fgh"
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "abc"),
+        Selkie::Widget::RichText::Span.new(text => "defgh"),
+    ));
+    is $rt.logical-height, 2, "spans split across wrap boundary";
+};
+
+subtest "multiple spans wrap correctly" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    # "hello " (6) + "beautiful " (10) + "world" (5) = 21 chars at width 10
+    # Line 1: "hello beau" (10)
+    # Line 2: "tiful worl" (10)
+    # Line 3: "d" (1)
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "hello "),
+        Selkie::Widget::RichText::Span.new(text => "beautiful "),
+        Selkie::Widget::RichText::Span.new(text => "world"),
+    ));
+    is $rt.logical-height, 3, "21 chars across 3 spans at width 10 = 3 lines";
+};
+
+subtest "styled spans preserved through wrap" => {
+    plan 3;
+    my $red = Selkie::Style.new(fg => 0xFF0000);
+    my $blue = Selkie::Style.new(fg => 0x0000FF);
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "red text", style => $red),
+        Selkie::Widget::RichText::Span.new(text => " blue text", style => $blue),
+    ));
+    is $rt.logical-height, 1, "fits on one line";
+    is $rt.spans[0].style.fg, 0xFF0000, "first span style preserved";
+    is $rt.spans[1].style.fg, 0x0000FF, "second span style preserved";
+};
+
+subtest "empty span is handled" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => ""),
+        Selkie::Widget::RichText::Span.new(text => "hello"),
+    ));
+    is $rt.logical-height, 1, "empty span doesn't add lines";
+};
+
+subtest "resize triggers rewrap" => {
+    plan 2;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 20);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a" x 20),));
+    is $rt.logical-height, 1, "20 chars at width 20 = 1 line";
+    $rt.resize(10, 10);
+    is $rt.logical-height, 2, "after resize to 10 = 2 lines";
+};
+
+subtest "resize height only does not rewrap" => {
+    plan 2;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "a" x 20),));
+    is $rt.logical-height, 2, "2 lines initially";
+    $rt.resize(20, 10);
+    is $rt.logical-height, 2, "still 2 lines after height-only change";
+};
+
+subtest "newline between spans" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "first"),
+        Selkie::Widget::RichText::Span.new(text => "\n"),
+        Selkie::Widget::RichText::Span.new(text => "second"),
+    ));
+    is $rt.logical-height, 2, "newline span separates lines";
+};
+
+subtest "mixed newlines and wrapping" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 10);
+    # "hello\n" + "a" x 15
+    # Line 1: "hello" (newline)
+    # Line 2: "aaaaaaaaaa" (10 chars, wraps)
+    # Line 3: "aaaaa" (5 chars)
+    $rt.set-content((
+        Selkie::Widget::RichText::Span.new(text => "hello\n"),
+        Selkie::Widget::RichText::Span.new(text => "a" x 15),
+    ));
+    is $rt.logical-height, 3, "newline + wrapping combined";
+};
+
+subtest "unicode text" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "Caf\x[E9] \x[2603] \x[1F600]"),));
+    is $rt.logical-height, 1, "unicode characters handled";
+};
+
+subtest "single span with only newline" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "\n"),));
+    is $rt.logical-height, 2, "bare newline = 2 lines (empty + empty)";
+};
+
+subtest "CRLF line endings" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "Hello\r\n\r\nWorld"),));
+    is $rt.logical-height, 3, "CRLF double newline = 3 lines";
+};
+
+subtest "CRLF single line break" => {
+    plan 1;
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 80);
+    $rt.set-content((Selkie::Widget::RichText::Span.new(text => "Line one\r\nLine two"),));
+    is $rt.logical-height, 2, "CRLF single newline = 2 lines";
+};
