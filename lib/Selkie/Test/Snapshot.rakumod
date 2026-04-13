@@ -249,10 +249,11 @@ sub ensure-nc() {
     # restore it on process exit as a belt-and-suspenders layer in
     # case notcurses_stop misses something.
     if '/dev/tty'.IO.e {
-        my $proc = run 'stty', '-g', :in('/dev/tty'), :out, :err;
-        my $g = $proc.out.slurp(:close);
-        $proc.err.slurp(:close);
-        $saved-tty-state = $g.chomp if $proc.exitcode == 0 && $g.chars > 0;
+        # Shell redirect from /dev/tty so stty operates on the real
+        # terminal. Raku's run doesn't interpret :in(Str) as a path
+        # redirect — use shell instead. qx{...} captures stdout.
+        my $g = try qx{stty -g < /dev/tty 2>/dev/null} // '';
+        $saved-tty-state = $g.chomp if $g.chars > 0;
     }
 
     # Give notcurses its own /dev/null FILE* to write into, so its
@@ -308,8 +309,7 @@ END {
     # notcurses_stop missed anything or didn't run (init failed
     # before $nc-shared was assigned). Best-effort — errors swallowed.
     if $saved-tty-state && '/dev/tty'.IO.e {
-        try run 'stty', $saved-tty-state,
-            :in('/dev/tty'), :out, :err;
+        try shell "stty '$saved-tty-state' < /dev/tty 2>/dev/null";
     }
 }
 

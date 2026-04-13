@@ -270,6 +270,26 @@ submethod TWEAK() {
     $!nc = notcurses_init($opts, Pointer);
     die "Failed to initialize notcurses" without $!nc;
 
+    # Disable IXON / IXOFF flow control so Ctrl+Q / Ctrl+S reach the
+    # application as keystrokes instead of being eaten by the tty
+    # driver as XON / XOFF. notcurses's cbreak mode clears ECHO /
+    # ICANON / ICRNL but leaves IXON set — which means on macOS
+    # Terminal.app (and other terminals with default IXON on) our
+    # Ctrl+Q quit keybind silently doesn't fire. Kitty has IXON off
+    # by default so it worked there.
+    #
+    # notcurses_stop on shutdown restores the original termios state
+    # (captured before notcurses touched it), so IXON comes back on
+    # automatically when the app exits. No separate restore needed
+    # on our side.
+    if '/dev/tty'.IO.e {
+        # Shell redirect from /dev/tty so stty operates on the real
+        # terminal regardless of where our own stdin points (might
+        # be a pipe under prove6 / mi6 / tests). 2>/dev/null
+        # swallows any error output.
+        try shell 'stty -ixon -ixoff < /dev/tty 2>/dev/null';
+    }
+
     notcurses_mice_enable($!nc, NCMICE_BUTTON_EVENT +| NCMICE_DRAG_EVENT);
 
     $!stdplane = notcurses_stdplane($!nc);

@@ -44,6 +44,7 @@
     "Selkie::Widget::ListView": "lib/Selkie/Widget/ListView.rakumod",
     "Selkie::Widget::Modal": "lib/Selkie/Widget/Modal.rakumod",
     "Selkie::Widget::MultiLineInput": "lib/Selkie/Widget/MultiLineInput.rakumod",
+    "Selkie::Widget::PasswordStrength": "lib/Selkie/Widget/PasswordStrength.rakumod",
     "Selkie::Widget::ProgressBar": "lib/Selkie/Widget/ProgressBar.rakumod",
     "Selkie::Widget::RadioGroup": "lib/Selkie/Widget/RadioGroup.rakumod",
     "Selkie::Widget::RichText": "lib/Selkie/Widget/RichText.rakumod",
@@ -70,5 +71,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.2.2"
+  "version": "0.2.3"
 }

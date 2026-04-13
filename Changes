@@ -2,6 +2,22 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.2.3  2026-04-13T12:31:11+01:00
+    - App: disable IXON / IXOFF flow control after notcurses_init so
+      Ctrl+Q (XON) and Ctrl+S (XOFF) reach the application as
+      keystrokes instead of being eaten by the tty driver. notcurses's
+      cbreak mode clears ECHO / ICANON / ICRNL but leaves IXON set,
+      so on macOS Terminal.app the built-in Ctrl+Q quit keybind
+      silently didn't work (Kitty disables IXON by default so it
+      worked there). notcurses_stop restores the original termios at
+      shutdown, so flow-control comes back on automatically when the
+      app exits.
+    - Widget::PasswordStrength: live strength meter bound to a
+      TextInput via its `on-change` Supply. Five levels (weak → fair
+      → good → strong → very strong), colored bar + label, simple
+      length-plus-character-class heuristic. 12-subtest unit coverage
+      on the scoring; snapshot coverage at each level.
+
 0.2.2  2026-04-13T11:59:55+01:00
     - Test::Snapshot: terminal restore on END via notcurses_stop.
       Previously skipped, leaving Kitty keyboard protocol pushed and
