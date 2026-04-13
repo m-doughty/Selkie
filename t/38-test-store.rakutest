@@ -1,0 +1,67 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Store;
+use Selkie::Store;
+
+plan 7;
+
+subtest "mock-store returns a fresh store" => {
+    plan 2;
+    my $s = mock-store;
+    isa-ok $s, Selkie::Store, 'is a Store';
+    nok $s.get-in('anything').defined, 'empty state';
+};
+
+subtest "mock-store with initial state" => {
+    plan 3;
+    my $s = mock-store(state => {
+        count => 5,
+        user => { name => 'Alice' },
+    });
+    is state-at($s, 'count'), 5, 'top-level value';
+    is state-at($s, 'user', 'name'), 'Alice', 'nested value';
+    is-deeply state-at($s, 'user'), { name => 'Alice' }, 'nested hash intact';
+};
+
+subtest "dispatch-and-tick fires handler" => {
+    plan 1;
+    my $s = mock-store;
+    $s.register-handler('inc', -> $st, % {
+        (db => { count => ($st.get-in('count') // 0) + 1 },);
+    });
+    dispatch-and-tick($s, 'inc');
+    is state-at($s, 'count'), 1, 'handler ran';
+};
+
+subtest "dispatch-and-tick passes payload" => {
+    plan 1;
+    my $s = mock-store;
+    $s.register-handler('user/set', -> $st, %ev {
+        (db => { user => { name => %ev<name> } },);
+    });
+    dispatch-and-tick($s, 'user/set', name => 'Bob');
+    is state-at($s, 'user', 'name'), 'Bob', 'payload delivered';
+};
+
+subtest "state-at returns Nil for missing path" => {
+    plan 1;
+    my $s = mock-store;
+    nok state-at($s, 'no', 'such', 'path').defined, 'missing path is Nil';
+};
+
+subtest "chained dispatches accumulate" => {
+    plan 1;
+    my $s = mock-store;
+    $s.register-handler('inc', -> $st, % {
+        (db => { count => ($st.get-in('count') // 0) + 1 },);
+    });
+    dispatch-and-tick($s, 'inc') for ^5;
+    is state-at($s, 'count'), 5, 'five increments';
+};
+
+subtest "state-at splats multi-segment path" => {
+    plan 1;
+    my $s = mock-store(state => { a => { b => { c => 42 } } });
+    is state-at($s, 'a', 'b', 'c'), 42, 'deep splat works';
+};

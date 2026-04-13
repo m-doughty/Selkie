@@ -1,3 +1,64 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::Image - Display an image via notcurses visual system
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Image;
+use Selkie::Sizing;
+
+my $img = Selkie::Widget::Image.new(
+    file   => 'avatar.png',
+    sizing => Sizing.fixed(20),
+);
+
+# Change later
+$img.set-file('new-avatar.png');
+$img.clear-image;
+
+=end code
+
+=head1 DESCRIPTION
+
+Loads and renders an image file onto its plane. If the terminal supports
+pixel graphics (Kitty, iTerm2, WezTerm, Ghostty, a few others),
+full-resolution pixels are rendered. Otherwise notcurses falls back to
+Unicode block / quadrant / braille art.
+
+The image is centred in the widget's area and scaled to fit.
+
+=head2 Pixel bleed
+
+B<Notcurses child planes are not clipped to parent bounds.> Pixel images
+can spill past the widget's logical rectangle into neighbouring cells.
+The usual workaround is to wrap the image in L<Selkie::Widget::Border>,
+which redraws its edges after content to cover bleed.
+
+=head1 EXAMPLES
+
+=head2 Preview in a Split
+
+=begin code :lang<raku>
+
+my $preview = Selkie::Widget::Image.new(sizing => Sizing.flex);
+my $border  = Selkie::Widget::Border.new(title => 'Preview', sizing => Sizing.flex);
+$border.set-content($preview);
+
+# When user selects a new file:
+$preview.set-file($selected-path);
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Border> — wrap to contain pixel bleed
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Visual;
@@ -12,10 +73,15 @@ has NcvisualHandle $!visual;
 has Bool $!loaded = False;
 has NcplaneHandle $!blit-plane;
 
+#| Height in rows. Same as C<self.rows>; provided for the ScrollView
+#| contract.
 method logical-height(--> UInt) { self.rows }
 
+#| The currently displayed file path, or C<Nil>.
 method file(--> Str) { $!file }
 
+#|( Swap the displayed image. No-op if the same path is already loaded.
+    Triggers a re-blit on the next render. )
 method set-file(Str $path) {
     return if $path eq ($!file // '');
     self!unload;
@@ -23,6 +89,7 @@ method set-file(Str $path) {
     self.mark-dirty;
 }
 
+#| Unload the current image and clear the widget.
 method clear-image() {
     self!unload;
     $!file = Str;
@@ -32,7 +99,6 @@ method clear-image() {
 method !load() {
     return if $!loaded;
     return without $!file;
-
     $!visual = ncvisual_from_file($!file);
     $!loaded = $!visual.defined;
 }
@@ -71,12 +137,10 @@ method render() {
 
     my $nc = self!notcurses-handle;
 
-    # Choose blitter: pixel first, then best available
     my $pixel-ok = notcurses_check_pixel_support($nc);
     my $blitter = $pixel-ok > 0 ?? NCBLIT_PIXEL
                                 !! ncvisual_media_defblitter($nc, NCSCALE_SCALE);
 
-    # Query rendered geometry to calculate centering offset
     my $geom = Ncvgeom.new;
     my $probe = NcvisualOptions.new(scaling => NCSCALE_SCALE, :$blitter);
     $probe.set-plane(self.plane);
@@ -87,7 +151,6 @@ method render() {
     my UInt $offset-y = ($img-rows < self.rows) ?? (self.rows - $img-rows) div 2 !! 0;
     my UInt $offset-x = ($img-cols < self.cols) ?? (self.cols - $img-cols) div 2 !! 0;
 
-    # Create a child plane at the centered position for the blit
     my $opts = NcplaneOptions.new(
         y => $offset-y, x => $offset-x,
         rows => $img-rows max 1, cols => $img-cols max 1,
@@ -99,7 +162,6 @@ method render() {
 
     my $result = ncvisual_blit($nc, $!visual, $vopts);
 
-    # Fall back if pixel blit failed
     if !$result.defined && $blitter == NCBLIT_PIXEL {
         $blitter = ncvisual_media_defblitter($nc, NCSCALE_SCALE);
         $vopts = NcvisualOptions.new(scaling => NCSCALE_SCALE, :$blitter);

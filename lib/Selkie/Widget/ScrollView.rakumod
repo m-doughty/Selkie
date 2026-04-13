@@ -1,3 +1,49 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::ScrollView - Virtual-scrolling container for long content
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::ScrollView;
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+my $scroll = Selkie::Widget::ScrollView.new(sizing => Sizing.flex);
+my $body = Selkie::Widget::Text.new(
+    text   => slurp('long-document.txt'),
+    sizing => Sizing.flex,
+);
+$scroll.add($body);
+
+=end code
+
+=head1 DESCRIPTION
+
+A container that renders only the rows of its children currently in
+view. Children report their C<logical-height>; ScrollView uses this to
+compute scrollable extent and render the correct slice via
+C<render-region>.
+
+Arrow keys, PageUp/PageDown, Home/End, and the mouse wheel scroll when
+the widget is focused. A scrollbar appears on the right edge when
+content is taller than the viewport.
+
+Children should implement C<logical-height> and, ideally,
+C<render-region(offset, height)>. C<Text>, C<RichText>, and
+C<TextStream> do. Plain widgets that don't will be rendered at full
+height — fine for short children.
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::TextStream> — scrollable log with its own ring buffer
+=item L<Selkie::Widget::CardList> — interactive variable-height list
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;

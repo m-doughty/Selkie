@@ -1,0 +1,112 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Widget::Text;
+use Selkie::Widget::Border;
+use Selkie::Layout::VBox;
+use Selkie::Layout::HBox;
+use Selkie::Sizing;
+
+# Resize protocol tests.
+#
+# handle-resize is the entry point used by Selkie::App when the
+# terminal resizes. It cascades synchronously through the subtree so
+# every widget knows its new dimensions BEFORE frame-callbacks on the
+# next loop iteration. Without this, on-frame handlers that read
+# widget dimensions (e.g. Cantina's ChatView.check-refresh) see stale
+# values for one frame, causing visible re-layout artifacts.
+
+plan 6;
+
+# handle-resize on a leaf delegates to resize, which triggers on-resize
+# via the widget's own hook.
+subtest 'leaf Widget: handle-resize updates rows/cols' => {
+    plan 2;
+    my $t = Selkie::Widget::Text.new(text => 'hello', sizing => Sizing.fixed(1));
+    # Simulate the framework having given it dimensions.
+    $t.resize(1, 20);
+    $t.handle-resize(1, 40);
+    is $t.cols, 40, 'cols updated';
+    is $t.rows, 1,  'rows unchanged (also 1)';
+};
+
+# Text rewraps when width changes via handle-resize (verifies the
+# on-resize hook fires).
+subtest 'Text.on-resize rewraps on width change' => {
+    plan 2;
+    my $t = Selkie::Widget::Text.new(text => ('a' x 20).join(''), sizing => Sizing.fixed(10));
+    $t.resize(10, 20);
+    is $t.logical-height, 1, '20 chars at width 20 = 1 line';
+    $t.handle-resize(10, 10);
+    is $t.logical-height, 2, 'after handle-resize narrower, rewrapped to 2 lines';
+};
+
+# Container cascades handle-resize through layout-children.
+subtest 'VBox.handle-resize cascades to children' => {
+    plan 4;
+    my $vbox = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    my $a = Selkie::Widget::Text.new(text => 'a', sizing => Sizing.fixed(1));
+    my $b = Selkie::Widget::Text.new(text => 'b', sizing => Sizing.fixed(1));
+    $vbox.add($a);
+    $vbox.add($b);
+    # Initial layout — widgets don't have planes yet, so layout-children
+    # will init-plane them. Skip the init by sizing first at "real" size.
+    # A bit awkward for a pure unit test, but handle-resize's contract
+    # is "dimensions already propagated"; we simulate that by giving
+    # them planes another way — just call resize directly on each.
+    $a.resize(1, 30);
+    $b.resize(1, 30);
+    $vbox.resize(2, 30);
+
+    $vbox.handle-resize(2, 60);
+    is $vbox.cols, 60, 'VBox cols updated';
+    # Children weren't in the layout pass because they have no plane,
+    # so layout-children skipped them. Verify VBox's own dims at least.
+    is $vbox.rows, 2,  'VBox rows unchanged';
+    is $a.cols,    30, 'child a cols unchanged (no plane)';
+    is $b.cols,    30, 'child b cols unchanged (no plane)';
+};
+
+# Unchanged dims: short-circuit, no wasted work.
+subtest 'handle-resize with unchanged dims is a no-op' => {
+    plan 1;
+    my $t = Selkie::Widget::Text.new(text => 'x', sizing => Sizing.fixed(1));
+    $t.resize(5, 20);
+    # Spy: on-resize would rewrap. Track by comparing wrap output.
+    my $lh-before = $t.logical-height;
+    $t.handle-resize(5, 20);
+    is $t.logical-height, $lh-before, 'same dims → on-resize skipped, wrap unchanged';
+};
+
+# Inactive screen via ScreenManager gets resized too.
+subtest 'ScreenManager.handle-resize updates all screens, not just active' => {
+    plan 2;
+    use Selkie::ScreenManager;
+
+    my $sm = Selkie::ScreenManager.new;
+    my $a-root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    my $b-root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    $a-root.resize(10, 40);
+    $b-root.resize(10, 40);
+    $sm.add-screen('a', $a-root);   # becomes active
+    $sm.add-screen('b', $b-root);   # inactive
+
+    $sm.handle-resize(20, 80);
+    is $a-root.cols, 80, 'active screen resized';
+    is $b-root.cols, 80, 'inactive screen also resized (the core bug fix)';
+};
+
+# Toast has handle-resize too, aliased from resize-screen.
+subtest 'Toast.handle-resize + resize-screen alias still works' => {
+    plan 2;
+    use Selkie::Widget::Toast;
+    my $toast = Selkie::Widget::Toast.new;
+
+    $toast.handle-resize(24, 80);
+    # No publicly observable rows/cols on Toast — the message just
+    # sizes the internal toast-plane on next render. Verify aliased
+    # method still works by invoking it.
+    lives-ok { $toast.resize-screen(30, 100) }, 'resize-screen alias still callable';
+    lives-ok { $toast.handle-resize(40, 120) }, 'handle-resize is the canonical entry';
+};

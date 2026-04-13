@@ -1,3 +1,77 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::RichText - Styled text built from C<Span> fragments
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::RichText;
+use Selkie::Widget::RichText::Span;
+use Selkie::Style;
+use Selkie::Sizing;
+
+my $rich = Selkie::Widget::RichText.new(sizing => Sizing.flex);
+$rich.set-content([
+    Selkie::Widget::RichText::Span.new(
+        text  => 'alice: ',
+        style => Selkie::Style.new(fg => 0x7AA2F7, bold => True),
+    ),
+    Selkie::Widget::RichText::Span.new(
+        text  => 'Hey, how are you?',
+        style => Selkie::Style.new(fg => 0xEEEEEE),
+    ),
+]);
+
+=end code
+
+=head1 DESCRIPTION
+
+Like L<Selkie::Widget::Text>, but each fragment can have its own style.
+Word-wraps across span boundaries while preserving styles — if a span
+is split across two lines, both halves render with that span's style.
+
+Supports partial rendering via C<render-region>, so it composes
+correctly inside C<Selkie::Widget::ScrollView>. The C<truncated-top>
+and C<truncated-bottom> flags insert "…" ellipsis lines when content
+would overflow — useful for showing a preview snippet.
+
+=head1 EXAMPLES
+
+=head2 Colour-coded message
+
+=begin code :lang<raku>
+
+my $red = Selkie::Style.new(fg => 0xFF5555, bold => True);
+$rich.set-content([
+    Selkie::Widget::RichText::Span.new(text => 'Error: ', style => $red),
+    Selkie::Widget::RichText::Span.new(text => 'file not found'),
+]);
+
+=end code
+
+=head2 Truncated preview
+
+=begin code :lang<raku>
+
+my $preview = Selkie::Widget::RichText.new(
+    sizing           => Sizing.fixed(3),
+    truncated-bottom => True,
+);
+# Content longer than 3 lines shows the first 2 lines + '…'
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::RichText::Span> — the fragment value class
+=item L<Selkie::Widget::Text> — simpler, single-style variant
+=item L<Selkie::Widget::ScrollView> — for scrolling long rich text
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -11,18 +85,28 @@ use Selkie::Widget::RichText::Span;
 unit class Selkie::Widget::RichText does Selkie::Widget;
 
 has Selkie::Widget::RichText::Span @!spans;
-has @!wrapped-lines;  # Array of Array of Span — each line is a list of span fragments
+has @!wrapped-lines;
+
+#| When set to True, overflow at the bottom is shown as a "…" line in
+#| place of the last visible wrapped line.
 has Bool $.truncated-bottom is rw = False;
+
+#| When True, overflow at the top is shown as a "…" line in place of
+#| the first visible wrapped line (displays the most recent content).
 has Bool $.truncated-top is rw = False;
 
+#|( Replace the displayed content with the given list of Spans. The
+    wrap cache is invalidated; the next render rebuilds it. )
 method set-content(@spans) {
     @!spans = @spans;
-    @!wrapped-lines = ();  # invalidate — rewrap deferred to render/logical-height
+    @!wrapped-lines = ();
     self.mark-dirty;
 }
 
+#| The current spans as a List.
 method spans(--> List) { @!spans.List }
 
+#| Number of wrapped lines at the current width. Used by ScrollView.
 method logical-height(--> UInt) {
     self!rewrap unless @!wrapped-lines;
     @!wrapped-lines.elems;
@@ -184,10 +268,8 @@ method !wrap-line(@line-spans, UInt $width) {
     @!wrapped-lines.push(@current-row);
 }
 
-method resize(UInt $rows, UInt $cols) {
-    return if $rows == self.rows && $cols == self.cols;
-    my $old-cols = self.cols;
-    self!apply-resize($rows, $cols);
-    self.mark-dirty;
-    self!rewrap if $cols != $old-cols;
+method !on-resize() {
+    # Wrapping is column-sensitive; recompute the wrap cache so the
+    # next render lays spans out against the new width.
+    self!rewrap;
 }

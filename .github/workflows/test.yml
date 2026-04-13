@@ -82,7 +82,46 @@ jobs:
       - name: Run tests
         run: prove6 -I. t
 
-  # Windows CI is disabled — Selkie depends on Notcurses::Native, which
-  # cannot currently build on Windows: notcurses 3.0.16 has unguarded
-  # struct termios references in termdesc.c that fail with current MSYS2
-  # GCC. Re-enable once upstream patches Windows support.
+  test-windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: 'msys2 {0}'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rakudo first so msys2 (below) can inherit PATH including raku/zef.
+      - uses: Raku/setup-raku@v1
+        with:
+          raku-version: 'latest'
+
+      # MSYS2 UCRT64 — native Windows DLLs via mingw-w64 GCC. Upstream
+      # notcurses only supports Windows through this toolchain. We use
+      # ffmpeg for multimedia — MSYS2's current OIIO has ABI drift vs
+      # notcurses 3.0.17's oiio.cpp, and the ffmpeg path is the same
+      # mature one used on Linux/macOS.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libdeflate
+            mingw-w64-ucrt-x86_64-libunistring
+            mingw-w64-ucrt-x86_64-ncurses
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-toolchain
+
+      - name: Install Raku dependencies
+        run: zef install --/test --test-depends --deps-only .
+
+      # Notcurses's own test harness doesn't run on Windows (upstream
+      # limitation — notcurses-tester is Unix-only). Selkie tests that
+      # touch notcurses fail under MSYS2 for related reasons. For now
+      # the Windows job verifies the module installs and loads; Linux
+      # and macOS are the test-run matrix.
+      - name: Verify install
+        run: zef install --/test .

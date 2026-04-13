@@ -1,3 +1,72 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::Select - Compact dropdown picker
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Select;
+use Selkie::Sizing;
+
+my $select = Selkie::Widget::Select.new(
+    sizing      => Sizing.fixed(1),
+    placeholder => 'Choose a model',
+    max-visible => 8,
+);
+$select.set-items(<gpt-4 claude-opus local-model>);
+$select.on-change.tap: -> UInt $idx {
+    say $select.selected-value;
+};
+
+=end code
+
+=head1 DESCRIPTION
+
+A single-line control showing the currently selected value with a
+C<▼> marker. C<Enter> or C<Space> opens a dropdown list as a child
+plane rendered on top of the surrounding layout. Esc cancels; Enter
+commits the highlighted option.
+
+While open, the Select acts as a local focus trap — arrow keys and
+Enter navigate the dropdown, not the surrounding app. Losing focus
+auto-closes the dropdown.
+
+Use C<RadioGroup> instead when you want the options always visible;
+use C<Select> when you want compact real estate.
+
+=head1 EXAMPLES
+
+=head2 Inside a form
+
+=begin code :lang<raku>
+
+my $theme-select = Selkie::Widget::Select.new(
+    sizing => Sizing.fixed(1),
+);
+$theme-select.set-items(<Auto Light Dark>);
+
+$app.store.subscribe-with-callback(
+    'sync-theme-select',
+    -> $s { ($s.get-in('settings', 'theme') // 0).Int },
+    -> Int $v { $theme-select.select-index($v) },
+    $theme-select,
+);
+$theme-select.on-change.tap: -> $v {
+    $app.store.dispatch('settings/set', field => 'theme', value => $v);
+};
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::RadioGroup> — always-visible equivalent
+=item L<Selkie::Widget::ListView> — full-height scrollable list
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -32,11 +101,23 @@ method is-open(--> Bool) { $!open }
 method on-change(--> Supply) { $!change-supplier.Supply }
 
 method set-items(@new-items) {
+    # Preserve the currently-selected value by label if it's still present.
+    # Otherwise clamp to bounds.
+    my Str $prev = @!items ?? (@!items[$!selected] // Str) !! Str;
+
     @!items = @new-items;
-    $!selected = 0;
-    $!cursor = 0;
     $!scroll-offset = 0;
     self!close-dropdown;
+
+    if @!items.elems == 0 {
+        $!selected = 0;
+        $!cursor = 0;
+    } else {
+        my $found = $prev.defined ?? @!items.first($prev, :k) !! Nil;
+        $!selected = $found // ($!selected min (@!items.elems - 1));
+        $!cursor = $!selected;
+    }
+
     self.mark-dirty;
 }
 

@@ -1,0 +1,8 @@
+use Test;
+use lib 'lib';
+use Selkie::Test::Snapshot::Harness;
+
+# Thin wrapper — all logic lives in the harness module so apps using
+# Selkie can drop-in the same pattern without copy-paste.
+
+run-snapshots;

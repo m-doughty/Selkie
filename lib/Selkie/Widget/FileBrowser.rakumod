@@ -1,3 +1,76 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::FileBrowser - Shell-style file picker modal
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::FileBrowser;
+
+my $browser = Selkie::Widget::FileBrowser.new;
+my $modal = $browser.build(
+    extensions    => <png jpg json>,
+    show-dotfiles => False,
+    width-ratio   => 0.7,
+    height-ratio  => 0.7,
+);
+
+$browser.on-select.tap: -> Str $path {
+    $app.close-modal;
+    $app.store.dispatch('file/open', :$path);
+};
+
+$app.show-modal($modal);
+$app.focus($browser.focusable-widget);
+
+=end code
+
+=head1 DESCRIPTION
+
+A modal file picker built on top of C<Modal>, C<ListView>, and
+C<TextInput>. Behaves like a shell prompt:
+
+=item The path input shows the current directory + filename prefix
+=item Typing filters the list below to matching entries
+=item C<Tab> autocompletes to the longest common prefix
+=item C<Enter> on a directory descends into it; on a file selects it
+=item C<Up>/C<Down> navigate the list
+=item C<Esc> cancels without selecting
+
+Extension filtering is optional — pass C<extensions => ()> or omit to
+show everything. Hidden files (C<.name>) are excluded unless
+C<show-dotfiles> is True.
+
+=head1 EXAMPLES
+
+=head2 Import dialog
+
+=begin code :lang<raku>
+
+sub show-import-dialog() {
+    my $browser = Selkie::Widget::FileBrowser.new;
+    my $modal = $browser.build(extensions => <png json>);
+
+    $browser.on-select.tap: -> Str $path {
+        $app.close-modal;
+        import-character($path);
+    };
+
+    $app.show-modal($modal);
+    $app.focus($browser.focusable-widget);
+}
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Modal> — underlying dialog
+
+=end pod
+
 use Selkie::Widget::Modal;
 use Selkie::Widget::ListView;
 use Selkie::Widget::TextInput;
@@ -5,12 +78,6 @@ use Selkie::Widget::Text;
 use Selkie::Layout::VBox;
 use Selkie::Sizing;
 use Selkie::Style;
-
-# Shell-style file browser modal.
-#
-# Text input shows full path. Part after last / is the filter.
-# Type to filter. Tab to autocomplete. Enter to select/navigate.
-# Up/Down navigate the list. Esc closes.
 
 unit class Selkie::Widget::FileBrowser;
 

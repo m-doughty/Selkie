@@ -1,0 +1,77 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Snapshot;
+use Selkie::Test::Keys;
+use Selkie::Widget::Text;
+use Selkie::Widget::Border;
+use Selkie::Widget::ListView;
+use Selkie::Layout::VBox;
+use Selkie::Sizing;
+use Selkie::Style;
+
+# Use a temp directory so the tests don't leave files on disk.
+my $tmp-dir = $*TMPDIR.add("selkie-snap-{$*PID}").Str;
+LEAVE { shell "rm -rf $tmp-dir" if $tmp-dir.IO.d }
+
+plan 5;
+
+subtest "render-to-string of a simple Text widget" => {
+    plan 2;
+    my $text = Selkie::Widget::Text.new(
+        text   => 'hello',
+        sizing => Sizing.fixed(1),
+    );
+    my $out = render-to-string($text, rows => 1, cols => 20);
+    isa-ok $out, Str, 'returns a string';
+    ok $out.starts-with('hello'), 'content rendered';
+};
+
+subtest "render-to-string trims trailing whitespace per line" => {
+    plan 1;
+    my $text = Selkie::Widget::Text.new(text => 'hi', sizing => Sizing.fixed(1));
+    my $out = render-to-string($text, rows => 1, cols => 40);
+    is $out, 'hi', 'trailing spaces stripped';
+};
+
+subtest "render-to-string drops trailing blank rows" => {
+    plan 1;
+    my $text = Selkie::Widget::Text.new(text => 'top', sizing => Sizing.fixed(3));
+    my $out = render-to-string($text, rows => 5, cols => 10);
+    # Text fills row 0 with 'top', rows 1-4 are blank. Output should be 'top'
+    # with trailing blanks trimmed.
+    is $out, 'top', 'only non-blank row kept';
+};
+
+subtest "snapshot-ok creates file on first run" => {
+    plan 3;
+    my $text = Selkie::Widget::Text.new(text => 'hello', sizing => Sizing.fixed(1));
+    my $name = 'first-run';
+    snapshot-ok $text, $name, rows => 1, cols => 10, dir => $tmp-dir;
+
+    my $path = $tmp-dir.IO.add("$name.snap");
+    ok $path.e, 'snapshot file created';
+    is $path.slurp.chomp, 'hello', 'file contains rendered output';
+};
+
+subtest "snapshot-ok passes when content matches stored snapshot" => {
+    plan 2;
+    # Seed the snapshot first
+    my $text = Selkie::Widget::Text.new(text => 'stable', sizing => Sizing.fixed(1));
+    snapshot-ok $text, 'stable', rows => 1, cols => 10, dir => $tmp-dir;
+
+    # Second assertion should pass (matching)
+    my $text2 = Selkie::Widget::Text.new(text => 'stable', sizing => Sizing.fixed(1));
+    snapshot-ok $text2, 'stable', rows => 1, cols => 10, dir => $tmp-dir;
+};
+
+# This file tests Selkie::Test::Snapshot's helper behaviour (trimming,
+# file creation, match-on-second-run) using leaf widgets only — keeping
+# it strictly a unit test for the helper mechanics.
+#
+# Real widget-rendering regressions (Border, nested layouts, CardList,
+# etc.) live under xt/snapshots/*.raku and are driven by the
+# fork-per-scenario harness in xt/02-snapshots.rakutest. That harness
+# isolates each render in a subprocess, which both sidesteps the MoarVM
+# spesh bug on nested-widget readback and lets each scenario be
+# maintained as an independent plain-text golden file.

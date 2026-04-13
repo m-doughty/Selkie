@@ -1,0 +1,68 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Keys;
+use Selkie::Test::Focus;
+use Selkie::Widget::Button;
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+plan 5;
+
+subtest "with-focus sets and unsets focus" => {
+    plan 2;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    my $was-focused = False;
+    with-focus $btn, {
+        $was-focused = $btn.is-focused;
+    };
+    ok $was-focused, 'focused during block';
+    nok $btn.is-focused, 'unfocused after block';
+};
+
+subtest "with-focus enables focus-gated behaviour" => {
+    plan 2;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+
+    # Without focus, press-key returns False
+    nok press-key($btn, 'enter'), 'unfocused: not consumed';
+
+    # With focus, it is consumed
+    my $consumed;
+    with-focus $btn, {
+        $consumed = press-key($btn, 'enter');
+    };
+    ok $consumed, 'focused: consumed';
+};
+
+subtest "with-focus is exception-safe" => {
+    plan 1;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    {
+        my $caught = False;
+        try {
+            with-focus $btn, {
+                die 'block error';
+            };
+            CATCH { default { $caught = True } }
+        };
+        ok !$btn.is-focused, 'focus released after exception';
+    }
+};
+
+subtest "with-focus no-ops for widgets without set-focused" => {
+    plan 1;
+    # Text is not focusable, no set-focused method
+    my $text = Selkie::Widget::Text.new(text => 'hi', sizing => Sizing.fixed(1));
+    lives-ok {
+        with-focus $text, -> { };
+    }, 'no-op for non-focusable widget';
+};
+
+subtest "with-focus runs the block" => {
+    plan 1;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    my $ran = False;
+    with-focus $btn, { $ran = True };
+    ok $ran, 'block was executed';
+};

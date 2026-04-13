@@ -5,9 +5,7 @@ use Selkie::Widget::ListView;
 use Selkie::Event;
 use Notcurses::Native::Types;
 
-sub key-event(UInt :$id, Str :$char, Set :$modifiers = Set.new --> Selkie::Event) {
-    Selkie::Event.new(:$id, :$char, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
-}
+use Selkie::Test::Keys;
 
 plan 18;
 
@@ -27,14 +25,20 @@ subtest "set-items populates list" => {
     is $lv.items[1], 'bravo', "correct item at index 1";
 };
 
-subtest "set-items resets cursor" => {
-    plan 1;
+subtest "set-items preserves cursor by value" => {
+    plan 3;
     my $lv = Selkie::Widget::ListView.new;
     $lv.resize(10, 40);
     $lv.set-items(['a', 'b', 'c', 'd']);
-    $lv.select-index(3);
-    $lv.set-items(['x', 'y']);
-    is $lv.cursor, 0, "cursor reset after set-items";
+    $lv.select-index(2);   # 'c'
+    $lv.set-items(['x', 'c', 'y']);
+    is $lv.cursor, 1, "cursor follows 'c' to its new index";
+
+    $lv.set-items(['z']);  # 'c' no longer present, clamp
+    is $lv.cursor, 0, "clamps when previously-selected is gone";
+
+    $lv.set-items([]);
+    is $lv.cursor, 0, "resets to 0 when items are empty";
 };
 
 subtest "set-items marks dirty" => {

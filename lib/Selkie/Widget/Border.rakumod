@@ -1,3 +1,87 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::Border - Decorative frame around a single content widget
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Border;
+use Selkie::Sizing;
+
+my $border = Selkie::Widget::Border.new(
+    title  => 'Characters',
+    sizing => Sizing.fixed(20),
+);
+$border.set-content($avatar-list);
+
+=end code
+
+=head1 DESCRIPTION
+
+Draws a box around a single child widget. Auto-highlights when any
+descendant has focus (via a store subscription on C<ui.focused-widget>
+— it's the canonical example of the "widget reacts to store state"
+pattern).
+
+Requires at least 3x3 dimensions. Redraws its edges after content renders
+to cover pixel bleed from image blits — useful when wrapping an Image.
+
+=head2 Swapping content
+
+By default, C<set-content> destroys the outgoing widget. Pass
+C<:!destroy> to swap while keeping the old widget alive — useful for
+tab-style panes that cycle through persistent views:
+
+=begin code :lang<raku>
+
+$border.set-content($view-a);
+$border.set-content($view-b, :!destroy);    # $view-a survives
+$border.set-content($view-a, :!destroy);    # swap back, still intact
+
+=end code
+
+=head1 EXAMPLES
+
+=head2 Named panels
+
+=begin code :lang<raku>
+
+my $left = Selkie::Widget::Border.new(
+    title  => 'Characters',
+    sizing => Sizing.fixed(20),
+);
+$left.set-content($char-list);
+
+my $right = Selkie::Widget::Border.new(
+    title  => 'Chat',
+    sizing => Sizing.flex,
+);
+$right.set-content($chat-view);
+
+=end code
+
+=head2 Stacking borders
+
+Use C<hide-top-border> / C<hide-bottom-border> to share edges between
+adjacent panels:
+
+=begin code :lang<raku>
+
+$top-panel.hide-bottom-border    = True;
+$bottom-panel.hide-top-border    = True;
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Modal> — centered overlay; also has C<set-content(:!destroy)>
+=item L<Selkie::Theme> — C<border> / C<border-focused> slots control appearance
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -14,15 +98,28 @@ has Str $.title = '';
 has Bool $!has-focus = False;
 has Bool $.hide-top-border is rw = False;
 has Bool $.hide-bottom-border is rw = False;
-has Bool $!auto-focus-subscribed = False;
 
 method content(--> Selkie::Widget) { $!content }
 
-method set-content(Selkie::Widget $w) {
-    $!content.destroy if $!content;
+method set-content(Selkie::Widget $w, Bool :$destroy = True) {
+    # Destroying the outgoing content is the safe default — most callers
+    # won't reuse it. Pass :!destroy when swapping between widgets that
+    # you want to keep alive (e.g. a tab-style pane that cycles through
+    # several persistent views).
+    #
+    # In the non-destroy case we park the outgoing plane far off-screen
+    # so its last-rendered contents don't bleed through behind the new
+    # content. Widget state (plane, subscriptions, cursor positions) is
+    # preserved, and C<reposition> puts it back in place on the next
+    # install. Values > screen height are safe — notcurses tolerates
+    # out-of-bounds plane positions and simply clips them.
+    if $!content && $destroy {
+        $!content.destroy;
+    } elsif $!content && $!content.plane {
+        $!content.reposition(10_000, 0);
+    }
     $!content = $w;
     $w.parent = self;
-    # Propagate store to content
     $w.set-store(self.store) if self.store;
     self.mark-dirty;
 }
@@ -40,18 +137,13 @@ method set-has-focus(Bool $f) {
 
 method has-focus(--> Bool) { $!has-focus }
 
-# Auto-subscribe to focus state when store becomes available
+# Auto-subscribe to focus state when store becomes available. `once-*`
+# variants are idempotent — reparenting and repeated set-store calls
+# won't create duplicate subscriptions.
 method on-store-attached($store) {
-    self!setup-focus-subscription unless $!auto-focus-subscribed;
-}
-
-method !setup-focus-subscription() {
-    return without self.store;
-    $!auto-focus-subscribed = True;
-
     my $border = self;
-    self.subscribe-computed("border-focus-{self.WHICH}", -> $store {
-        my $focused = $store.get-in('ui', 'focused-widget');
+    self.once-subscribe-computed("border-focus-{self.WHICH}", -> $s {
+        my $focused = $s.get-in('ui', 'focused-widget');
         $focused.defined ?? $border!is-descendant($focused) !! False;
     });
 }
@@ -67,14 +159,28 @@ method !is-descendant(Selkie::Widget $widget --> Bool) {
     False;
 }
 
+method handle-resize(UInt $rows, UInt $cols) {
+    my $changed = $rows != self.rows || $cols != self.cols;
+    return unless $changed;
+    self.resize($rows, $cols);
+    self!on-resize;
+    # Cascade to wrapped content so its subtree also re-sizes now.
+    # Inner dims exclude the border frame.
+    if $!content {
+        my $inner-rows = ($rows - 2) max 0;
+        my $inner-cols = ($cols - 2) max 0;
+        $!content.handle-resize($inner-rows.UInt, $inner-cols.UInt);
+    }
+}
+
 method render() {
     return without self.plane;
 
-    # Update focus state from store if subscribed
-    if $!auto-focus-subscribed && self.store {
+    # Update focus state directly from the store on each render. Cheap and
+    # avoids stale state if the subscription-driven update hasn't landed yet.
+    if self.store {
         my $focused = self.store.get-in('ui', 'focused-widget');
-        my $should-focus = $focused.defined && self!is-descendant($focused);
-        $!has-focus = $should-focus;
+        $!has-focus = $focused.defined && self!is-descendant($focused);
     }
 
     my UInt $rows = self.rows;
@@ -126,7 +232,7 @@ method render() {
         if $inner-rows > 0 {
             if $!content.plane {
                 $!content.reposition($inner-top, 1);
-                $!content.resize($inner-rows, $inner-cols);
+                $!content.handle-resize($inner-rows, $inner-cols);
             } else {
                 $!content.init-plane(self.plane,
                     y => $inner-top, x => 1, rows => $inner-rows, cols => $inner-cols);

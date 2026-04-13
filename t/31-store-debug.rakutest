@@ -1,0 +1,80 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+plan 4;
+
+# Helper: capture log output to an IO::Handle backed by a string
+sub make-log-capture() {
+    my $path = $*TMPDIR.add("selkie-store-debug-{$*PID}-{now.Rat}.log").Str;
+    my $fh = open $path, :w;
+    ($fh, $path);
+}
+
+subtest "debug disabled by default" => {
+    plan 2;
+    my $store = Selkie::Store.new;
+    $store.register-handler('foo', -> $, % { () });
+    lives-ok { $store.dispatch('foo'); $store.tick }, "dispatch+tick runs";
+    pass "no log output expected (nothing to assert directly)";
+};
+
+subtest "enable-debug logs dispatches" => {
+    plan 2;
+    my ($fh, $path) = make-log-capture;
+    LEAVE { $fh.close; unlink $path if $path.IO.e }
+
+    my $store = Selkie::Store.new;
+    $store.enable-debug(log => $fh);
+    $store.register-handler('user/login', -> $, % { () });
+    $store.dispatch('user/login', name => 'alice');
+    $store.tick;
+    $fh.flush;
+
+    my $content = slurp $path;
+    ok $content ~~ /dispatch/, "log contains 'dispatch'";
+    ok $content ~~ /'user/login'/, "log contains event name";
+};
+
+subtest "logs returned effects" => {
+    plan 1;
+    my ($fh, $path) = make-log-capture;
+    LEAVE { $fh.close; unlink $path if $path.IO.e }
+
+    my $store = Selkie::Store.new;
+    $store.enable-debug(log => $fh);
+    $store.register-handler('inc', -> $st, % {
+        my $n = $st.get-in('count') // 0;
+        (db => { count => $n + 1 },);
+    });
+    $store.dispatch('inc');
+    $store.tick;
+    $fh.flush;
+
+    my $content = slurp $path;
+    ok $content ~~ /'→ db'/, "log contains effect arrow";
+};
+
+subtest "logs subscription fires" => {
+    plan 1;
+    my ($fh, $path) = make-log-capture;
+    LEAVE { $fh.close; unlink $path if $path.IO.e }
+
+    my $store = Selkie::Store.new;
+    $store.enable-debug(log => $fh);
+    $store.register-handler('set', -> $, %p { (db => { x => %p<v> },); });
+
+    # Need a widget to pair with the subscription (even if unused)
+    my $w = Selkie::Widget::Text.new(text => 'dummy', sizing => Sizing.fixed(1));
+    $store.subscribe('x-watcher', ['x'], $w);
+
+    $store.dispatch('set', v => 42);
+    $store.tick;
+    $fh.flush;
+
+    my $content = slurp $path;
+    ok $content ~~ /'sub[x-watcher] fired'/, "log contains subscription fire entry";
+};

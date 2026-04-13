@@ -1,0 +1,146 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::TabBar;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+use Selkie::Test::Keys;
+
+plan 13;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $t = Selkie::Widget::TabBar.new;
+    ok $t.focusable, "focusable by default";
+    is $t.active-index, 0, "active-index starts at 0";
+    nok $t.active-name.defined, "active-name undefined when empty";
+};
+
+subtest "add-tab adds tabs in order" => {
+    plan 3;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'Alpha');
+    $t.add-tab(name => 'b', label => 'Beta');
+    is $t.tab-names, ('a', 'b'), "names in order";
+    is $t.active-name, 'a', "first added is active";
+    ok $t.is-dirty, "dirty after add";
+};
+
+subtest "remove-tab drops and keeps active valid" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'Alpha');
+    $t.add-tab(name => 'b', label => 'Beta');
+    $t.add-tab(name => 'c', label => 'Gamma');
+    $t.select-by-name('c');
+    $t.remove-tab('c');
+    is $t.tab-names, ('a', 'b'), "tab removed";
+    is $t.active-name, 'b', "active falls back to valid index";
+};
+
+subtest "clear-tabs empties and resets" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.clear-tabs;
+    is $t.tab-names.elems, 0, "no tabs";
+    nok $t.active-name.defined, "no active name";
+};
+
+subtest "select-by-name activates" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    $t.select-by-name('b');
+    is $t.active-name, 'b', "b is active";
+    is $t.active-index, 1, "index 1";
+};
+
+subtest "select-by-name with unknown is no-op" => {
+    plan 1;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.select-by-name('nope');
+    is $t.active-name, 'a', "unchanged";
+};
+
+subtest "on-tab-selected emits on user change" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    my @emitted;
+    $t.on-tab-selected.tap: -> $n { @emitted.push($n) };
+    $t.select-by-name('b');
+    $t.select-by-name('a');
+    is @emitted[0], 'b', "first emit";
+    is @emitted[1], 'a', "second emit";
+};
+
+subtest "select-by-name to same does not emit" => {
+    plan 1;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    my $count = 0;
+    $t.on-tab-selected.tap: -> $ { $count++ };
+    $t.select-by-name('a');
+    is $count, 0, "no emit when already active";
+};
+
+subtest "set-active-name-silent does not emit" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    my $count = 0;
+    $t.on-tab-selected.tap: -> $ { $count++ };
+    $t.set-active-name-silent('b');
+    is $t.active-name, 'b', "active changed";
+    is $count, 0, "no emit";
+};
+
+subtest "right arrow moves active when focused" => {
+    plan 1;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    $t.set-focused(True);
+    $t.handle-event(key-event(id => NCKEY_RIGHT));
+    is $t.active-name, 'b', "moved right";
+};
+
+subtest "left arrow clamps at 0" => {
+    plan 1;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    $t.set-focused(True);
+    $t.handle-event(key-event(id => NCKEY_LEFT));
+    is $t.active-name, 'a', "stays on a";
+};
+
+subtest "home/end jump to ends" => {
+    plan 2;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.add-tab(name => 'b', label => 'B');
+    $t.add-tab(name => 'c', label => 'C');
+    $t.set-focused(True);
+    $t.handle-event(key-event(id => NCKEY_END));
+    is $t.active-name, 'c', "end → last";
+    $t.handle-event(key-event(id => NCKEY_HOME));
+    is $t.active-name, 'a', "home → first";
+};
+
+subtest "enter emits on active tab" => {
+    plan 1;
+    my $t = Selkie::Widget::TabBar.new;
+    $t.add-tab(name => 'a', label => 'A');
+    $t.set-focused(True);
+    my $got;
+    $t.on-tab-selected.tap: -> $n { $got = $n };
+    $t.handle-event(key-event(id => NCKEY_ENTER));
+    is $got, 'a', "Enter re-emits active";
+};

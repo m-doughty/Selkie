@@ -1,3 +1,100 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Layout::Split - Two-pane layout with a divider
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Layout::Split;
+use Selkie::Sizing;
+
+my $split = Selkie::Layout::Split.new(
+    orientation => 'horizontal',   # left | right
+    ratio       => 0.3,            # 30% | 70%
+    sizing      => Sizing.flex,
+);
+$split.set-first($sidebar);
+$split.set-second($main);
+
+=end code
+
+=head1 DESCRIPTION
+
+Split divides its area into exactly two panes with a one-cell divider
+between them. The C<ratio> attribute controls the split — C<0.3> means
+the first pane takes 30% of the space, the second gets the rest (minus
+one cell for the divider).
+
+Two orientations:
+
+=item C<'horizontal'> — left and right panes, divided by a vertical bar
+=item C<'vertical'> — top and bottom panes, divided by a horizontal bar
+
+Unlike VBox/HBox which take a list of children, Split takes exactly two
+content widgets via C<set-first> and C<set-second>. Each assignment
+destroys the previous occupant of that slot — use a container widget
+(like another VBox) on each side if you need more than one widget per
+pane.
+
+=head1 EXAMPLES
+
+=head2 Sidebar + main content
+
+A classic two-pane layout with a 25/75 split:
+
+=begin code :lang<raku>
+
+my $split = Selkie::Layout::Split.new(
+    orientation => 'horizontal',
+    ratio       => 0.25,
+    sizing      => Sizing.flex,
+);
+$split.set-first($sidebar-list);
+$split.set-second($detail-view);
+
+=end code
+
+=head2 Editor + preview (vertical split)
+
+Top half is the editor, bottom half is the live preview:
+
+=begin code :lang<raku>
+
+my $split = Selkie::Layout::Split.new(
+    orientation => 'vertical',
+    ratio       => 0.5,
+    sizing      => Sizing.flex,
+);
+$split.set-first($editor);
+$split.set-second($preview);
+
+=end code
+
+=head2 Multiple widgets per pane
+
+Wrap each side in its own layout:
+
+=begin code :lang<raku>
+
+my $left = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+$left.add($search-input);     # fixed(1)
+$left.add($result-list);      # flex
+
+$split.set-first($left);
+$split.set-second($details);
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Layout::VBox>, L<Selkie::Layout::HBox> — N-child stacked layouts
+=item L<Selkie::Theme> — C<divider> slot controls divider appearance
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -8,12 +105,25 @@ use Selkie::Sizing;
 
 unit class Selkie::Layout::Split does Selkie::Container;
 
+#| The fraction of space given to the first pane. C<0.5> is an even
+#| split; C<0.3> gives 30% to the first pane, 70% to the second. Can
+#| be changed at runtime — just mark the Split dirty and re-layout.
 has Rat $.ratio = 0.5;
-has Str $.orientation = 'horizontal';  # horizontal = left|right, vertical = top|bottom
+
+#| Either C<'horizontal'> (left+right panes, vertical divider) or
+#| C<'vertical'> (top+bottom panes, horizontal divider).
+has Str $.orientation = 'horizontal';
+
 has NcplaneHandle $!divider-plane;
+
+#| The first (left or top) pane's widget. Set via C<set-first>.
 has Selkie::Widget $.first;
+
+#| The second (right or bottom) pane's widget. Set via C<set-second>.
 has Selkie::Widget $.second;
 
+#|( Install a widget in the first pane. The previous occupant (if any)
+    is destroyed. Returns the new widget for chaining. )
 method set-first(Selkie::Widget $w --> Selkie::Widget) {
     $!first.destroy if $!first;
     $!first = $w;
@@ -22,6 +132,8 @@ method set-first(Selkie::Widget $w --> Selkie::Widget) {
     $w;
 }
 
+#|( Install a widget in the second pane. The previous occupant is
+    destroyed. Returns the new widget for chaining. )
 method set-second(Selkie::Widget $w --> Selkie::Widget) {
     $!second.destroy if $!second;
     $!second = $w;
@@ -38,13 +150,21 @@ method render() {
     self.clear-dirty;
 }
 
+method handle-resize(UInt $rows, UInt $cols) {
+    my $changed = $rows != self.rows || $cols != self.cols;
+    return unless $changed;
+    self.resize($rows, $cols);
+    self!on-resize;
+    self!layout-split if self.plane;
+}
+
 method !layout-split() {
     if $!orientation eq 'horizontal' {
         my UInt $total = self.cols;
         my UInt $first-w = ($total * $!ratio).floor.UInt;
         $first-w = $first-w max 1;
         my UInt $divider-x = $first-w;
-        my UInt $second-w = $total - $first-w - 1;  # 1 col for divider
+        my UInt $second-w = $total - $first-w - 1;
         $second-w = $second-w max 0;
         my UInt $h = self.rows;
 
@@ -69,7 +189,7 @@ method !layout-split() {
 method !ensure-child-plane(Selkie::Widget $child, UInt $y, UInt $x, UInt $rows, UInt $cols) {
     if $child.plane {
         $child.reposition($y, $x);
-        $child.resize($rows, $cols);
+        $child.handle-resize($rows, $cols);
     } else {
         $child.init-plane(self.plane, :$y, :$x, :$rows, :$cols);
     }

@@ -1,3 +1,65 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::RadioGroup - Focusable single-selection list
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::RadioGroup;
+use Selkie::Sizing;
+
+my $radio = Selkie::Widget::RadioGroup.new(sizing => Sizing.fixed(3));
+$radio.set-items(<Small Medium Large>);
+$radio.on-change.tap: -> UInt $idx {
+    say "Selected: {$radio.selected-label}";
+};
+
+=end code
+
+=head1 DESCRIPTION
+
+A vertical list with C<(●)>/C<( )> indicators showing which option is
+selected. Cursor navigation (Up/Down) is decoupled from selection — the
+user can browse without committing. C<Enter> or C<Space> commits the
+cursor position as the new selection.
+
+Across C<set-items> calls, selection is preserved by label when
+possible: if the previously-selected label is still in the new list,
+the selection follows it to its new index. Falls back to index clamp
+otherwise.
+
+Includes a scrollbar on the right edge if the item count exceeds the
+viewport height.
+
+=head1 EXAMPLES
+
+=head2 Sync with store state
+
+=begin code :lang<raku>
+
+$app.store.subscribe-with-callback(
+    'sync-density',
+    -> $s { ($s.get-in('settings', 'density') // 0).Int },
+    -> Int $v { $radio.select-index($v) },  # no-op if unchanged — safe
+    $radio,
+);
+$radio.on-change.tap: -> $v {
+    $app.store.dispatch('settings/set', field => 'density', value => $v);
+};
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Select> — compact dropdown equivalent
+=item L<Selkie::Widget::Checkbox> — boolean toggle
+=item L<Selkie::Widget::ListView> — similar UI but for navigation, not selection
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -28,10 +90,24 @@ method selected-label(--> Str) { @!items[$!selected] // Str }
 method on-change(--> Supply) { $!change-supplier.Supply }
 
 method set-items(@new-items) {
+    # Preserve the currently-selected option by label if it's still present
+    # in the new items. Falls back to clamp on index. Keeps the cursor on
+    # the same option across list rebuilds.
+    my Str $prev = @!items ?? (@!items[$!selected] // Str) !! Str;
+
     @!items = @new-items;
-    $!cursor = 0;
-    $!selected = 0;
-    $!scroll-offset = 0;
+
+    if @!items.elems == 0 {
+        $!cursor = 0;
+        $!selected = 0;
+        $!scroll-offset = 0;
+    } else {
+        my $found = $prev.defined ?? @!items.first($prev, :k) !! Nil;
+        $!selected = $found // ($!selected min (@!items.elems - 1));
+        $!cursor = $!selected;
+        self!ensure-visible;
+    }
+
     self.mark-dirty;
 }
 

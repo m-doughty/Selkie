@@ -1,3 +1,70 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::ListView - Scrollable single-select list of strings
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::ListView;
+use Selkie::Sizing;
+
+my $list = Selkie::Widget::ListView.new(sizing => Sizing.flex);
+$list.set-items(<Alpha Beta Gamma Delta>);
+
+$list.on-select.tap:   -> $name { say "cursor on: $name" };
+$list.on-activate.tap: -> $name { say "selected: $name" };
+$list.on-key('d', -> $ { delete-item });
+
+=end code
+
+=head1 DESCRIPTION
+
+A vertical list of string entries with a cursor. Arrow keys (and
+PageUp/PageDown/Home/End/mouse wheel) move the cursor; C<Enter>
+activates. The selected item is always fully visible; the list
+auto-scrolls as the cursor moves.
+
+Two Supplies:
+
+=item C<on-select> — fires whenever the cursor moves. Use for "show details of highlighted"
+=item C<on-activate> — fires when the user presses Enter. Use for "open this item"
+
+Across C<set-items> calls, cursor position is preserved by label when
+possible. If the previously-selected string is still in the new list,
+the cursor follows it. Otherwise the cursor index is clamped to
+bounds. Only resets to 0 when the list becomes empty.
+
+Includes a scrollbar on the right edge when items exceed the viewport.
+
+=head1 EXAMPLES
+
+=head2 Store-driven list
+
+=begin code :lang<raku>
+
+$app.store.subscribe-with-callback(
+    'file-list',
+    -> $s { ($s.get-in('files') // []).map(*<name>).List },
+    -> @items { $list.set-items(@items) },     # cursor preserved by value
+    $list,
+);
+
+$list.on-activate.tap: -> $name {
+    $app.store.dispatch('files/open', :$name);
+};
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::CardList> — same pattern for variable-height cards
+=item L<Selkie::Widget::RadioGroup> — similar UI but for one-of-many selection
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -28,9 +95,26 @@ method on-select(--> Supply) { $!select-supplier.Supply }
 method on-activate(--> Supply) { $!activate-supplier.Supply }
 
 method set-items(@new-items) {
+    # Preserve the cursor's relative position when possible. If the
+    # previously-selected string is still in the new list, move the cursor
+    # to its new index. Otherwise clamp to bounds. Avoids the surprising
+    # "cursor jumps back to 0 every time the list is rebuilt" behaviour.
+    my Str $prev-selected = @!items ?? (@!items[$!cursor] // Str) !! Str;
+
     @!items = @new-items;
-    $!cursor = 0;
-    $!scroll-offset = 0;
+
+    if @!items.elems == 0 {
+        $!cursor = 0;
+        $!scroll-offset = 0;
+    } elsif $prev-selected.defined {
+        my $found = @!items.first($prev-selected, :k);
+        $!cursor = $found // ($!cursor min (@!items.elems - 1));
+        self!ensure-visible;
+    } else {
+        $!cursor = $!cursor min (@!items.elems - 1);
+        self!ensure-visible;
+    }
+
     self.mark-dirty;
     $!select-supplier.emit(self.selected) if @!items;
 }

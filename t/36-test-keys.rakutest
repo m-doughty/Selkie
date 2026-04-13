@@ -1,0 +1,114 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Keys;
+use Selkie::Event;
+use Selkie::Widget::Button;
+use Selkie::Widget::ListView;
+use Notcurses::Native::Types;
+
+plan 13;
+
+subtest "key-event from single char spec" => {
+    plan 3;
+    my $ev = key-event('a');
+    isa-ok $ev, Selkie::Event, "builds an Event";
+    is $ev.id, 'a'.ord, "id is 'a' ordinal";
+    ok $ev.event-type ~~ KeyEvent, "event-type is KeyEvent";
+};
+
+subtest "key-event from named key" => {
+    plan 2;
+    my $ev = key-event('enter');
+    is $ev.id, NCKEY_ENTER, "id is NCKEY_ENTER";
+    ok $ev.modifiers.elems == 0, "no modifiers";
+};
+
+subtest "key-event with modifier" => {
+    plan 2;
+    my $ev = key-event('ctrl+q');
+    is $ev.id, 'q'.ord, "id is 'q' ordinal";
+    ok $ev.has-modifier(Mod-Ctrl), "Ctrl modifier set";
+};
+
+subtest "key-event with multiple modifiers" => {
+    plan 3;
+    my $ev = key-event('ctrl+shift+alt+a');
+    is $ev.id, 'a'.ord, "id is 'a'";
+    ok $ev.has-modifier(Mod-Ctrl), "Ctrl";
+    ok $ev.has-modifier(Mod-Shift), "Shift";
+};
+
+subtest "key-event low-level form" => {
+    plan 2;
+    my $ev = key-event(id => NCKEY_UP);
+    is $ev.id, NCKEY_UP, "id matches";
+    ok $ev.event-type ~~ KeyEvent, "event-type defaults to KeyEvent";
+};
+
+subtest "press-key dispatches to widget and returns Bool" => {
+    plan 2;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    $btn.set-focused(True);
+    my $fired = False;
+    $btn.on-press.tap: -> $ { $fired = True };
+    my $consumed = press-key($btn, 'enter');
+    ok $fired, "button activated";
+    ok $consumed, "press-key returned True";
+};
+
+subtest "press-key returns False when unfocused" => {
+    plan 1;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    # not focused
+    nok press-key($btn, 'enter'), "unfocused button doesn't consume";
+};
+
+subtest "press-key works through a sequence of keys" => {
+    plan 1;
+    my $list = Selkie::Widget::ListView.new;
+    $list.set-items(<alpha beta gamma>);
+    press-key($list, 'down');
+    press-key($list, 'down');
+    is $list.cursor, 2, "after two downs cursor at 2";
+};
+
+subtest "function keys" => {
+    plan 2;
+    my $ev = key-event('f1');
+    is $ev.id, NCKEY_F01, "F1";
+    my $ev2 = key-event('f12');
+    is $ev2.id, NCKEY_F12, "F12";
+};
+
+subtest "mouse-event builds a MouseEvent" => {
+    plan 3;
+    my $ev = mouse-event(id => NCKEY_SCROLL_UP);
+    isa-ok $ev, Selkie::Event, "is an Event";
+    ok $ev.event-type ~~ MouseEvent, "event-type is MouseEvent";
+    is $ev.id, NCKEY_SCROLL_UP, "scroll up id";
+};
+
+subtest "resize-event builds a ResizeEvent" => {
+    plan 2;
+    my $ev = resize-event();
+    ok $ev.event-type ~~ ResizeEvent, "event-type is ResizeEvent";
+    is $ev.id, NCKEY_RESIZE, "id is NCKEY_RESIZE";
+};
+
+subtest "press-keys dispatches a sequence" => {
+    plan 1;
+    my $list = Selkie::Widget::ListView.new;
+    $list.set-items(<alpha beta gamma>);
+    press-keys($list, 'down', 'down');
+    is $list.cursor, 2, 'cursor moved to 2';
+};
+
+subtest "type-text dispatches one event per char" => {
+    plan 1;
+    use Selkie::Widget::TextInput;
+    my $input = Selkie::Widget::TextInput.new;
+    $input.set-focused(True);
+    type-text($input, 'hi');
+    is $input.text, 'hi', 'typed characters appear in buffer';
+};

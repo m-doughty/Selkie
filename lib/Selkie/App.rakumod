@@ -1,3 +1,202 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::App - The main entry point: event loop, screens, modals, toasts, focus
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::App;
+use Selkie::Layout::VBox;
+use Selkie::Widget::Text;
+use Selkie::Sizing;
+
+my $app = Selkie::App.new;
+
+my $root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+$root.add: Selkie::Widget::Text.new(
+    text   => 'Hello from Selkie',
+    sizing => Sizing.fixed(1),
+);
+
+$app.add-screen('main', $root);
+$app.switch-screen('main');
+
+$app.on-key('ctrl+q', -> $ { $app.quit });
+$app.run;   # blocks until quit
+
+=end code
+
+=head1 DESCRIPTION
+
+C<Selkie::App> is what you construct to start a Selkie program. It owns
+the notcurses handle, the reactive store, the screen manager, the
+active modal (if any), the toast overlay, the focused widget, and the
+event loop.
+
+Your app code:
+
+=item Builds a widget tree
+=item Registers it as a screen with C<add-screen>
+=item Activates a screen with C<switch-screen>
+=item Picks an initial focused widget with C<focus>
+=item Registers global keybinds with C<on-key>
+=item Starts the loop with C<run>
+
+The loop runs at ~60fps: it polls for input with a 16ms timeout, dispatches
+events (to the focused widget, then up the parent chain, then to global
+keybinds), runs registered frame callbacks, ticks the store, processes
+any queued focus cycling, ticks the toast, and re-renders any dirty
+widgets.
+
+C<run> only returns when C<quit> is called or an unhandled exception
+reaches the top of the loop. In either case the terminal is restored
+before the program exits.
+
+=head2 Default keybinds
+
+C<Selkie::App> registers these out of the box so you don't have to:
+
+=item C<Tab> / C<Shift-Tab> — cycle focus through focusable descendants
+=item C<Esc> — close the active modal (no-op if none)
+=item C<Ctrl+Q> — quit the app
+
+Your own C<on-key> registrations don't override these by default — if
+you need to, register your handler with a matching spec and call C<quit>
+or C<close-modal> yourself.
+
+=head1 LIFECYCLE
+
+Construction calls C<notcurses_init>, enables mouse support, drains any
+pending terminal-query responses, and registers the default keybinds.
+If C<notcurses_init> fails, construction throws immediately.
+
+An C<END> phaser registered during construction guarantees C<shutdown>
+runs even if the program exits abnormally (e.g. an exception before
+C<run> is called). This means your terminal is always restored.
+
+C<run> wraps the event loop in a C<CATCH> block. If anything inside the
+loop throws, the terminal is restored, the error is printed to STDERR
+with a full backtrace, and the process exits with code 1.
+
+=head1 EXAMPLES
+
+=head2 A single-screen app
+
+The simplest pattern. One screen, one focused input, a quit binding:
+
+=begin code :lang<raku>
+
+use Selkie::App;
+use Selkie::Layout::VBox;
+use Selkie::Widget::TextInput;
+use Selkie::Sizing;
+
+my $app = Selkie::App.new;
+
+my $root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+my $input = Selkie::Widget::TextInput.new(sizing => Sizing.fixed(1));
+$root.add($input);
+
+$app.add-screen('main', $root);
+$app.switch-screen('main');
+$app.focus($input);
+
+$input.on-submit.tap: -> $text { $app.toast("You typed: $text") };
+
+$app.on-key('ctrl+q', -> $ { $app.quit });
+$app.run;
+
+=end code
+
+=head2 Multiple screens
+
+Register each screen with a name; switch between them with
+C<switch-screen>. The inactive screens are parked off-screen but keep
+their state (widget instances, focus, scroll position):
+
+=begin code :lang<raku>
+
+$app.add-screen('login', $login-root);
+$app.add-screen('main',  $main-root);
+
+# Start on login:
+$app.switch-screen('login');
+$app.focus($login-form.password-input);
+
+# Later, after authentication:
+$app.switch-screen('main');
+$app.focus($main-root.focusable-descendants.List[0]);
+
+=end code
+
+=head2 A modal dialog
+
+Show a modal to ask the user a question. The modal traps focus — all
+keystrokes go to it or its descendants until closed — and C<Esc>
+closes it automatically:
+
+=begin code :lang<raku>
+
+use Selkie::Widget::ConfirmModal;
+
+my $cm = Selkie::Widget::ConfirmModal.new;
+$cm.build(
+    title     => 'Really delete?',
+    message   => "This cannot be undone.",
+    yes-label => 'Delete',
+    no-label  => 'Cancel',
+);
+$cm.on-result.tap: -> Bool $confirmed {
+    $app.close-modal;
+    delete-item() if $confirmed;
+};
+
+$app.show-modal($cm.modal);
+$app.focus($cm.no-button);    # default to the safe button
+
+=end code
+
+=head2 A frame callback for animation
+
+C<on-frame> fires on every iteration of the event loop (~60fps), even
+when there's no input. Use it to drive timers, animations, or pull from
+an external stream:
+
+=begin code :lang<raku>
+
+$app.on-frame: {
+    $progress-bar.tick;           # indeterminate animation
+    $chat-view.pull-tokens;       # pull from an LLM stream
+};
+
+=end code
+
+=head2 Screen-scoped keybinds
+
+Scope a keybind to one screen by passing C<:screen>. It fires only when
+that screen is active:
+
+=begin code :lang<raku>
+
+$app.on-key('ctrl+n', :screen('tasks'), -> $ { create-task });
+$app.on-key('ctrl+n', :screen('notes'), -> $ { create-note });
+$app.on-key('ctrl+q', -> $ { $app.quit });   # unscoped = every screen
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget> — the base role every widget composes
+=item L<Selkie::ScreenManager> — multi-screen management (used via C<add-screen> / C<switch-screen>)
+=item L<Selkie::Store> — the reactive state store C<Selkie::App> owns
+=item L<Selkie::Widget::Modal> — modal dialogs
+=item L<Selkie::Event> — the keyboard / mouse event abstraction
+
+=end pod
+
 unit class Selkie::App;
 
 use NativeCall;
@@ -20,13 +219,22 @@ use Selkie::Widget::Toast;
 
 has NotcursesHandle $!nc;
 has NcplaneHandle $!stdplane;
+
+#| The theme installed on every screen's root. Defaults to
+#| C<Selkie::Theme.default> if not provided to C<.new>.
 has Selkie::Theme $.theme;
+
+#| The reactive store owned by this app. Constructed automatically on
+#| C<.new>; every screen added to the app gets this store propagated
+#| into its widget tree. Subscribe to state paths from widgets via
+#| C<self.subscribe(...)>.
 has Selkie::Store $.store = Selkie::Store.new;
+
 has Selkie::ScreenManager $!screen-manager = Selkie::ScreenManager.new;
 has Selkie::Widget::Modal $!active-modal;
 has Selkie::Widget::Toast $!toast;
 has Selkie::Widget $!focused;
-has Selkie::Widget $!pre-modal-focus;  # saved focus when modal opens
+has Selkie::Widget $!pre-modal-focus;
 has @!global-keybinds;
 has @!frame-callbacks;
 has Bool $!running = False;
@@ -34,12 +242,23 @@ has UInt $!rows = 0;
 has UInt $!cols = 0;
 has Supplier $!event-supplier = Supplier.new;
 
+#| The screen manager. Useful for C<.active-screen> and C<.screen-names>
+#| — you don't typically need to manipulate it directly, since the
+#| C<add-screen> and C<switch-screen> methods on C<Selkie::App> are
+#| preferred.
 method screen-manager(--> Selkie::ScreenManager) { $!screen-manager }
+
+#| The widget that currently has focus, or C<Nil> if none.
 method focused(--> Selkie::Widget) { $!focused }
+
+#| A Supply that emits every event received by the app. Tap this for
+#| global event logging, analytics, or cross-cutting behaviour that
+#| doesn't fit the per-widget handler model.
 method event-supply(--> Supply) { $!event-supplier.Supply }
 
-# Convenience: returns the active screen's root container.
-# For single-screen apps, add-screen('main', ...) then use .root
+#| Convenience accessor for the active screen's root container. Equivalent
+#| to C<$app.screen-manager.active-root>. Returns C<Nil> if no screen is
+#| active.
 method root(--> Selkie::Container) { $!screen-manager.active-root }
 
 submethod TWEAK() {
@@ -61,36 +280,27 @@ submethod TWEAK() {
     $!cols = $c;
 
     # Drain any pending terminal responses (color queries, etc.)
-    # that arrive shortly after notcurses init
-    my $drain-timeout = Timespec.new(tv_sec => 0, tv_nsec => 50_000_000);  # 50ms
+    my $drain-timeout = Timespec.new(tv_sec => 0, tv_nsec => 50_000_000);
     loop {
         my $ni = Ncinput.new;
         my $id = notcurses_get($!nc, $drain-timeout, $ni);
-        last if $id == 0;  # no more pending input
+        last if $id == 0;
     }
 
-    # Register default focus handlers
     self!register-focus-handlers;
 
-    # Safety net: if anything between App.new and the end of the program
-    # throws (e.g. setup code, app/init handlers, anything before $app.run),
-    # the CATCH inside .run never gets a chance to restore the terminal.
-    # Register an END phaser to guarantee cleanup. shutdown is idempotent —
-    # it no-ops if notcurses is already stopped.
+    # Safety net for unhandled exceptions between .new and .run. shutdown
+    # is idempotent so there's no harm if run's CATCH already ran it.
     my $self = self;
     END { $self.shutdown if $self.defined }
 }
 
 method !register-focus-handlers() {
-    # Focus event: set the focused widget
     $!store.register-handler('ui/focus', -> $store, %ev {
         (db => { ui => { focused-widget => %ev<widget> } },);
     });
 
-    # Focus cycling
     $!store.register-handler('ui/focus-next', -> $store, %ev {
-        # Handled imperatively since it needs widget tree access
-        # The handler just sets a flag; App processes it
         (db => { ui => { focus-action => 'next' } },);
     });
 
@@ -98,7 +308,6 @@ method !register-focus-handlers() {
         (db => { ui => { focus-action => 'prev' } },);
     });
 
-    # Default keybinds
     self.on-key: 'tab', -> $ { $!store.dispatch('ui/focus-next') };
     self.on-key: 'shift+tab', -> $ { $!store.dispatch('ui/focus-prev') };
     self.on-key: 'esc', -> $ { self.close-modal if self.has-modal };
@@ -107,23 +316,30 @@ method !register-focus-handlers() {
 
 # --- Screen management ---
 
+#|( Register a screen under a name. The screen's root container is
+    attached to the theme, the store, and the notcurses stdplane, then
+    parked either at origin (if it's the first screen added) or off-screen
+    (for subsequent screens — C<switch-screen> will move it to origin when
+    activated). )
 method add-screen(Str:D $name, Selkie::Container $root) {
     $root.set-theme($!theme);
     $root.set-store($!store);
     $root.init-plane($!stdplane, y => 0, x => 0, rows => $!rows, cols => $!cols);
     $root.set-viewport(abs-y => 0, abs-x => 0, rows => $!rows, cols => $!cols);
-    # Hide non-first screens offscreen
     if $!screen-manager.screen-names.elems > 0 {
         $root.reposition($!rows, 0);
     }
     $!screen-manager.add-screen($name, $root);
 }
 
+#|( Activate a registered screen by name. The previously-active screen is
+    parked off-screen; the new one is moved to the origin, resized to
+    full terminal dimensions, and marked dirty so its entire subtree
+    renders fresh on the next frame. )
 method switch-screen(Str:D $name) {
     my $old-root = self.root;
     $!screen-manager.switch-to($name);
     my $new-root = self.root;
-    # Hide old screen offscreen, show new screen at origin
     $old-root.reposition($!rows, 0) if $old-root && $old-root !=== $new-root;
     if $new-root {
         $new-root.reposition(0, 0);
@@ -134,6 +350,9 @@ method switch-screen(Str:D $name) {
 
 # --- Toast ---
 
+#|( Show a temporary message bar at the bottom of the screen. It auto-dismisses
+    after C<$duration> seconds (default 2). The toast overlay is created
+    lazily on first call — subsequent toasts reuse the same widget. )
 method toast(Str:D $message, Num :$duration = 2e0) {
     without $!toast {
         $!toast = Selkie::Widget::Toast.new;
@@ -145,6 +364,10 @@ method toast(Str:D $message, Num :$duration = 2e0) {
 
 # --- Modal support ---
 
+#|( Show a modal dialog. The currently-focused widget is remembered and
+    restored when the modal closes. While a modal is open, all events are
+    routed through it (focus trap); only C<Tab>, C<Shift-Tab>, and C<Esc>
+    reach the app's global keybinds. )
 method show-modal(Selkie::Widget::Modal $modal) {
     $!pre-modal-focus = $!focused;
     $!active-modal = $modal;
@@ -153,53 +376,80 @@ method show-modal(Selkie::Widget::Modal $modal) {
     $modal.init-plane($!stdplane, y => 0, x => 0, rows => $!rows, cols => $!cols);
     $modal.mark-dirty;
 
-    # Auto-focus first focusable in modal
     my @fd = $modal.focusable-descendants.List;
     self.focus(@fd[0]) if @fd;
 }
 
+#|( Close the active modal, restore the pre-modal focus target, and mark
+    the entire active screen dirty so every widget re-renders over the
+    area that was covered. No-op if no modal is open. )
 method close-modal() {
     return without $!active-modal;
     $!active-modal.destroy;
     $!active-modal = Selkie::Widget::Modal;
-    # Restore pre-modal focus
     if $!pre-modal-focus.defined {
         self.focus($!pre-modal-focus);
         $!pre-modal-focus = Selkie::Widget;
     }
-    # Mark every widget on the active screen dirty — the modal's planes
-    # have been destroyed but the widgets behind it kept their own clean
-    # state, so they need a forced re-render to repaint over the now-empty
-    # area. mark-dirty alone only flags root, not its descendants.
     self!mark-all-dirty(self.root) if self.root;
 }
 
+#| True while a modal is currently being displayed.
 method has-modal(--> Bool) { $!active-modal.defined }
 
 # --- Keybinds ---
 
-method on-key(Str:D $spec, &handler) {
-    @!global-keybinds.push: Keybind.parse($spec, &handler);
+#|( Register a global keybind. The spec is a string matching
+    L<Selkie::Event>'s syntax (C<'ctrl+q'>, C<'f1'>, C<'ctrl+shift+a'>, etc).
+
+    Pass C<:screen> to scope the bind to a single named screen — it will
+    only fire when that screen is active. Leave C<:screen> unset for a
+    truly global bind like Ctrl+Q for quit.
+
+    Global keybinds must include a modifier (Ctrl, Alt, Super) to avoid
+    clashing with text input. Bare character binds belong on focusable
+    widgets that own the key. )
+method on-key(Str:D $spec, &handler, Str :$screen) {
+    @!global-keybinds.push: {
+        keybind => Keybind.parse($spec, &handler),
+        screen  => $screen,
+    };
 }
 
+#|( Register a callback that fires once per frame (~60 times per second),
+    regardless of input. Use this for:
+
+    =item Timer and countdown logic
+    =item Animations and indeterminate progress bars (C<$widget.tick>)
+    =item Pulling from external streams that aren't tied to user input
+
+    Multiple callbacks can be registered; they run in registration order. )
 method on-frame(&callback) {
     @!frame-callbacks.push(&callback);
 }
 
 # --- Focus management ---
 
+#|( Move focus to a specific widget. The previously-focused widget's
+    C<set-focused(False)> is called (if it has one); the new widget's
+    C<set-focused(True)> is called. A C<ui/focus> event is dispatched
+    to the store so subscribers (e.g. C<Selkie::Widget::Border>) can
+    update their appearance. )
 method focus(Selkie::Widget $w) {
     $!focused.set-focused(False) if $!focused.defined && $!focused.can('set-focused');
     $!focused = $w;
     $w.set-focused(True) if $w.can('set-focused');
-    # Update store (won't re-trigger since handler just sets same value)
     $!store.dispatch('ui/focus', widget => $w);
 }
 
+#| Move focus to the next focusable widget in the tree. Wraps around at
+#| the end. Bound to C<Tab> by default.
 method focus-next() {
     self!do-focus-cycle(1);
 }
 
+#| Move focus to the previous focusable widget. Wraps around at the
+#| beginning. Bound to C<Shift-Tab> by default.
 method focus-prev() {
     self!do-focus-cycle(-1);
 }
@@ -235,15 +485,25 @@ method !do-focus-cycle(Int $direction) {
 
 # --- Lifecycle ---
 
+#| Signal the event loop to exit. C<run> returns after the current frame
+#| completes; the terminal is restored by C<shutdown>.
 method quit() {
     $!running = False;
 }
 
+#|( Start the event loop. Blocks until C<quit> is called or an unhandled
+    exception bubbles up. The loop runs at approximately 60fps and
+    handles: input polling, event dispatch, frame callbacks, store tick,
+    focus action processing, toast tick, and rendering.
+
+    The loop body is wrapped in a C<CATCH> block: any thrown exception
+    triggers an orderly shutdown, prints a backtrace to STDERR, and
+    exits the process with status 1. )
 method run() {
     $!running = True;
     self!render-frame;
 
-    my $timeout = Timespec.new(tv_sec => 0, tv_nsec => 16_000_000);  # ~60fps
+    my $timeout = Timespec.new(tv_sec => 0, tv_nsec => 16_000_000);
     while $!running {
         my $ni = Ncinput.new;
         my $id = notcurses_get($!nc, $timeout, $ni);
@@ -252,6 +512,15 @@ method run() {
             $!event-supplier.emit($ev);
             self!dispatch-event($ev);
         }
+        # Poll stdplane dimensions every frame. notcurses doesn't
+        # reliably emit NCKEY_RESIZE through the input queue on all
+        # platforms — on macOS in particular, render can absorb a
+        # SIGWINCH internally (resizing stdplane) without the input
+        # thread ever raising a resize event. Polling ensures we
+        # catch every dim change regardless of whether the input
+        # path delivered a ResizeEvent.
+        self!check-terminal-resize;
+
         .() for @!frame-callbacks;
         $!store.tick;
         self!process-focus-actions;
@@ -263,7 +532,6 @@ method run() {
 
     CATCH {
         default {
-            # Always restore terminal, even on unhandled exceptions
             self.shutdown;
             $*ERR.say("Selkie crashed: {.message}");
             $*ERR.say(.backtrace.full);
@@ -273,31 +541,14 @@ method run() {
 }
 
 method !dispatch-event(Selkie::Event $ev) {
-    # Ignore key/mouse release events
     return if $ev.input-type == NCTYPE_RELEASE;
 
-    # Handle resize
     if $ev.event-type ~~ ResizeEvent {
-        my uint32 $r = 0;
-        my uint32 $c = 0;
-        notcurses_stddim_yx($!nc, $r, $c);
-        $!rows = $r;
-        $!cols = $c;
-        my $root = self.root;
-        if $root {
-            $root.resize($!rows, $!cols);
-            self!mark-all-dirty($root);
-        }
-        if $!active-modal {
-            $!active-modal.resize($!rows, $!cols);
-            self!mark-all-dirty($!active-modal);
-        }
+        self!check-terminal-resize;
         return;
     }
 
-    # Modal captures all events when active
     if $!active-modal {
-        # Dispatch to focused widget (but don't bubble past the modal)
         if $!focused.defined {
             my $widget = $!focused;
             while $widget.defined && $widget !=== $!active-modal {
@@ -307,35 +558,33 @@ method !dispatch-event(Selkie::Event $ev) {
                 $widget = $widget.parent;
             }
         }
-        # Check modal's own keybinds (esc etc)
         return if $!active-modal.handle-event($ev);
-        # Then global keybinds (tab for focus cycling)
-        for @!global-keybinds -> $kb {
-            if $kb.matches($ev) {
-                $kb.handler.($ev);
+        for @!global-keybinds -> %entry {
+            next if %entry<screen>.defined
+                 && %entry<screen> ne ($!screen-manager.active-screen // '');
+            if %entry<keybind>.matches($ev) {
+                %entry<keybind>.handler.($ev);
                 return;
             }
         }
-        # Consume — modal is a focus trap
         return;
     }
 
-    # Bubble: focused widget → parent → ... → root → global keybinds
     self!bubble-event($ev);
 }
 
 method !bubble-event(Selkie::Event $ev --> Bool) {
-    # Start at focused widget, walk up the parent chain
     my $widget = $!focused;
     while $widget.defined {
         return True if $widget.handle-event($ev);
         $widget = $widget.parent;
     }
 
-    # Nothing in the hierarchy consumed it — try global keybinds
-    for @!global-keybinds -> $kb {
-        if $kb.matches($ev) {
-            $kb.handler.($ev);
+    my $active-screen = $!screen-manager.active-screen // '';
+    for @!global-keybinds -> %entry {
+        next if %entry<screen>.defined && %entry<screen> ne $active-screen;
+        if %entry<keybind>.matches($ev) {
+            %entry<keybind>.handler.($ev);
             return True;
         }
     }
@@ -350,10 +599,57 @@ method !mark-all-dirty(Selkie::Widget $w) {
             self!mark-all-dirty($child);
         }
     }
-    # Border content
     if $w.can('content') && $w.content.defined {
         self!mark-all-dirty($w.content);
     }
+}
+
+#|( Check whether the terminal has been resized and, if so, propagate
+    new dimensions through the widget tree and force a full terminal
+    re-sync. Called every frame (from C<run>) because notcurses doesn't
+    reliably emit C<NCKEY_RESIZE> through the input queue on every
+    platform — macOS in particular.
+
+    No-op when dims haven't changed; cheap. )
+method !check-terminal-resize() {
+    my uint32 $r = 0;
+    my uint32 $c = 0;
+    notcurses_stddim_yx($!nc, $r, $c);
+    return if $r == $!rows && $c == $!cols;
+
+    $!rows = $r;
+    $!cols = $c;
+
+    # Propagate dims synchronously through all screens (including
+    # inactive ones — they'd otherwise render at stale dims when
+    # switched to later) and any active modal/toast. handle-resize
+    # cascades through containers so leaf widgets know their new
+    # dims before any render.
+    $!screen-manager.handle-resize($!rows, $!cols);
+    $!active-modal.handle-resize($!rows, $!cols) if $!active-modal;
+    $!toast.handle-resize($!rows, $!cols)       if $!toast;
+
+    # Mark-dirty cascade — handle-resize short-circuits on unchanged
+    # dims, so we force everyone to re-render even if their
+    # allocation happened to match.
+    self!mark-all-dirty(self.root)    if self.root;
+    self!mark-all-dirty($!active-modal) if $!active-modal;
+
+    # Render the new frame to widget planes NOW, synchronously, so
+    # the terminal gets updated immediately rather than waiting for
+    # the next loop iteration's bottom-of-loop render (which would
+    # show stale content until the user typed something).
+    self!render-frame;
+
+    # notcurses_refresh forces the terminal to re-sync with the
+    # just-rendered frame — discards notcurses's internal "what's on
+    # screen" state and re-emits every cell. Without this, the
+    # frame-diff can miss cells whose composited value happens to
+    # match pre-resize even though the planes behind them have
+    # shifted (duplicated chrome, missing titles, etc).
+    my uint32 $rr = 0;
+    my uint32 $cc = 0;
+    notcurses_refresh($!nc, $rr, $cc);
 }
 
 method !render-frame() {
@@ -364,6 +660,10 @@ method !render-frame() {
     notcurses_render($!nc);
 }
 
+#|( Shut down notcurses and destroy the active modal and screen manager.
+    Idempotent — safe to call multiple times. Usually you don't call this
+    directly; the event loop's CATCH, the END phaser, or C<DESTROY>
+    takes care of it. )
 method shutdown() {
     $!active-modal.destroy if $!active-modal;
     $!active-modal = Selkie::Widget::Modal;

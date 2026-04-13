@@ -1,0 +1,65 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Keys;
+use Selkie::Test::Supply;
+use Selkie::Widget::Button;
+use Selkie::Widget::ListView;
+
+plan 6;
+
+subtest "collect-from captures emissions" => {
+    plan 2;
+    my $s = Supplier.new;
+    my @got = collect-from $s.Supply, {
+        $s.emit('a');
+        $s.emit('b');
+        $s.emit('c');
+    };
+    is @got.elems, 3, 'three emissions';
+    is-deeply @got.List, ('a', 'b', 'c'), 'in order';
+};
+
+subtest "collect-from returns empty when nothing emitted" => {
+    plan 1;
+    my $s = Supplier.new;
+    my @got = collect-from $s.Supply, -> { };
+    is @got.elems, 0, 'empty';
+};
+
+subtest "collect-from closes the tap after block" => {
+    plan 1;
+    # Emissions after the block shouldn't be collected
+    my $s = Supplier.new;
+    my @got = collect-from $s.Supply, {
+        $s.emit('in-block');
+    };
+    $s.emit('after-block');   # should not be picked up
+    is @got.elems, 1, 'only in-block emission captured';
+};
+
+subtest "emitted-once-ok passes on single emission" => {
+    plan 2;
+    my $s = Supplier.new;
+    emitted-once-ok $s.Supply, 'hello', 'test', {
+        $s.emit('hello');
+    };
+};
+
+subtest "emitted-count-is passes on matching count" => {
+    plan 1;
+    my $s = Supplier.new;
+    emitted-count-is $s.Supply, 3, 'three emits', {
+        $s.emit($_) for ^3;
+    };
+};
+
+subtest "works with a real widget Supply" => {
+    plan 2;
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    $btn.set-focused(True);
+
+    emitted-once-ok $btn.on-press, True, 'enter fires on-press', {
+        press-key($btn, 'enter');
+    };
+};

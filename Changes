@@ -1,6 +1,115 @@
 Revision history for Selkie
 
 {{$NEXT}}
+    - Poll-based resize detection. notcurses doesn't reliably emit
+      NCKEY_RESIZE through the input queue on every platform (macOS
+      absorbs SIGWINCH into render without queueing the event),
+      so the App run loop now polls stdplane dims every frame
+      (~60/s, negligible cost) and handles the resize synchronously
+      when dims change. Previously, on platforms with no event
+      delivery, the UI stayed broken until the next input — users
+      thought the app had crashed and hit Ctrl-Q before recovery.
+    - Resize now calls notcurses_refresh() to invalidate notcurses's
+      internal frame-diff state. Without the refresh, cells whose
+      composited value happens to match pre-resize (but whose
+      underlying plane shifted) aren't re-emitted, leaving the
+      terminal with duplicated chrome, missing column titles,
+      vanished app header, triple-stacked borders, and random
+      dropped letters. Refresh is the only way to force a full
+      re-emit of every cell on the next render.
+    - Resize protocol: new `handle-resize(rows, cols)` method on
+      Widget — the explicit entry point for terminal-resize events.
+      Cascades synchronously through containers (VBox, HBox, Split,
+      Border, Modal, CardList) so every widget knows its new
+      dimensions before the next render AND before frame-callbacks
+      that read widget dimensions run. Previously, dims propagated
+      via next-render layout, leaving a one-frame window where
+      on-frame handlers saw stale values — visible as ghost-line
+      artifacts in apps that re-layout based on widget dims (e.g.
+      Cantina's ChatView.check-refresh). A matching `!on-resize()`
+      hook fires whenever dims actually change; Text and RichText
+      use it to rewrap their content.
+    - ScreenManager.handle-resize propagates a resize to every
+      registered screen, not just the active one. Switching to a
+      previously inactive screen after a resize no longer shows
+      stale dimensions.
+    - Toast.resize-screen → Toast.handle-resize (aliased for back
+      compat). Unifies the resize entry point across the framework.
+    - ConfirmModal: long messages now wrap to modal width instead of
+      clipping. Switched the message widget from Text (single-line) to
+      RichText (wraps). At small modal heights the wrapped text can
+      still overflow — bump `height-ratio` on the call site for prompts
+      longer than ~60 chars.
+    - Test::Snapshot::Harness: new module, factored out the
+      fork-per-scenario harness so every Selkie app can drop
+      `use Selkie::Test::Snapshot::Harness; run-snapshots;` into an
+      xt/ file instead of copy-pasting 80 lines. Centralises the
+      MVM_SPESH_DISABLE=1 subprocess env, the golden-file path
+      layout, the diff format, and SELKIE_UPDATE_SNAPSHOTS handling.
+    - Test::Snapshot: render-to-string now composites the pile via
+      notcurses_render + reads from the rendered frame with
+      notcurses_at_yx, so container widgets (Border, VBox, HBox,
+      CardList, nested trees) snapshot correctly. Previously we read
+      directly from the widget's plane, which only sees what was drawn
+      on that single plane — child subplanes were invisible, so all
+      container snapshots came out empty.
+    - xt/02-snapshots.rakutest: fork-per-snapshot harness. Each
+      scenario under xt/snapshots/*.raku runs in a fresh Raku process,
+      captures stdout, and diffs against xt/snapshots/golden/<name>.snap.
+      Isolating each render sidesteps the MoarVM spesh bug that
+      made in-process snapshotting of nested widgets flaky. Adding a
+      new test case is just dropping a .raku file in xt/snapshots/.
+    - CI: add Windows (MSYS2 UCRT64) to the GitHub Actions test matrix.
+      Build-only on Windows since notcurses's upstream test harness is
+      Unix-only.
+    - README: document system dependencies (cmake, ncurses, deflate,
+      unistring, ffmpeg/OpenImageIO) with per-OS install commands for
+      Linux (Debian/Fedora), macOS, and Windows (MSYS2 UCRT64).
+    - xt/: moved snapshot tests out of `t/` — they can't run in
+      fork-constrained CI environments.
+    - Test::Snapshot: golden-file snapshot testing. `snapshot-ok` renders
+      a widget through a shared headless notcurses instance (notcurses
+      only allows one init per process), reads cells back via
+      `ncplane_at_yx`, and diffs against a stored .snap file. Set
+      SELKIE_UPDATE_SNAPSHOTS=1 to accept new output.
+    - Test::Keys, Test::Supply, Test::Store, Test::Focus, Test::Tree:
+      a suite of helpers for widget tests. press-key / press-keys /
+      type-text for event synthesis, collect-from / emitted-once-ok /
+      emitted-count-is for Supply observation, mock-store /
+      dispatch-and-tick / state-at for store-backed tests, with-focus
+      block helper to gate focus-dependent behaviour, walk / find-widget
+      / find-widgets / contains-widget-ok for tree introspection.
+    - Existing test files migrated from per-file `sub key-event` to
+      the new helpers.
+    - Spinner widget: tiny animated loading indicator with built-in
+      frame sets (BRAILLE, DOTS, LINE, CIRCLE, ARROW) or custom frames.
+      Drive via tick() from a frame callback.
+    - TabBar widget: horizontal tab strip with keyboard navigation
+      (Left/Right/Home/End/Enter). sync-to-app integrates with
+      ScreenManager — the bar's active tab follows active-screen.
+    - CommandPalette widget: VS-Code-style fuzzy-filtered action
+      launcher. Register commands with label + action callback; emits
+      the activated Command on on-command Supply.
+    - Table widget: scrollable tabular data with typed columns, header
+      row, sort indicators, cursor navigation, custom cell rendering.
+      Column widths use the same fixed/percent/flex sizing model as
+      layouts.
+    - Border.set-content / Modal.set-content accept :destroy flag (default
+      True). Pass :!destroy to swap content without destroying the outgoing
+      widget — useful for tab-style panes that cycle through persistent
+      views.
+    - ListView, RadioGroup, Select: set-items now preserves the current
+      selection by value when the previously-selected label is still in
+      the new list. Falls back to clamping the index on missing values.
+      Resets only when the list becomes empty.
+    - Selkie::App.on-key accepts :screen to scope a keybind to a named
+      screen. Unset means truly global (e.g. Ctrl+Q quit).
+    - Widget.once-subscribe / once-subscribe-computed: idempotent helpers
+      that track per-id registration, so repeated set-store / reparent
+      calls don't create duplicate subscriptions. Border now uses this.
+    - Store.enable-debug: opt-in logging of every dispatched event, the
+      effects its handlers return, and each subscription fire. Pass a
+      custom log handle or let it default to $*ERR.
 
 0.1.1  2026-04-12T04:00:39+01:00
     - Fix Github Actions

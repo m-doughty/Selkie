@@ -1,3 +1,296 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget - Base role composed by every Selkie widget
+
+=head1 SYNOPSIS
+
+A minimal custom widget that renders a fixed string:
+
+=begin code :lang<raku>
+
+use Notcurses::Native;
+use Notcurses::Native::Plane;
+use Selkie::Widget;
+
+unit class My::Hello does Selkie::Widget;
+
+method render() {
+    return without self.plane;
+    ncplane_erase(self.plane);
+    self.apply-style(self.theme.text);
+    ncplane_putstr_yx(self.plane, 0, 0, 'Hello, Selkie!');
+    self.clear-dirty;
+}
+
+=end code
+
+Add it to any layout and it just works:
+
+=begin code :lang<raku>
+
+use Selkie::Sizing;
+
+$vbox.add: My::Hello.new(sizing => Sizing.fixed(1));
+
+=end code
+
+=head1 DESCRIPTION
+
+C<Selkie::Widget> is the role at the bottom of every widget in the
+framework. Compose it to create your own widget; Selkie handles the tree
+integration, rendering cycle, focus routing, theme inheritance, store
+plumbing, and memory management.
+
+You almost never construct a C<Selkie::Widget> directly — it's a role,
+so you C<does Selkie::Widget> on your own class. The framework itself
+composes it to build every built-in widget (C<Text>, C<Button>,
+C<ListView>, and so on).
+
+=head2 What you get for free
+
+=item A notcurses plane to render into, created and destroyed for you
+=item Theme inheritance from the widget tree
+=item Keybind registration and event bubbling
+=item Dirty tracking so your C<render> method only runs when needed
+=item Per-widget subscription to the reactive store
+=item Clean shutdown when the widget goes out of scope
+
+=head2 What you must provide
+
+At minimum, a C<render> method. That's it.
+
+=head2 What you may provide
+
+=item C<handle-event> — to react to keyboard or mouse input when focused
+=item C<on-store-attached> — to wire up subscriptions when the store appears
+=item C<destroy> — to clean up anything beyond the plane (e.g. extra
+notcurses handles, file descriptors, subscriptions)
+
+=head1 LIFECYCLE
+
+Construction happens in normal Raku fashion: C<My::Widget.new(...)>. At
+this point the widget has no plane and no size. It's safe to store
+configuration on the object but not to call notcurses functions.
+
+When the widget is added to a parent layout (via C<$parent.add($child)>),
+the parent calls C<init-plane> to create a notcurses plane sized to its
+share of the layout. After this point C<self.plane> returns a valid
+handle, and C<self.rows> / C<self.cols> reflect the plane's dimensions.
+
+Each frame, the framework walks the tree and calls C<render> on any
+widget whose C<is-dirty> is true. Your render method should:
+
+=item Erase the plane with C<ncplane_erase(self.plane)>
+=item Apply styles with C<self.apply-style($style)>
+=item Write to the plane with notcurses calls
+=item Call C<self.clear-dirty> at the end
+
+When the widget is removed or the program exits, C<destroy> is called
+and the plane is freed.
+
+=head1 OVERRIDE POINTS
+
+The public API is organised into three buckets.
+
+=head2 Required override
+
+=item C<render> — draw yourself onto C<self.plane>. Must be defined by the composing class.
+
+=head2 Optional overrides
+
+=item C<handle-event($ev --> Bool)> — return True if you consumed the event
+=item C<destroy> — call C<self.destroy-plane> and clean up any extras
+=item C<on-store-attached($store)> — implement this (no inherited default) to register subscriptions
+
+=head2 Do not override
+
+=item C<init-plane>, C<adopt-plane> — called by layout containers
+=item C<mark-dirty>, C<clear-dirty> — called by the render cycle
+=item C<set-viewport> — called by parent layouts
+
+=head1 EXAMPLES
+
+=head2 Example 1 — A static colored bar
+
+The simplest useful widget. A solid block of color spanning its full
+size. Good for spacers or visual dividers.
+
+=begin code :lang<raku>
+
+use Notcurses::Native;
+use Notcurses::Native::Plane;
+use Selkie::Widget;
+
+unit class My::ColorBar does Selkie::Widget;
+
+has UInt $.color is required;   # 0xRRGGBB
+
+method render() {
+    return without self.plane;
+    ncplane_set_bg_rgb(self.plane, $!color);
+    ncplane_erase(self.plane);
+    self.clear-dirty;
+}
+
+=end code
+
+Use it like:
+
+=begin code :lang<raku>
+
+$vbox.add: My::ColorBar.new(color => 0xFF5555, sizing => Sizing.fixed(1));
+
+=end code
+
+=head2 Example 2 — A focusable toggle that emits on change
+
+A box that flips a boolean when the user presses Space or Enter. The
+state is owned by the widget; interested app code subscribes by tapping
+the C<on-toggle> Supply. This is the canonical leaf-widget pattern in
+Selkie — widgets emit, app code dispatches to the store.
+
+=begin code :lang<raku>
+
+use Notcurses::Native;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Types;
+use Selkie::Widget;
+use Selkie::Event;
+
+unit class My::Toggle does Selkie::Widget;
+
+has Bool $.state = False;
+has Supplier $!toggle-supplier = Supplier.new;
+
+method new(*%args --> My::Toggle) {
+    # Focusable by default, so Tab can reach us
+    %args<focusable> //= True;
+    callwith(|%args);
+}
+
+method on-toggle(--> Supply) { $!toggle-supplier.Supply }
+
+method toggle() {
+    $!state = !$!state;
+    $!toggle-supplier.emit($!state);
+    self.mark-dirty;
+}
+
+method render() {
+    return without self.plane;
+    my $style = self.theme.text;
+    self.apply-style($style);
+    ncplane_erase(self.plane);
+    my $glyph = $!state ?? '●' !! '○';
+    ncplane_putstr_yx(self.plane, 0, 0, $glyph);
+    self.clear-dirty;
+}
+
+method handle-event(Selkie::Event $ev --> Bool) {
+    # Only respond when we have focus — the app routes events to the
+    # focused widget and up the parent chain.
+    return False unless $ev.event-type ~~ KeyEvent;
+    if $ev.id == NCKEY_ENTER || $ev.id == NCKEY_SPACE {
+        self.toggle;
+        return True;
+    }
+    # Pass through to any registered custom keybinds
+    self!check-keybinds($ev);
+}
+
+=end code
+
+Consuming app code:
+
+=begin code :lang<raku>
+
+my $toggle = My::Toggle.new(sizing => Sizing.fixed(1));
+$vbox.add($toggle);
+$toggle.on-toggle.tap: -> Bool $on {
+    # Tap fires whenever state flips. Dispatch to the store from here.
+    $app.store.dispatch('setting/changed', value => $on);
+};
+
+=end code
+
+=head2 Example 3 — Registering a custom keybind
+
+Widgets can register per-instance keybinds with C<on-key>. These fire
+when the widget is focused (or, if unfocused, are available for the
+parent chain to delegate to). Useful for shortcuts scoped to a specific
+view.
+
+=begin code :lang<raku>
+
+my $list-view = Selkie::Widget::ListView.new(sizing => Sizing.flex);
+
+# 'a' on the list triggers "add"
+$list-view.on-key: 'a', -> $ {
+    open-add-dialog();
+};
+
+# 'd' with the list focused deletes the cursor item
+$list-view.on-key: 'd', -> $ {
+    delete-current-item();
+};
+
+=end code
+
+Keybinds with a modifier (C<ctrl+>, C<alt+>, C<super+>) work even when
+a text input is focused — the input lets modified keys bubble up. Bare
+character keybinds get consumed by text inputs, so reserve them for
+list-style widgets.
+
+=head2 Example 4 — A widget that reacts to store state
+
+When a widget's appearance depends on shared application state, subscribe
+to the store from C<on-store-attached>. The framework calls this once
+per C<set-store> call, so use C<once-subscribe> / C<once-subscribe-computed>
+to avoid duplicate registrations across repeated calls.
+
+=begin code :lang<raku>
+
+use Selkie::Widget;
+
+unit class My::UnreadBadge does Selkie::Widget;
+
+has UInt $!count = 0;
+
+method on-store-attached($store) {
+    # Idempotent: won't double-register if on-store-attached is called
+    # again (e.g. if this widget is reparented).
+    self.once-subscribe-computed('unread-count', -> $s {
+        $s.get-in('inbox', 'unread') // 0;
+    });
+}
+
+method render() {
+    return without self.plane;
+    # Re-read fresh from the store each render; the subscription just
+    # ensures we're re-rendered when the value changes.
+    $!count = self.store.get-in('inbox', 'unread') // 0 if self.store;
+    my $style = self.theme.text-highlight;
+    self.apply-style($style);
+    ncplane_erase(self.plane);
+    my $badge = $!count > 0 ?? "($!count)" !! '';
+    ncplane_putstr_yx(self.plane, 0, 0, $badge);
+    self.clear-dirty;
+}
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Container> — for widgets that hold children
+=item L<Selkie::Sizing> — the fixed/percent/flex sizing model
+=item L<Selkie::Theme> and L<Selkie::Style> — styling inherited through the tree
+=item L<Selkie::Event> — the keyboard/mouse event abstraction
+=item L<Selkie::Store> — the reactive state store
+
+=end pod
+
 unit role Selkie::Widget;
 
 use Notcurses::Native;
@@ -12,40 +305,89 @@ use Selkie::Sizing;
 
 my atomicint $next-widget-id = 0;
 
+#| A monotonically-increasing integer identifier unique to each widget
+#| instance. Assigned at construction and never changes. Useful as a
+#| key when you need identity-stable references in subscriptions or
+#| debug output.
 has Int $.widget-id = ++⚛$next-widget-id;
+
 has NcplaneHandle $!plane;
 has Bool $!owns-plane = True;
+
+#| The containing widget, set by the parent layout when this widget is
+#| added to it. Read-only in practice — layouts manage this — but exposed
+#| as C<is rw> so internal helpers can reparent.
 has Selkie::Widget $.parent is rw;
+
 has Bool $!dirty = True;
 has Bool $!mounted = False;
 has UInt $!rows = 0;
 has UInt $!cols = 0;
 has UInt $!y = 0;
 has UInt $!x = 0;
-# Viewport: absolute position and visible bounds, set by parent layout
 has Int $!abs-y = 0;
 has Int $!abs-x = 0;
 has UInt $!viewport-rows = 0;
 has UInt $!viewport-cols = 0;
+
+#| How this widget wants to be sized by its parent layout. See
+#| L<Selkie::Sizing>: C<Sizing.fixed($n)>, C<Sizing.percent($n)>, or
+#| C<Sizing.flex($n = 1)>. Defaults to C<Sizing.flex>.
 has Sizing $.sizing = Sizing.flex;
+
+#| Whether this widget can receive focus via Tab / Shift-Tab cycling or
+#| direct C<$app.focus($widget)> calls. Leaf input widgets typically
+#| override this to True in their C<new> method:
+#|
+#|     method new(*%args) {
+#|         %args<focusable> //= True;
+#|         callwith(|%args);
+#|     }
 has Bool $.focusable = False;
+
 has Selkie::Theme $!theme;
 has @!keybinds;
 has $!store;     # Selkie::Store — untyped to avoid circular import
 
+#|( Returns the notcurses plane this widget renders to, or the type
+    object C<NcplaneHandle> if the widget has not been added to a
+    parent yet. Always guard with C<return without self.plane;> at the
+    top of C<render>. )
 method plane(--> NcplaneHandle) { $!plane }
+
+#| Current row height of the widget's plane.
 method rows(--> UInt) { $!rows }
+
+#| Current column width of the widget's plane.
 method cols(--> UInt) { $!cols }
+
+#| Y offset relative to the parent plane.
 method y(--> UInt) { $!y }
+
+#| X offset relative to the parent plane.
 method x(--> UInt) { $!x }
+
+#| True if this widget needs to be re-rendered on the next frame.
 method is-dirty(--> Bool) { $!dirty }
 
-# Viewport: absolute position and available space as set by parent
+#| Absolute Y position on the screen — the parent layout computes this
+#| by accumulating its own C<abs-y> with this widget's local offset.
+#| Useful for overlay positioning.
 method abs-y(--> Int) { $!abs-y }
+
+#| Absolute X position on the screen. See C<abs-y>.
 method abs-x(--> Int) { $!abs-x }
+
+#| Number of rows actually visible on screen — may be smaller than
+#| C<rows> if a parent ScrollView is clipping us.
 method viewport-rows(--> UInt) { $!viewport-rows }
+
+#| Number of columns actually visible on screen. See C<viewport-rows>.
 method viewport-cols(--> UInt) { $!viewport-cols }
 
+#|( Called by parent layouts during layout. Propagates absolute screen
+    position and visible bounds to this widget. You don't call this
+    yourself unless you're implementing a layout container. )
 method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     $!abs-y = $abs-y;
     $!abs-x = $abs-x;
@@ -53,10 +395,17 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     $!viewport-cols = $cols;
 }
 
+#|( The effective theme for this widget. Walks up the parent chain until
+    it finds a widget with an explicit theme, falling back to
+    C<Selkie::Theme.default>. Use this in C<render> rather than caching
+    a theme reference, so theme changes propagate correctly. )
 method theme(--> Selkie::Theme) {
     $!theme // ($!parent andthen .theme) // Selkie::Theme.default;
 }
 
+#|( Override the theme for this widget and its subtree. The new theme
+    is used on the next render. Useful for scoping a different look to
+    a specific panel (e.g. a modal with its own palette). )
 method set-theme(Selkie::Theme $t) {
     $!theme = $t;
     self.mark-dirty;
@@ -83,11 +432,18 @@ method !set-sizing(Sizing $s) {
 
 # --- Store integration ---
 
+#| The L<Selkie::Store> attached to this widget, or C<Nil> if no store
+#| has been set yet. Propagates automatically from parent to child.
 method store() { $!store }
 
+#|( Attach a store to this widget. Called automatically by parent
+    containers when a widget is added to the tree and a store exists.
+    Recursively propagates to children and Border/Modal content. Fires
+    C<on-store-attached> on the widget if implemented. You shouldn't
+    need to call this directly — just add the widget to a tree that
+    has a store. )
 method set-store($store) {
     $!store = $store;
-    # Propagate to children (Container) and content (Border/Modal)
     if self.can('children') {
         for self.children -> $child {
             $child.set-store($store);
@@ -100,18 +456,51 @@ method set-store($store) {
     self.on-store-attached($store) if self.can('on-store-attached');
 }
 
+#|( Convenience for dispatching a store event. Equivalent to
+    C<self.store.dispatch($event, |%payload)> but gracefully no-ops if
+    no store is attached. Most widgets shouldn't dispatch directly —
+    prefer emitting on a Supply and letting app code dispatch. )
 method dispatch(Str:D $event, *%payload) {
     $!store.dispatch($event, |%payload) if $!store;
 }
 
+#|( Subscribe this widget to a path in the store. When the value at
+    that path changes, the widget is marked dirty and re-renders. See
+    L<Selkie::Store> for details. Typically called from
+    C<on-store-attached>. )
 method subscribe(Str:D $id, *@path) {
     $!store.subscribe($id, @path, self) if $!store;
 }
 
+#|( Subscribe to a computed value derived from the store. The compute
+    function receives the store and should return the value; the widget
+    is marked dirty whenever that value changes. See L<Selkie::Store>. )
 method subscribe-computed(Str:D $id, &compute) {
     $!store.subscribe-computed($id, &compute, self) if $!store;
 }
 
+has SetHash $!subscribed-ids = SetHash.new;
+
+#|( Idempotent version of C<subscribe>. Tracks per-id registration so
+    repeated C<set-store> calls (e.g. when the widget is reparented)
+    don't create duplicate subscriptions. Prefer this over C<subscribe>
+    when registering from C<on-store-attached>. )
+method once-subscribe(Str:D $id, *@path) {
+    return if $!subscribed-ids{$id};
+    $!subscribed-ids{$id} = True;
+    self.subscribe($id, |@path);
+}
+
+#| Idempotent version of C<subscribe-computed>. See C<once-subscribe>.
+method once-subscribe-computed(Str:D $id, &compute) {
+    return if $!subscribed-ids{$id};
+    $!subscribed-ids{$id} = True;
+    self.subscribe-computed($id, &compute);
+}
+
+#|( Update the widget's sizing declaration at runtime and request a
+    re-layout. Use this when a widget's desired size changes — for
+    example, a MultiLineInput growing as the user types more lines. )
 method update-sizing(Sizing $s) {
     $!sizing = $s;
     self.mark-dirty;
@@ -120,6 +509,9 @@ method update-sizing(Sizing $s) {
 
 # --- Framework-internal methods (public for cross-widget access) ---
 
+#|( Create and take ownership of a notcurses plane, sized and positioned
+    as specified. Called by parent layouts when they mount this widget.
+    Override-safe: layout containers call this, leaf widgets never do. )
 method init-plane(NcplaneHandle $parent-plane, UInt :$y = 0, UInt :$x = 0,
                   UInt :$rows = 1, UInt :$cols = 1) {
     my $opts = NcplaneOptions.new(:$y, :$x, :$rows, :$cols);
@@ -131,6 +523,10 @@ method init-plane(NcplaneHandle $parent-plane, UInt :$y = 0, UInt :$x = 0,
     $!x = $x;
 }
 
+#|( Borrow an existing plane (owned elsewhere) as this widget's plane.
+    Used by C<Selkie::App> to adopt the notcurses stdplane as the root
+    screen's plane. This widget will not destroy the plane on cleanup.
+    Rarely used outside the framework itself. )
 method adopt-plane(NcplaneHandle $plane, UInt :$rows, UInt :$cols) {
     $!plane = $plane;
     $!owns-plane = False;
@@ -140,16 +536,27 @@ method adopt-plane(NcplaneHandle $plane, UInt :$rows, UInt :$cols) {
     $!x = 0;
 }
 
+#|( Mark this widget dirty so it re-renders on the next frame. Also
+    propagates dirty upwards to the parent chain so the render walk
+    reaches it. Cheap — short-circuits if already dirty. Call this
+    whenever your widget's visual state changes. )
 method mark-dirty() {
     return if $!dirty;
     $!dirty = True;
     $!parent.mark-dirty if $!parent.defined;
 }
 
+#|( Clear the dirty flag. Call this as the last line of your C<render>
+    method so the widget is skipped on subsequent frames until something
+    changes. )
 method clear-dirty() {
     $!dirty = False;
 }
 
+#|( Apply a C<Selkie::Style> (fg, bg, bold/italic/underline) to the
+    widget's plane so subsequent C<ncplane_putstr_yx> calls pick up
+    those attributes. Handles the three distinct notcurses calls
+    (styles, fg, bg) in one shot. )
 method apply-style(Selkie::Style $style) {
     ncplane_set_styles($!plane, $style.styles);
     ncplane_set_fg_rgb($!plane, $style.fg) if $style.fg.defined;
@@ -158,12 +565,53 @@ method apply-style(Selkie::Style $style) {
 
 # --- Public API ---
 
+#|( Resize the widget's plane to new dimensions. No-ops if the size is
+    unchanged. Called by parent layouts — you shouldn't call this
+    directly from a leaf widget. )
 method resize(UInt $rows, UInt $cols) {
     return if $rows == $!rows && $cols == $!cols;
     self!apply-resize($rows, $cols);
+    self!on-resize;
     self.mark-dirty;
 }
 
+#|( The framework's explicit terminal-resize protocol. Called when the
+    terminal is resized; cascades through containers so every widget
+    learns its new dimensions before the next render. Short-circuits
+    when dims are unchanged — safe to call redundantly.
+
+    Default implementation just delegates to C<resize()>; that's enough
+    for leaf widgets. Containers override to cascade to their own
+    children/content.
+
+    Prefer this over C<resize()> when propagating a resize event from
+    outside the layout pass. The built-in containers call
+    C<handle-resize> on children from their C<layout-children> pass
+    so the C<on-resize> hook fires for any widget whose dims actually
+    changed.
+
+    B<Custom containers> should override to cascade to their own
+    children/content. If you hold child widgets in something other
+    than C<self.children> (e.g. C<CardList>'s item hashes, C<Border>'s
+    C<content>), your override is the only way the cascade reaches
+    them. )
+method handle-resize(UInt $rows, UInt $cols) {
+    self.resize($rows, $cols);
+}
+
+#|( Optional hook called from C<handle-resize> when dimensions actually
+    changed. Use for widget-specific bookkeeping that must update at
+    the moment of resize rather than on the next render — recomputing
+    cached wrap tables, invalidating pre-rendered buffers, resetting
+    scroll offsets that no longer make sense, etc.
+
+    Default is a no-op. Called after the plane has been resized and
+    C<mark-dirty> has fired. )
+method !on-resize() { }
+
+#|( Move the widget's plane to new coordinates (relative to the parent
+    plane). No-ops if the position is unchanged. Called by parent
+    layouts. )
 method reposition(UInt $y, UInt $x) {
     return if $y == $!y && $x == $!x;
     ncplane_move_yx($!plane, $y, $x) if $!plane;
@@ -171,8 +619,20 @@ method reposition(UInt $y, UInt $x) {
     $!x = $x;
 }
 
+#|( Render this widget to its plane. B<Required override>: the composing
+    class must provide a body. Always guard with C<return without self.plane>,
+    and call C<self.clear-dirty> at the end. )
 method render() { ... }
 
+#|( Register a keybind for this widget. Fires when the widget has
+    focus and an unconsumed event matches the spec. See L<Selkie::Event>
+    for the spec syntax (C<'a'>, C<'ctrl+q'>, C<'shift+tab'>, etc).
+
+    Example:
+
+        $list.on-key: 'd', -> $ { delete-item };
+        $list.on-key: 'ctrl+r', -> $ { refresh };
+    )
 method on-key(Str:D $spec, &handler) {
     @!keybinds.push: Keybind.parse($spec, &handler);
 }
@@ -187,10 +647,20 @@ method !check-keybinds(Selkie::Event $ev --> Bool) {
     False;
 }
 
+#|( Handle a keyboard or mouse event. Return True if the event was
+    consumed (the event will stop bubbling to the parent); False to let
+    it continue up the chain. The default implementation dispatches to
+    any registered keybinds — override to implement cursor movement,
+    character input, click handling, etc. )
 method handle-event(Selkie::Event $ev --> Bool) {
     self!check-keybinds($ev);
 }
 
+#|( Release any resources held by this widget. The default implementation
+    destroys the plane. Override if your widget owns extra notcurses
+    handles (e.g. ncvisual, child planes) or other resources — and
+    always call C<self.destroy-plane> (or C<self!destroy-plane> if
+    you're inside the same role/class) as the last step. )
 method destroy() {
     self!destroy-plane;
 }

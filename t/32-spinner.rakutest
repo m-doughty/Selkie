@@ -1,0 +1,78 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Spinner;
+
+plan 10;
+
+subtest "construction with defaults" => {
+    plan 3;
+    my $s = Selkie::Widget::Spinner.new;
+    nok $s.focusable, "not focusable by default";
+    is-approx $s.interval, 0.1, "default interval is 0.1s";
+    ok $s.frames.elems > 0, "has default frames";
+};
+
+subtest "default frames are BRAILLE" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new;
+    is $s.frames, Selkie::Widget::Spinner::BRAILLE, "uses BRAILLE by default";
+};
+
+subtest "custom frames" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new(frames => <a b c>);
+    is-deeply $s.frames.List, ('a', 'b', 'c'), "custom frames set";
+};
+
+subtest "built-in frame sets exist" => {
+    plan 5;
+    ok Selkie::Widget::Spinner::BRAILLE.elems > 0, "BRAILLE";
+    ok Selkie::Widget::Spinner::DOTS.elems > 0, "DOTS";
+    ok Selkie::Widget::Spinner::LINE.elems > 0, "LINE";
+    ok Selkie::Widget::Spinner::CIRCLE.elems > 0, "CIRCLE";
+    ok Selkie::Widget::Spinner::ARROW.elems > 0, "ARROW";
+};
+
+subtest "current-frame returns first frame initially" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new(frames => <a b c>);
+    is $s.current-frame, 'a', "starts on frame 0";
+};
+
+subtest "tick without plane is no-op" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new(frames => <a b c>, interval => 0.0);
+    $s.tick;
+    is $s.current-frame, 'a', "frame unchanged without plane";
+};
+
+subtest "reset puts us back on frame 0" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new(frames => <a b c>);
+    $s.reset;
+    is $s.current-frame, 'a', "reset on frame 0";
+};
+
+subtest "reset marks dirty" => {
+    plan 1;
+    my $s = Selkie::Widget::Spinner.new;
+    $s.clear-dirty;
+    $s.reset;
+    ok $s.is-dirty, "dirty after reset";
+};
+
+subtest "interval configurable" => {
+    plan 2;
+    my $a = Selkie::Widget::Spinner.new(interval => 0.05);
+    my $b = Selkie::Widget::Spinner.new(interval => 0.5);
+    is-approx $a.interval, 0.05, "fast interval set";
+    is-approx $b.interval, 0.5,  "slow interval set";
+};
+
+subtest "frames can be a gradient of chars" => {
+    plan 1;
+    # Verifies multi-char frames are handled (each frame is a single string)
+    my $s = Selkie::Widget::Spinner.new(frames => <abc def ghi>);
+    is $s.current-frame, 'abc', "multi-char frame accepted";
+};

@@ -5,13 +5,7 @@ use Selkie::Widget::RadioGroup;
 use Selkie::Event;
 use Notcurses::Native::Types;
 
-sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
-    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
-}
-
-sub mouse-event(UInt :$id --> Selkie::Event) {
-    Selkie::Event.new(:$id, modifiers => Set.new, input-type => NCTYPE_PRESS, event-type => MouseEvent);
-}
+use Selkie::Test::Keys;
 
 plan 17;
 
@@ -32,14 +26,20 @@ subtest "set-items populates list" => {
     ok $rg.is-dirty, "dirty after set-items";
 };
 
-subtest "set-items resets cursor and selected" => {
-    plan 2;
+subtest "set-items preserves selection by value" => {
+    plan 4;
     my $rg = Selkie::Widget::RadioGroup.new;
     $rg.set-items(<Alpha Beta Gamma>);
-    $rg.select-index(2);
-    $rg.set-items(<X Y>);
-    is $rg.selected, 0, "selected reset to 0";
-    is $rg.cursor, 0, "cursor reset to 0";
+    $rg.select-index(2);   # Gamma
+    $rg.set-items(<Delta Gamma Epsilon>);
+    is $rg.selected, 1, "selection follows Gamma to its new index";
+    is $rg.cursor, 1, "cursor follows selection";
+
+    $rg.set-items(<X Y>);  # Gamma not in new set, clamp
+    is $rg.selected, 1, "clamps selection when previous label is gone";
+
+    $rg.set-items(());
+    is $rg.selected, 0, "resets to 0 on empty items";
 };
 
 subtest "on-change returns Supply" => {

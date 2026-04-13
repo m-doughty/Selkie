@@ -3,11 +3,8 @@ use lib 'lib';
 
 use Selkie::Widget::Checkbox;
 use Selkie::Event;
+use Selkie::Test::Keys;
 use Notcurses::Native::Types;
-
-sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
-    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
-}
 
 plan 14;
 

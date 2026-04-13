@@ -1,18 +1,68 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::Toast - Transient overlay notification
+
+=head1 SYNOPSIS
+
+You normally use C<$app.toast(...)> which manages the widget for you:
+
+=begin code :lang<raku>
+
+$app.toast('Settings saved');
+$app.toast('Connection lost', duration => 5e0);
+
+=end code
+
+Direct construction is rarely needed.
+
+=head1 DESCRIPTION
+
+A centered single-line message bar that auto-dismisses. By convention
+rendered near the bottom of the screen.
+
+Unlike most widgets, Toast does B<not> own a backing plane covering its
+full area — that would obscure the widgets behind it. Instead it
+manages a small inline plane, created on C<show> and destroyed on hide,
+attached directly to the parent stdplane via C<attach>.
+
+The C<Selkie::App.toast> wrapper hides these details: it lazily
+constructs the widget, calls C<attach>, and ensures the correct size
+on each invocation.
+
+=head1 EXAMPLES
+
+=head2 Custom styling
+
+=begin code :lang<raku>
+
+# Red warning style
+$app.store.subscribe-with-callback(
+    'errors',
+    -> $s { $s.get-in('error') // '' },
+    -> $msg {
+        if $msg.chars > 0 {
+            $app.toast($msg);   # default blue-highlight style
+        }
+    },
+    $some-widget,
+);
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::App> — C<toast(...)> wrapper is the normal entry point
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
 use Selkie::Style;
-
-# Temporary overlay message that auto-dismisses after a duration.
-# Renders as a centered text bar at the bottom of the screen.
-#
-# Toast does NOT own a backing plane in the regular Selkie sense — owning a
-# full-screen plane would obscure everything behind it. Instead Toast
-# manages a small `toast-plane` directly as a child of the parent stdplane,
-# created on show and destroyed on hide. The widget's own `plane` slot is
-# kept undefined; render-frame guards on `is-visible` rather than dirty.
 
 unit class Selkie::Widget::Toast does Selkie::Widget;
 
@@ -35,9 +85,18 @@ method attach(NcplaneHandle $parent-plane, UInt :$rows, UInt :$cols) {
     $!screen-cols = $cols;
 }
 
-method resize-screen(UInt $rows, UInt $cols) {
+#|( Toast lives at screen-top, outside the widget tree, so it doesn't
+    receive the normal handle-resize cascade from containers. App
+    calls this directly when the terminal resizes so the toast-plane
+    sits at the correct width. )
+method handle-resize(UInt $rows, UInt $cols) {
     $!screen-rows = $rows;
     $!screen-cols = $cols;
+}
+
+#| Back-compat alias. Deprecated — prefer handle-resize.
+method resize-screen(UInt $rows, UInt $cols) {
+    self.handle-resize($rows, $cols);
 }
 
 method show(Str:D $message, Num :$duration = 2e0,

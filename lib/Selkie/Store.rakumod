@@ -1,3 +1,235 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Store - Reactive state store with dispatch, effects, and subscriptions
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+my $store = $app.store;
+
+# Register a handler that returns effects (never mutate state directly)
+$store.register-handler('counter/inc', -> $st, %ev {
+    my $current = $st.get-in('count') // 0;
+    (db => { count => $current + 1 },);
+});
+
+# Subscribe a widget to a path — marks it dirty when the value changes
+$store.subscribe('my-counter', ['count'], $widget);
+
+# Or: subscribe with a callback that does something on change
+$store.subscribe-with-callback(
+    'counter-text',
+    -> $s { "Count: {$s.get-in('count') // 0}" },
+    -> $text { $label.set-text($text) },
+    $label,
+);
+
+# Fire an event from anywhere — it's queued and processed on the next tick
+$store.dispatch('counter/inc');
+
+=end code
+
+=head1 DESCRIPTION
+
+Selkie's store is inspired by L<re-frame|https://github.com/day8/re-frame> —
+one centralized state atom with a one-way data flow:
+
+    user action → dispatch event
+    event       → handlers return effects
+    effects     → mutate state (via registered effect handlers)
+    state       → subscriptions notify widgets
+    widgets     → re-render
+
+Handlers are B<pure functions>. Given a store and event payload, they
+return a list of effects. Effects are where side effects live — built-in
+ones (C<db>, C<dispatch>, C<async>) cover most needs; you can register
+your own with C<register-fx>.
+
+=head2 Why?
+
+Why go through all this ceremony versus just mutating state? Because:
+
+=item State changes are B<auditable> — every mutation is a named event with a payload
+=item Handlers are B<testable> — no notcurses, no widgets, just pure functions
+=item Time-travel / logging / middleware become possible without changing app code
+=item Subscriptions B<derive> UI from state — you don't manually sync widgets with state
+
+You don't have to use the store. For small apps, widget Supplies taped
+directly to side-effecting code works fine. The store shines when shared
+state grows — multiple widgets reading the same data, actions that
+cascade, async workflows with multiple steps.
+
+=head1 EXAMPLES
+
+=head2 A counter
+
+Two handlers, one subscription:
+
+=begin code :lang<raku>
+
+$store.register-handler('counter/inc', -> $st, %ev {
+    (db => { count => ($st.get-in('count') // 0) + 1 },);
+});
+$store.register-handler('counter/reset', -> $st, %ev {
+    (db => { count => 0 },);
+});
+
+$store.subscribe-with-callback(
+    'counter-display',
+    -> $s { "Count: {$s.get-in('count') // 0}" },
+    -> $text { $display.set-text($text) },
+    $display,
+);
+
+$inc-button.on-press.tap:   -> $ { $store.dispatch('counter/inc') };
+$reset-button.on-press.tap: -> $ { $store.dispatch('counter/reset') };
+
+=end code
+
+=head2 Chaining events
+
+The C<dispatch> effect lets a handler trigger another event. Use it when
+one action implies another:
+
+=begin code :lang<raku>
+
+$store.register-handler('user/logged-in', -> $st, %ev {
+    (
+        db       => { user => %ev<user> },
+        dispatch => { event => 'inbox/fetch' },
+    );
+});
+
+=end code
+
+=head2 Async work
+
+The C<async> effect runs work on a worker thread, then dispatches a
+follow-up event with the result (or error). The handler itself returns
+immediately — the store doesn't block:
+
+=begin code :lang<raku>
+
+$store.register-handler('inbox/fetch', -> $st, %ev {
+    (async => {
+        work       => -> { fetch-messages-from-api() },
+        on-success => 'inbox/loaded',
+        on-failure => 'inbox/load-failed',
+    },);
+});
+
+$store.register-handler('inbox/loaded', -> $st, %ev {
+    (db => { inbox => %ev<result> },);
+});
+
+$store.register-handler('inbox/load-failed', -> $st, %ev {
+    (db => { error => %ev<error> },);
+});
+
+=end code
+
+=head2 Computed subscriptions
+
+C<subscribe-computed> watches a derived value. Fires only when the
+computed result changes, not every time the underlying state does:
+
+=begin code :lang<raku>
+
+$store.subscribe-computed(
+    'unread-count',
+    -> $s { $s.get-in('inbox').grep(*<read> == False).elems },
+    $badge-widget,
+);
+
+=end code
+
+=head2 Debugging
+
+Turn on logging during development to see the data flow:
+
+=begin code :lang<raku>
+
+$app.store.enable-debug;           # logs to $*ERR
+# or to a file:
+$app.store.enable-debug(log => open('store.log', :w));
+
+=end code
+
+Output:
+
+    [1776073200.123] dispatch task/add text=Buy milk
+    [1776073200.123]   → db: {tasks => [...], next-id => 5}
+    [1776073200.124]   sub[task-list] fired: [...]
+
+=head1 EFFECTS
+
+Handlers return effects rather than mutating state directly. Each effect
+is a C<Pair> of C<name => params>, or an C<Associative> with multiple
+pairs.
+
+=head2 Built-in effects
+
+=item C<< db => { ... } >> — deep-merge into the state tree. Nested hashes are merged recursively; non-hash values are set directly. This is the workhorse effect — most handlers return one.
+
+=item C<< dispatch => { event => 'name', ...payload } >> — enqueue another event. Processed in the same tick.
+
+=item C<< async => { work => &fn, on-success => 'name', on-failure => 'name' } >> — run C<&fn> on a worker thread. On return, dispatch C<on-success> with a C<result> payload. On throw, dispatch C<on-failure> with an C<error> payload.
+
+=head2 Custom effects
+
+Register your own with C<register-fx> for repeated side effects that
+you want named:
+
+=begin code :lang<raku>
+
+$store.register-fx('log', -> $store, %params {
+    my $line = %params<line>;
+    $log-file.say("[{DateTime.now}] $line");
+});
+
+# Then use from any handler:
+$store.register-handler('task/deleted', -> $st, %ev {
+    (
+        db  => { tasks => %ev<remaining> },
+        log => { line => "deleted task {%ev<id>}" },
+    );
+});
+
+=end code
+
+=head1 SUBSCRIPTIONS
+
+Three kinds, chosen by what you want to do on change:
+
+=item C<subscribe($id, @path, $widget)> — watch a state path. The widget is marked dirty when the value at that path changes. Simplest form.
+
+=item C<subscribe-computed($id, &compute, $widget)> — watch a derived value. Runs C<&compute> every tick; marks the widget dirty when the return value changes.
+
+=item C<subscribe-with-callback($id, &compute, &callback, $widget)> — same as computed, but also invokes C<&callback> with the new value. Use when the widget needs to be re-configured (e.g. C<set-items> on a list), not just re-rendered.
+
+All three use C<$id> as a unique key — re-subscribing with the same id
+overwrites the previous subscription. C<unsubscribe($id)> removes one
+by key; C<unsubscribe-widget($w)> removes every subscription bound to
+a widget (used during widget destruction).
+
+=head2 Equality semantics
+
+Subscription computes are compared against the previous value with a
+two-stage check: identity (C<===>) first, then value equality (C<eqv>)
+if that fails. C<eqv> does deep comparison on arrays and hashes, so
+subscriptions that return the same content in a fresh array instance
+don't fire spuriously.
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget> — widgets receive subscriptions and dispatch events
+=item L<Selkie::App> — registers C<ui/focus>, C<ui/focus-next>, C<ui/focus-prev> handlers by default
+
+=end pod
+
 unit class Selkie::Store;
 
 use Selkie::Widget;
@@ -8,8 +240,53 @@ has %!handlers;          # event-name → Array[&handler]
 has %!fx-handlers;       # fx-name → &handler
 has %!subscriptions;     # sub-id → Hash{ path|compute, last-value, widget }
 
+has IO::Handle $!debug-log;
+has Bool $!debug-dispatches    = False;
+has Bool $!debug-effects       = False;
+has Bool $!debug-subscriptions = False;
+
+#|( Enable logging of dispatches, effects, and subscription fires. Output
+    lines go to C<$log> (defaults to C<$*ERR>). Pass
+    C<:!dispatches>, C<:!effects>, or C<:!subscriptions> to silence a
+    specific category. Overhead when disabled is a single Bool check per
+    hook. )
+method enable-debug(
+    IO::Handle :$log       = $*ERR,
+    Bool       :$dispatches    = True,
+    Bool       :$effects       = True,
+    Bool       :$subscriptions = True,
+) {
+    $!debug-log           = $log;
+    $!debug-dispatches    = $dispatches;
+    $!debug-effects       = $effects;
+    $!debug-subscriptions = $subscriptions;
+}
+
+#| Turn off debug logging.
+method disable-debug() {
+    $!debug-log = IO::Handle;
+    $!debug-dispatches = $!debug-effects = $!debug-subscriptions = False;
+}
+
+method !debug-log-enabled(--> Bool) { $!debug-log.defined }
+
+method !log-line(Str:D $line) {
+    return unless $!debug-log.defined;
+    my $ts = now.Rat.fmt('%.3f');
+    $!debug-log.say("[$ts] $line");
+}
+
+method !fmt-value($v --> Str) {
+    return '(undef)' without $v;
+    try {
+        my $s = $v.gist;
+        $s = $s.substr(0, 80) ~ '…' if $s.chars > 80;
+        return $s;
+    }
+    '<unprintable>';
+}
+
 submethod TWEAK() {
-    # Built-in effects
     self.register-fx('db', -> $store, %params {
         $store!deep-merge(%params);
     });
@@ -36,8 +313,15 @@ submethod TWEAK() {
 
 # --- State access ---
 
+#| Access the raw state Hash. Read-only in practice — mutate via dispatch.
 method db(--> Hash) { %!db }
 
+#|( Deep-read a value at a path. Returns C<Nil> if any step in the path
+    is missing or not a Hash. Useful in handlers and subscription
+    computes:
+
+        my $name = $store.get-in('app', 'user', 'name');   # may be Nil
+    )
 method get-in(*@path) {
     my $current = %!db;
     for @path -> $key {
@@ -48,6 +332,14 @@ method get-in(*@path) {
     $current<>;
 }
 
+#|( Deep-write a value at a path, auto-creating intermediate Hashes as
+    needed. B<Prefer dispatch-and-handle over calling this directly from
+    app code> — direct mutations bypass the auditability that the
+    dispatch pattern gives you. This is public for legitimate framework
+    use (e.g. App's internal focus-action flag).
+
+        $store.assoc-in('app', 'user', 'name', value => 'Alice');
+    )
 method assoc-in(*@path, :$value!) {
     die "Path must not be empty" unless @path;
     my $target = %!db;
@@ -60,10 +352,19 @@ method assoc-in(*@path, :$value!) {
 
 # --- Events ---
 
+#|( Enqueue an event for processing on the next tick. The event name is
+    routed to every handler registered for that name; their returned
+    effects are applied in order. )
 method dispatch(Str:D $event, *%payload) {
     @!event-queue.push({ :$event, :%payload });
 }
 
+#|( Register a handler for an event name. Multiple handlers per event
+    are supported — all are called and their effects merged.
+
+    The handler signature is C<sub ($store, %payload --> @effects)>.
+    Return a single effect Pair, a list of Pairs, or a Hash of effects.
+    Return an empty list or C<()> to apply no effects. )
 method register-handler(Str:D $event, &handler) {
     %!handlers{$event} = [] unless %!handlers{$event}:exists;
     %!handlers{$event}.push(&handler);
@@ -71,33 +372,47 @@ method register-handler(Str:D $event, &handler) {
 
 # --- Effects ---
 
+#|( Register a custom effect handler. The handler receives the store and
+    a Hash of params, and performs side effects. See L<EFFECTS> above
+    for the built-in ones and an example of registering your own. )
 method register-fx(Str:D $fx-name, &handler) {
     %!fx-handlers{$fx-name} = &handler;
 }
 
 # --- Subscriptions ---
 
-# Sentinel value — never matches any real value
 my constant $UNSET = class { method WHICH() { 'UNSET' } }.new;
 
+#|( Subscribe a widget to a state path. When the value at the path
+    changes, the widget is marked dirty on the next tick. The C<$id>
+    identifies the subscription for later C<unsubscribe> — use a unique
+    name per subscription. )
 method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
     %!subscriptions{$id} = {
         type       => 'path',
         path       => @path.List,
-        last-value => $UNSET,  # forces dirty on first tick
+        last-value => $UNSET,
         widget     => $widget,
     };
 }
 
+#|( Subscribe a widget to a computed value. C<&compute> receives the
+    store each tick and should return the value. The widget is marked
+    dirty when the return value changes (compared with C<eqv> /
+    identity). )
 method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget) {
     %!subscriptions{$id} = {
         type       => 'computed',
         compute    => &compute,
-        last-value => $UNSET,  # forces dirty on first tick
+        last-value => $UNSET,
         widget     => $widget,
     };
 }
 
+#|( Like C<subscribe-computed>, but also invokes C<&callback> with the
+    new value whenever it changes. Use this when your widget needs to
+    be re-configured (e.g. C<set-items> on a list, C<set-text> on a
+    label), not just re-rendered. )
 method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $widget) {
     %!subscriptions{$id} = {
         type       => 'callback',
@@ -108,10 +423,14 @@ method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $w
     };
 }
 
+#| Remove a subscription by its id. No-op if the id isn't registered.
 method unsubscribe(Str:D $id) {
     %!subscriptions{$id}:delete;
 }
 
+#|( Remove every subscription bound to a widget. Called automatically by
+    C<Selkie::Container> when a child is removed — you rarely call this
+    yourself. )
 method unsubscribe-widget(Selkie::Widget $widget) {
     my @to-remove = %!subscriptions.grep(*.value<widget> === $widget).map(*.key);
     %!subscriptions{$_}:delete for @to-remove;
@@ -119,14 +438,21 @@ method unsubscribe-widget(Selkie::Widget $widget) {
 
 # --- Frame tick ---
 
+#|( Process one tick of the store. Drains the event queue (invoking
+    handlers, applying effects, possibly enqueuing more events — capped
+    at 100 iterations to prevent infinite loops), then walks every
+    subscription and compares its current value against the previous
+    one.
+
+    Called automatically by C<Selkie::App.run> each frame. Call
+    explicitly only when you need to force state resolution outside
+    the main loop (e.g. bootstrapping state before C<run> starts). )
 method tick() {
     self!process-queue;
     self!check-subscriptions;
 }
 
 method !process-queue() {
-    # Drain the queue — handlers may enqueue more events via :dispatch fx
-    # Limit iterations to prevent infinite loops
     my $max-iterations = 100;
     my $iteration = 0;
 
@@ -138,48 +464,64 @@ method !process-queue() {
             my $event = %entry<event>;
             my %payload = %entry<payload>;
 
+            if $!debug-dispatches {
+                my $payload-str = %payload.elems
+                    ?? %payload.kv.map(-> $k, $v { "$k=" ~ self!fmt-value($v) }).join(' ')
+                    !! '';
+                self!log-line("dispatch $event $payload-str");
+            }
+
             my @handlers = |(%!handlers{$event} // []);
+            if $!debug-dispatches && @handlers == 0 {
+                self!log-line("  (no handler)");
+            }
             for @handlers -> &handler {
                 my @effects = handler(self, %payload);
-                self!apply-effects(@effects);
+                self!apply-effects(@effects, :event($event));
             }
         }
     }
 }
 
-method !apply-effects(@effects) {
+method !apply-effects(@effects, Str :$event) {
     for @effects -> $fx {
         next unless $fx ~~ Pair | Associative;
 
         if $fx ~~ Pair {
-            my $fx-name = $fx.key;
-            my $fx-params = $fx.value;
-            my &handler = %!fx-handlers{$fx-name};
-            if &handler {
-                handler(self, $fx-params ~~ Associative ?? $fx-params !! { value => $fx-params });
-            }
+            self!run-effect($fx.key, $fx.value, :$event);
         } elsif $fx ~~ Associative {
             for $fx.kv -> $fx-name, $fx-params {
-                my &handler = %!fx-handlers{$fx-name};
-                if &handler {
-                    handler(self, $fx-params ~~ Associative ?? $fx-params !! { value => $fx-params });
-                }
+                self!run-effect($fx-name, $fx-params, :$event);
             }
         }
     }
 }
 
+method !run-effect(Str:D $fx-name, $fx-params, Str :$event) {
+    if $!debug-effects {
+        self!log-line("  → $fx-name: " ~ self!fmt-value($fx-params));
+    }
+    my &handler = %!fx-handlers{$fx-name};
+    if &handler {
+        handler(self, $fx-params ~~ Associative ?? $fx-params !! { value => $fx-params });
+    } elsif $!debug-effects {
+        self!log-line("    (unknown effect '$fx-name')");
+    }
+}
+
 method !check-subscriptions() {
-    for %!subscriptions.values -> %sub {
+    for %!subscriptions.kv -> $id, %sub {
         my $current = do given %sub<type> {
             when 'path'     { self.get-in(|%sub<path>) }
             when 'computed' | 'callback' { %sub<compute>(self) }
         };
 
         unless self!values-equal($current, %sub<last-value>) {
+            if $!debug-subscriptions {
+                self!log-line("  sub[$id] fired: " ~ self!fmt-value($current));
+            }
             %sub<last-value> = $current;
             %sub<widget>.mark-dirty if %sub<widget>.defined;
-            # Callback subscriptions also invoke the callback with the new value
             if %sub<type> eq 'callback' && %sub<callback>.defined {
                 %sub<callback>($current);
             }
@@ -190,14 +532,7 @@ method !check-subscriptions() {
 method !values-equal($a, $b --> Bool) {
     return True if !$a.defined && !$b.defined;
     return False if !$a.defined || !$b.defined;
-    # Identity short-circuit for the common case of subscriptions returning
-    # the same reference twice — cheap and avoids deep comparison cost on
-    # large structures.
     return True if $a === $b;
-    # Otherwise use value equality. eqv falls back to identity for arbitrary
-    # objects without an `eqv` operator, but does deep comparison for
-    # Iterables, Associatives, and standard scalars. Wrapped in a try in
-    # case some custom type's eqv throws — treat that as "not equal".
     my $eq = try { $a eqv $b };
     $eq // False;
 }

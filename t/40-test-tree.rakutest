@@ -1,0 +1,75 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Test::Tree;
+use Selkie::Layout::VBox;
+use Selkie::Widget::Button;
+use Selkie::Widget::Text;
+use Selkie::Widget::Border;
+use Selkie::Sizing;
+
+plan 6;
+
+sub make-tree() {
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    my $btn-a = Selkie::Widget::Button.new(label => 'A',  sizing => Sizing.fixed(1));
+    my $btn-b = Selkie::Widget::Button.new(label => 'B',  sizing => Sizing.fixed(1));
+    my $inner-vbox = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    my $btn-nested = Selkie::Widget::Button.new(label => 'nested', sizing => Sizing.fixed(1));
+    $inner-vbox.add($btn-nested);
+    my $border = Selkie::Widget::Border.new(sizing => Sizing.flex);
+    $border.set-content($inner-vbox);
+    my $text = Selkie::Widget::Text.new(text => 'caption', sizing => Sizing.fixed(1));
+
+    $root.add($btn-a);
+    $root.add($btn-b);
+    $root.add($border);
+    $root.add($text);
+
+    ($root, $btn-a, $btn-b, $btn-nested, $border, $text);
+}
+
+subtest "walk yields every widget in tree" => {
+    plan 1;
+    my ($root, $a, $b, $nested, $border, $text) = make-tree;
+    my @all = walk($root).List;
+    # root, btn-a, btn-b, border, inner-vbox, btn-nested, text
+    is @all.elems, 7, 'seven widgets in the tree';
+};
+
+subtest "find-widget returns first match" => {
+    plan 2;
+    my ($root, $a, $b, $nested) = make-tree;
+    my $first-btn = find-widget $root, * ~~ Selkie::Widget::Button;
+    isa-ok $first-btn, Selkie::Widget::Button, 'got a Button';
+    is $first-btn.label, 'A', 'first Button in tree is A';
+};
+
+subtest "find-widget with custom predicate" => {
+    plan 1;
+    my ($root, $a, $b, $nested) = make-tree;
+    my $w = find-widget $root, -> $x {
+        $x ~~ Selkie::Widget::Button && $x.label eq 'nested';
+    };
+    ok $w.defined, 'found nested button by predicate';
+};
+
+subtest "find-widget returns Nil when no match" => {
+    plan 1;
+    my ($root) = make-tree;
+    my $w = find-widget $root, -> $ { False };
+    nok $w.defined, 'Nil when no match';
+};
+
+subtest "find-widgets returns all matching" => {
+    plan 1;
+    my ($root) = make-tree;
+    my @btns = find-widgets $root, * ~~ Selkie::Widget::Button;
+    is @btns.elems, 3, 'three buttons total';
+};
+
+subtest "contains-widget-ok" => {
+    plan 1;
+    my ($root, $a) = make-tree;
+    contains-widget-ok $root, $a, 'button A is in the tree';
+};

@@ -5,13 +5,7 @@ use Selkie::Widget::Select;
 use Selkie::Event;
 use Notcurses::Native::Types;
 
-sub key-event(UInt :$id, Set :$modifiers = Set.new --> Selkie::Event) {
-    Selkie::Event.new(:$id, :$modifiers, input-type => NCTYPE_PRESS, event-type => KeyEvent);
-}
-
-sub mouse-event(UInt :$id --> Selkie::Event) {
-    Selkie::Event.new(:$id, modifiers => Set.new, input-type => NCTYPE_PRESS, event-type => MouseEvent);
-}
+use Selkie::Test::Keys;
 
 plan 22;
 
@@ -46,15 +40,19 @@ subtest "set-items populates list" => {
     ok $s.is-dirty, "dirty after set-items";
 };
 
-subtest "set-items resets state" => {
-    plan 3;
+subtest "set-items preserves selection by value" => {
+    plan 4;
     my $s = Selkie::Widget::Select.new;
     $s.set-items(<Alpha Beta Gamma>);
-    $s.select-index(2);
-    $s.set-items(<X Y>);
-    is $s.selected, 0, "selected reset to 0";
-    nok $s.is-open, "closed after set-items";
-    is $s.selected-value, 'X', "new first item";
+    $s.select-index(2);   # Gamma
+    $s.open;
+    $s.set-items(<Zed Gamma Alpha>);
+    is $s.selected, 1, "selection follows Gamma to its new index";
+    nok $s.is-open, "dropdown closes on set-items";
+    $s.set-items(<X Y>);  # Gamma gone, clamp
+    is $s.selected, 1, "clamps when previous value is missing";
+    $s.set-items(());
+    is $s.selected, 0, "resets on empty";
 };
 
 subtest "select-index changes selection" => {

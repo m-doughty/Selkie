@@ -53,9 +53,9 @@ Design goals
 
   * **Declarative sizing** — fixed, percentage, or flex units on each widget. Layouts allocate space automatically.
 
-  * **Safe by default** — all notcurses handles are owned by widgets and freed on destroy. No manual memory management.
+  * **Safe by default** — all notcurses handles are owned by widgets and freed on destroy. Terminal state is restored on any exit (normal, exception, signal).
 
-  * **Reactive state** — optional centralized store with event dispatch, handlers returning effects, and path/computed subscriptions.
+  * **Reactive state** — optional centralized store with event dispatch, handlers returning effects, path/computed subscriptions, and opt-in dispatch logging for development.
 
   * **Composable** — every widget is a role-composed class. Build your own by composing `Selkie::Widget` or `Selkie::Container`.
 
@@ -66,10 +66,54 @@ INSTALLATION
 zef install Selkie
 ```
 
+System dependencies
+-------------------
+
+Selkie depends on [Notcurses::Native](https://github.com/m-doughty/Notcurses-Native), which builds notcurses from source on install. You need CMake, a C compiler, and the notcurses native deps before running `zef install`.
+
+**Linux (Debian / Ubuntu):**
+
+    sudo apt install \
+        cmake pkg-config \
+        libncurses-dev libunistring-dev libdeflate-dev \
+        libavformat-dev libavcodec-dev libavdevice-dev \
+        libavutil-dev libswscale-dev
+
+**Linux (Fedora / RHEL):**
+
+    sudo dnf install cmake pkgconf-pkg-config \
+        ncurses-devel libunistring-devel libdeflate-devel ffmpeg-devel
+
+**macOS (Homebrew):**
+
+    brew install cmake pkg-config ffmpeg ncurses libunistring libdeflate
+
+**Windows (MSYS2 UCRT64):**
+
+Install MSYS2 from [https://www.msys2.org/](https://www.msys2.org/), open a **UCRT64** shell, and:
+
+    pacman -S \
+        mingw-w64-ucrt-x86_64-cmake \
+        mingw-w64-ucrt-x86_64-ninja \
+        mingw-w64-ucrt-x86_64-toolchain \
+        mingw-w64-ucrt-x86_64-libdeflate \
+        mingw-w64-ucrt-x86_64-libunistring \
+        mingw-w64-ucrt-x86_64-ncurses \
+        mingw-w64-ucrt-x86_64-ffmpeg
+
+On Windows the module installs and loads, but terminal-dependent tests don't run (upstream notcurses limitation). Use Linux or macOS for the full test suite.
+
+See [Notcurses::Native's README](https://github.com/m-doughty/Notcurses-Native) for full details.
+
+DOCUMENTATION
+=============
+
+This README covers the framework's concepts, lifecycle, and common patterns. For the per-module API reference — every widget's attributes, methods, and usage examples pulled straight from the source — see [docs/api/index.md](docs/api/index.md). The API pages are regenerated from Pod6 with `raku tools/build-api-docs.raku` and stay in sync with the code by construction.
+
 EXAMPLES
 ========
 
-The `examples/` directory has six runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
+The `examples/` directory has seven runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
 
   * `counter.raku` — The smallest correct-pattern app. VBox, Text, Button, store handler returning `(db =` ...)>, path subscription, global keybind. Start here.
 
@@ -82,6 +126,8 @@ The `examples/` directory has six runnable apps that together demonstrate every 
   * `job-runner.raku` — ProgressBar (both determinate and indeterminate), TextStream log, async store effect for background work, dispatch-effect chaining, frame callback driving animation.
 
   * `chat.raku` — CardList of variable-height RichText cards, MultiLineInput compose, Border auto-focus highlight, Toast, runtime theme toggle (Ctrl+T).
+
+  * `dashboard.raku` — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, and CommandPalette bound to Ctrl+P.
 
 Run any of them with:
 
@@ -243,6 +289,14 @@ $app.on-key('alt+1',  -> $ { $app.focus($pane1) });
 ```
 
 Global keybinds must include a modifier (Ctrl, Alt, Super) to avoid clashing with text input.
+
+Scope a keybind to a single screen with the `:screen` named argument. It fires only when that screen is the active one, which lets you have different shortcuts per view without reshuffling handlers on every screen switch:
+
+```raku
+$app.on-key('ctrl+n', :screen('tasks'), -> $ { create-task });
+$app.on-key('ctrl+n', :screen('notes'), -> $ { create-note });
+$app.on-key('ctrl+q', -> $ { $app.quit });   # unscoped = everywhere
+```
 
 Event spec syntax
 -----------------
@@ -479,6 +533,8 @@ $list.on-select.tap:   -> $name { ... };   # cursor moved
 $list.on-activate.tap: -> $name { ... };   # Enter pressed
 ```
 
+`set-items` preserves the current selection by value: if the previously-selected label is still in the new list, the cursor follows it to its new index. Otherwise the cursor is clamped to bounds. Only resets to zero when the list becomes empty. Same behaviour in `RadioGroup` and `Select`.
+
 Selkie::Widget::CardList
 ------------------------
 
@@ -527,6 +583,16 @@ $border.hide-bottom-border = True;
 ```
 
 Requires at least 3x3. Redraws its edges after content to cover pixel bleed from child image blits.
+
+`set-content` destroys the outgoing widget by default. Pass `:!destroy` to swap content while keeping the old widget alive — useful when cycling through persistent views (e.g. a tab strip where each tab is a widget you want to retain state for):
+
+```raku
+$border.set-content($view-a);
+$border.set-content($view-b, :!destroy);   # $view-a survives
+$border.set-content($view-a, :!destroy);   # swap back, still intact
+```
+
+Same `:destroy` option is on `Selkie::Widget::Modal.set-content`.
 
 Selkie::Widget::Modal
 ---------------------
@@ -608,6 +674,87 @@ $img.clear-image;
 ```
 
 Be aware: pixel-blitted images extend past parent plane bounds in notcurses. Wrap in a `Border` (which redraws its edges after content) or lay out with enough margin to avoid bleed.
+
+Selkie::Widget::Spinner
+-----------------------
+
+Tiny animated loading indicator. Drive via `tick` from a frame callback; wall-clock throttled so the rate is independent of how fast your event loop iterates.
+
+```raku
+my $spinner = Selkie::Widget::Spinner.new(
+    sizing   => Sizing.fixed(2),
+    interval => 0.1,                   # 10fps — smooth and calm
+);
+$app.on-frame: { $spinner.tick };
+```
+
+Built-in frame sets: `BRAILLE` (default), `DOTS`, `LINE`, `CIRCLE`, `ARROW`. Or pass a custom array of strings via `frames`.
+
+Selkie::Widget::TabBar
+----------------------
+
+Horizontal tab strip with keyboard navigation. Focusable — Left/Right move the active tab, Enter re-emits `on-tab-selected`. Integrates with [Selkie::ScreenManager](Selkie::ScreenManager) via `sync-to-app`, which keeps the bar's active tab synced to `$app.screen-manager.active-screen`.
+
+```raku
+my $tabs = Selkie::Widget::TabBar.new(sizing => Sizing.fixed(1));
+$tabs.add-tab(name => 'inbox',  label => 'Inbox');
+$tabs.add-tab(name => 'sent',   label => 'Sent');
+$tabs.add-tab(name => 'drafts', label => 'Drafts');
+
+$tabs.on-tab-selected.tap: -> Str $name {
+    $app.switch-screen($name);
+};
+```
+
+Selkie::Widget::CommandPalette
+------------------------------
+
+VS-Code-style fuzzy-filtered action launcher. Register commands by label + action, bind to `Ctrl+P`, and you get a searchable palette modal for free.
+
+```raku
+my $palette = Selkie::Widget::CommandPalette.new;
+$palette.add-command(label => 'New note',     -> { create-note });
+$palette.add-command(label => 'Toggle theme', -> { toggle-theme });
+$palette.add-command(label => 'Quit',         -> { $app.quit });
+
+my $modal = $palette.build;
+
+$palette.on-command.tap: -> $cmd {
+    $app.close-modal;
+    $cmd.action.();
+};
+
+$app.on-key('ctrl+p', -> $ {
+    $palette.reset;
+    $app.show-modal($modal);
+    $app.focus($palette.focusable-widget);
+});
+```
+
+Selkie::Widget::Table
+---------------------
+
+Scrollable tabular data with typed columns, a header row, sort indicators, cursor navigation, and custom cell rendering. Column widths use the same fixed/percent/flex model as layouts.
+
+```raku
+my $table = Selkie::Widget::Table.new(sizing => Sizing.flex);
+$table.add-column(name => 'id',     label => 'ID',     sizing => Sizing.fixed(6));
+$table.add-column(name => 'name',   label => 'Name',   sizing => Sizing.flex,     :sortable);
+$table.add-column(name => 'size',   label => 'Size',   sizing => Sizing.fixed(10), :sortable,
+                  render   => -> $b { human-size($b) },
+                  sort-key => -> $b { $b.Int });
+
+$table.set-rows([
+    { id => 1, name => 'alpha', size => 42_000 },
+    { id => 2, name => 'beta',  size => 1_200_000 },
+]);
+
+$table.on-activate.tap: -> UInt $idx {
+    open-item($table.row-at($idx));
+};
+
+$table.sort-by('name');   # cycles asc → desc → unsorted
+```
 
 THEMING
 =======
@@ -745,6 +892,39 @@ Store and widgets
 
 The one legitimate widget-level subscription is `Border`, which watches `ui.focused-widget` to auto-highlight when a descendant has focus.
 
+Custom widgets that need to wire up a subscription from `on-store-attached` should use the idempotent helpers `once-subscribe` and `once-subscribe-computed`. They track per-id registration so repeated `set-store` calls (e.g. when a widget is reparented) don't create duplicate subscriptions:
+
+```raku
+method on-store-attached($store) {
+    self.once-subscribe-computed("my-derived-state", -> $s {
+        # compute once, subscribe once — safe to call repeatedly
+        ...
+    });
+}
+```
+
+Debug logging
+-------------
+
+Store state flow is invisible by default. Turn on logging during development to watch events, effects, and subscription fires in real time:
+
+```raku
+$app.store.enable-debug;                        # logs to $*ERR
+# or:
+$app.store.enable-debug(log => open('store.log', :w));
+
+# Later:
+$app.store.disable-debug;
+```
+
+Output looks like:
+
+    [1776073200.123] dispatch task/add text=Buy milk
+    [1776073200.123]   → db: {tasks => [...], next-id => 5}
+    [1776073200.124]   sub[task-list] fired: [...]
+
+Each line shows: the dispatched event and its payload, the effects the handler returned, and any subscriptions whose computed value changed. Granularity is configurable — pass `:!dispatches`, `:!effects`, or `:!subscriptions` to silence a category. Overhead when disabled is a single Bool check per hook.
+
 BUILDING CUSTOM WIDGETS
 =======================
 
@@ -792,6 +972,132 @@ Key points:
   * Use `self.apply-style($style)` to set colors and attributes on the plane.
 
   * Return `True` from `handle-event` if you consumed the event.
+
+TESTING
+=======
+
+Widget apps are testable without ever starting notcurses. The `Selkie::Test::*` modules provide synthesis helpers, Supply observation, store assertions, and tree introspection — everything needed to exercise a widget from outside.
+
+Selkie::Test::Keys
+------------------
+
+Keystroke synthesis. Build events from the same spec grammar `on-key` accepts:
+
+```raku
+use Selkie::Test::Keys;
+
+press-key($widget, 'ctrl+q');          # build + dispatch
+press-keys($list, 'down', 'down', 'enter');   # sequence
+type-text($input, 'hello world');      # char-by-char
+my $ev = key-event('ctrl+shift+a');    # just build, don't dispatch
+```
+
+Selkie::Test::Supply
+--------------------
+
+Observe what a widget's Supply emits during an action:
+
+```raku
+use Selkie::Test::Supply;
+
+my @got = collect-from $btn.on-press, {
+    press-key($btn, 'enter');
+};
+
+emitted-once-ok $btn.on-press, True, 'Enter fires press', {
+    press-key($btn, 'enter');
+};
+
+emitted-count-is $list.on-select, 2, 'two moves', {
+    press-keys($list, 'down', 'down');
+};
+```
+
+Selkie::Test::Store
+-------------------
+
+Store plumbing for tests — no App required:
+
+```raku
+use Selkie::Test::Store;
+
+my $store = mock-store(state => { count => 0, user => { name => 'Alice' } });
+dispatch-and-tick($store, 'counter/inc');
+is state-at($store, 'count'), 1, 'count incremented';
+is state-at($store, 'user', 'name'), 'Alice', 'nested state intact';
+```
+
+Selkie::Test::Focus
+-------------------
+
+Most focusable widgets gate `handle-event` on `is-focused`. Wrap your test actions in `with-focus` to avoid the boilerplate:
+
+```raku
+use Selkie::Test::Focus;
+
+with-focus $input, {
+    type-text($input, 'hello');
+    press-key($input, 'enter');
+};
+# Focus released automatically — even if the block throws.
+```
+
+Selkie::Test::Tree
+------------------
+
+When a widget tree is built by a subscription callback and you don't have direct references, walk it:
+
+```raku
+use Selkie::Test::Tree;
+
+my $save-btn = find-widget $root, -> $w {
+    $w ~~ Selkie::Widget::Button && $w.label eq 'Save';
+};
+my @all-buttons = find-widgets $root, * ~~ Selkie::Widget::Button;
+contains-widget-ok $root, $my-input, 'input still reachable';
+```
+
+Selkie::Test::Snapshot
+----------------------
+
+Golden-file snapshot testing. First run saves the widget's rendered output to `t/snapshots/$name.snap`; subsequent runs diff against it.
+
+```raku
+use Selkie::Test::Snapshot;
+
+snapshot-ok $my-widget, 'my-widget-default', rows => 10, cols => 40;
+
+# After making an intentional change that affects the render:
+#   SELKIE_UPDATE_SNAPSHOTS=1 prove6 -l t
+# to accept new output.
+```
+
+Uses a real headless notcurses instance (one shared across all snapshots in a test run — notcurses only allows one init per process). Renders the widget, reads cells back via `ncplane_at_yx`, compares against the stored file. No terminal required.
+
+A complete example
+------------------
+
+```raku
+use Test;
+use Selkie::Test::Keys;
+use Selkie::Test::Supply;
+use Selkie::Test::Focus;
+use Selkie::Widget::TextInput;
+
+my $input = Selkie::Widget::TextInput.new;
+
+my @submissions = collect-from $input.on-submit, {
+    with-focus $input, {
+        type-text($input, 'hello world');
+        press-key($input, 'enter');
+    };
+};
+
+is @submissions.elems, 1, 'submitted once';
+is @submissions[0], 'hello world', 'submitted value is correct';
+
+done-testing;
+```
 
 COMMON PITFALLS
 ===============

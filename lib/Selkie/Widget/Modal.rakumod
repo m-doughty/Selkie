@@ -1,3 +1,83 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::Modal - Centered overlay dialog with dimmed background
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Modal;
+use Selkie::Layout::VBox;
+use Selkie::Widget::Button;
+use Selkie::Sizing;
+
+my $modal = Selkie::Widget::Modal.new(
+    width-ratio    => 0.5,
+    height-ratio   => 0.3,
+    dim-background => True,
+);
+
+my $content = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+$content.add: $some-text;
+my $ok = Selkie::Widget::Button.new(label => 'OK', sizing => Sizing.fixed(1));
+$content.add($ok);
+$modal.set-content($content);
+
+$ok.on-press.tap:    -> $ { $app.close-modal };
+$modal.on-close.tap: -> $ { $app.close-modal };
+
+$app.show-modal($modal);
+$app.focus($ok);
+
+=end code
+
+=head1 DESCRIPTION
+
+A dialog rendered centered on screen, sized as a fraction of the
+terminal. The background is dimmed by default so the dialog stands out.
+While the modal is active, L<Selkie::App> routes all events through it —
+Tab/Shift-Tab still cycle focus within the modal, Esc auto-closes.
+
+For common confirm/cancel dialogs, use L<Selkie::Widget::ConfirmModal>
+which wraps Modal with a pre-built button row.
+
+C<set-content(:!destroy)> lets you swap content without destroying the
+outgoing widget — useful for multi-step wizards where each step is a
+separate content widget.
+
+=head1 EXAMPLES
+
+=head2 Input dialog
+
+=begin code :lang<raku>
+
+my $modal = Selkie::Widget::Modal.new(width-ratio => 0.4, height-ratio => 0.2);
+my $body = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+$body.add: Selkie::Widget::Text.new(text => 'Rename', sizing => Sizing.fixed(1));
+my $input = Selkie::Widget::TextInput.new(sizing => Sizing.fixed(1));
+$body.add($input);
+$modal.set-content($body);
+
+$input.on-submit.tap: -> $new-name {
+    $app.close-modal;
+    $app.store.dispatch('rename', :$new-name);
+};
+
+$app.show-modal($modal);
+$app.focus($input);
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::ConfirmModal> — pre-built yes/no confirmation
+=item L<Selkie::Widget::FileBrowser> — pre-built file picker
+=item L<Selkie::App> — C<show-modal> and C<close-modal> methods
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -20,8 +100,14 @@ method content(--> Selkie::Widget) { $!content }
 
 method on-close(--> Supply) { $!close-supplier.Supply }
 
-method set-content(Selkie::Widget $w) {
-    $!content.destroy if $!content;
+method set-content(Selkie::Widget $w, Bool :$destroy = True) {
+    # See Border.set-content — same rationale for parking the outgoing
+    # plane off-screen when C<:!destroy> is passed.
+    if $!content && $destroy {
+        $!content.destroy;
+    } elsif $!content && $!content.plane {
+        $!content.reposition(10_000, 0);
+    }
     $!content = $w;
     $w.parent = self;
     self.mark-dirty;
@@ -38,6 +124,21 @@ method focusable-descendants(--> Seq) {
         if $!content ~~ Selkie::Container {
             .take for $!content.focusable-descendants;
         }
+    }
+}
+
+method handle-resize(UInt $rows, UInt $cols) {
+    my $changed = $rows != self.rows || $cols != self.cols;
+    return unless $changed;
+    self.resize($rows, $cols);
+    self!on-resize;
+    # Cascade to content sized to the modal's interior (same math as
+    # render uses). Propagates synchronously so the content subtree
+    # updates before the next render.
+    if $!content {
+        my UInt $modal-rows = ($rows * $!height-ratio).floor.UInt max 3;
+        my UInt $modal-cols = ($cols * $!width-ratio).floor.UInt max 10;
+        $!content.handle-resize($modal-rows, $modal-cols);
     }
 }
 
@@ -61,7 +162,7 @@ method render() {
     if $!content {
         if $!content.plane {
             $!content.reposition($modal-y, $modal-x);
-            $!content.resize($modal-rows, $modal-cols);
+            $!content.handle-resize($modal-rows, $modal-cols);
         } else {
             $!content.init-plane(self.plane,
                 y => $modal-y, x => $modal-x,

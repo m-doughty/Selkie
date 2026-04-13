@@ -18,10 +18,7 @@ class StubWidget does Selkie::Widget {
     }
 }
 
-sub key-event(UInt :$id --> Selkie::Event) {
-    Selkie::Event.new(:$id, char => Str, modifiers => Set.new,
-        input-type => NCTYPE_PRESS, event-type => KeyEvent);
-}
+use Selkie::Test::Keys;
 
 sub add-stub($cl, Int :$height = 5) {
     my $widget = StubWidget.new;

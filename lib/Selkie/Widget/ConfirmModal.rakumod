@@ -1,5 +1,84 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::ConfirmModal - Pre-built yes/no confirmation dialog
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::ConfirmModal;
+
+my $cm = Selkie::Widget::ConfirmModal.new;
+$cm.build(
+    title     => 'Delete file?',
+    message   => "Really delete 'report.pdf'?",
+    yes-label => 'Delete',
+    no-label  => 'Cancel',
+);
+
+$cm.on-result.tap: -> Bool $confirmed {
+    $app.close-modal;
+    do-delete() if $confirmed;
+};
+
+$app.show-modal($cm.modal);
+$app.focus($cm.no-button);     # safe default
+
+=end code
+
+=head1 DESCRIPTION
+
+A wrapper around L<Selkie::Widget::Modal> with a pre-built title +
+message + yes/no button row. Emits a C<Bool> on C<on-result> when the
+user picks a button or presses Esc (Esc = False = No).
+
+Use C<$cm.no-button> (or C<yes-button>) when calling C<focus> on the
+app so the default focus is on the safer button.
+
+Build the modal with C<build(...)> and pass the returned Modal to
+C<$app.show-modal>. The C<.modal> accessor returns the same Modal
+after construction.
+
+=head1 EXAMPLES
+
+=head2 Delete confirmation
+
+=begin code :lang<raku>
+
+sub confirm-delete($item) {
+    my $cm = Selkie::Widget::ConfirmModal.new;
+    $cm.build(
+        title     => 'Delete',
+        message   => "Delete '{$item.name}'?",
+        yes-label => 'Delete',
+        no-label  => 'Cancel',
+    );
+    $cm.on-result.tap: -> Bool $confirmed {
+        $app.close-modal;
+        if $confirmed {
+            $app.store.dispatch('item/delete', id => $item.id);
+            $app.toast('Deleted');
+        }
+    };
+    $app.show-modal($cm.modal);
+    $app.focus($cm.no-button);
+}
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Modal> — underlying dialog
+=item L<Selkie::Widget::FileBrowser> — similar wrapper pattern for file picking
+
+=end pod
+
 use Selkie::Widget::Modal;
 use Selkie::Widget::Text;
+use Selkie::Widget::RichText;
+use Selkie::Widget::RichText::Span;
 use Selkie::Widget::Button;
 use Selkie::Layout::VBox;
 use Selkie::Layout::HBox;
@@ -38,12 +117,16 @@ method build(
     # Spacer
     $content.add: Selkie::Widget::Text.new(text => '', sizing => Sizing.fixed(1));
 
-    # Message
-    $content.add: Selkie::Widget::Text.new(
-        text   => $message,
-        sizing => Sizing.flex,
-        style  => Selkie::Style.new(fg => 0xC0C0C0),
-    );
+    # Message — RichText so long prompts wrap to the modal's width
+    # rather than clipping. Single span with the dim-grey message style.
+    my $message-widget = Selkie::Widget::RichText.new(sizing => Sizing.flex);
+    $message-widget.set-content([
+        Selkie::Widget::RichText::Span.new(
+            text  => $message,
+            style => Selkie::Style.new(fg => 0xC0C0C0),
+        ),
+    ]);
+    $content.add($message-widget);
 
     # Button row
     my $buttons = Selkie::Layout::HBox.new(sizing => Sizing.fixed(1));

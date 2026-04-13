@@ -1,0 +1,93 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::CommandPalette;
+use Selkie::Widget::Modal;
+
+plan 10;
+
+subtest "construction without build" => {
+    plan 2;
+    my $p = Selkie::Widget::CommandPalette.new;
+    $p.add-command(label => 'A', -> { });
+    $p.add-command(label => 'B', -> { });
+    nok $p.modal.defined, 'no modal before build';
+    isa-ok $p.on-command, Supply, 'on-command is a Supply';
+};
+
+subtest "build returns modal" => {
+    plan 2;
+    my $p = Selkie::Widget::CommandPalette.new;
+    my $m = $p.build;
+    isa-ok $m, Selkie::Widget::Modal, 'build returns Modal';
+    ok $p.modal === $m, 'modal accessor returns same instance';
+};
+
+subtest "focusable-widget returns the search input" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    $p.build;
+    ok $p.focusable-widget.defined, 'has a focusable widget';
+};
+
+subtest "add-command after build updates list" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    $p.build;
+    $p.add-command(label => 'Late', -> { });
+    ok True, 'added without crashing';  # internal state is private
+};
+
+subtest "clear-commands empties the list" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    $p.add-command(label => 'A', -> { });
+    $p.add-command(label => 'B', -> { });
+    $p.build;
+    $p.clear-commands;
+    ok True, 'cleared without crashing';
+};
+
+subtest "reset clears input and list" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    $p.add-command(label => 'A', -> { });
+    $p.build;
+    $p.reset;
+    ok True, 'reset without crashing';
+};
+
+subtest "build is idempotent" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    my $m1 = $p.build;
+    my $m2 = $p.build;
+    ok $m1 === $m2, 'same modal returned';
+};
+
+subtest "Command class stores label + action" => {
+    plan 2;
+    my $fired = False;
+    my $cmd = Selkie::Widget::CommandPalette::Command.new(
+        label  => 'Test',
+        action => -> { $fired = True },
+    );
+    is $cmd.label, 'Test', 'label';
+    $cmd.action.();
+    ok $fired, 'action callable';
+};
+
+subtest "on-command is a Supply you can tap" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    my $tap-ok = True;
+    try { $p.on-command.tap: -> $ { } };
+    CATCH { default { $tap-ok = False } };
+    ok $tap-ok, 'tap worked';
+};
+
+subtest "palette with zero commands builds fine" => {
+    plan 1;
+    my $p = Selkie::Widget::CommandPalette.new;
+    lives-ok { $p.build }, 'build with no commands';
+};

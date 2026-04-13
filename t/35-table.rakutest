@@ -1,0 +1,164 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Table;
+use Selkie::Sizing;
+use Selkie::Event;
+use Notcurses::Native::Types;
+
+use Selkie::Test::Keys;
+
+plan 14;
+
+subtest "construction defaults" => {
+    plan 3;
+    my $t = Selkie::Widget::Table.new;
+    ok $t.focusable, "focusable by default";
+    is $t.columns.elems, 0, "no columns initially";
+    is $t.rows.elems, 0, "no rows initially";
+};
+
+subtest "add-column registers columns in order" => {
+    plan 3;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'a', label => 'A', sizing => Sizing.fixed(4));
+    $t.add-column(name => 'b', label => 'B', sizing => Sizing.flex);
+    is $t.columns.elems, 2, "2 columns";
+    is $t.columns[0].name, 'a', "first is a";
+    is $t.columns[1].name, 'b', "second is b";
+};
+
+subtest "set-rows populates data" => {
+    plan 2;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}, {id => 3}]);
+    is $t.rows.elems, 3, "3 rows";
+    is $t.row-at(0)<id>, 1, "first row id=1";
+};
+
+subtest "cursor starts at 0 and can be moved" => {
+    plan 3;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 10}, {id => 20}, {id => 30}]);
+    is $t.cursor, 0, "starts at 0";
+    $t.select-index(2);
+    is $t.cursor, 2, "moved to 2";
+    is $t.selected-row<id>, 30, "selected row matches cursor";
+};
+
+subtest "select-index clamps to bounds" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}]);
+    $t.select-index(99);
+    is $t.cursor, 1, "clamped to last row";
+};
+
+subtest "on-select emits on cursor move" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}]);
+    my @emitted;
+    $t.on-select.tap: -> $i { @emitted.push($i) };
+    $t.select-index(1);
+    # First set-rows also emitted 0; we just check the post-move emission
+    ok @emitted.tail == 1, "last emission is 1";
+};
+
+subtest "on-activate emits on Enter" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}]);
+    my $fired = -1;
+    $t.on-activate.tap: -> $i { $fired = $i };
+    $t.handle-event(key-event(id => NCKEY_ENTER));
+    is $fired, 0, "activated row 0";
+};
+
+subtest "arrow keys move cursor" => {
+    plan 3;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}, {id => 3}]);
+    $t.handle-event(key-event(id => NCKEY_DOWN));
+    is $t.cursor, 1, "down → 1";
+    $t.handle-event(key-event(id => NCKEY_DOWN));
+    is $t.cursor, 2, "down → 2";
+    $t.handle-event(key-event(id => NCKEY_UP));
+    is $t.cursor, 1, "up → 1";
+};
+
+subtest "home / end jump to bounds" => {
+    plan 2;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'id', label => 'ID');
+    $t.set-rows([{id => 1}, {id => 2}, {id => 3}, {id => 4}]);
+    $t.handle-event(key-event(id => NCKEY_END));
+    is $t.cursor, 3, "end → last";
+    $t.handle-event(key-event(id => NCKEY_HOME));
+    is $t.cursor, 0, "home → first";
+};
+
+subtest "sort-by ascending then descending" => {
+    plan 4;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'n', label => 'N', :sortable);
+    $t.set-rows([{n => 3}, {n => 1}, {n => 2}]);
+    $t.sort-by('n');
+    is $t.sort-column, 'n', "column set";
+    is $t.sort-direction, 'asc', "asc first";
+    is $t.row-at(0)<n>, 1, "first row is 1 (ascending)";
+    $t.sort-by('n');
+    is $t.sort-direction, 'desc', "cycles to desc";
+};
+
+subtest "sort-by cycles to unsorted on third call" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'n', label => 'N', :sortable);
+    $t.set-rows([{n => 3}, {n => 1}, {n => 2}]);
+    $t.sort-by('n');
+    $t.sort-by('n');
+    $t.sort-by('n');
+    nok $t.sort-column.defined, "sort cleared on third call";
+};
+
+subtest "sort-by non-sortable column is no-op" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'n', label => 'N');   # not sortable
+    $t.set-rows([{n => 3}, {n => 1}]);
+    $t.sort-by('n');
+    nok $t.sort-column.defined, "sort not set for non-sortable column";
+};
+
+subtest "custom sort-key applied" => {
+    plan 1;
+    my $t = Selkie::Widget::Table.new;
+    # Sort by integer value even though stored as strings
+    $t.add-column(
+        name     => 's',
+        label    => 'S',
+        sortable => True,
+        sort-key => -> $v { $v.Int },
+    );
+    $t.set-rows([{s => '10'}, {s => '2'}, {s => '30'}]);
+    $t.sort-by('s');
+    is $t.row-at(0)<s>, '2', "numeric sort: 2 first";
+};
+
+subtest "clear-sort restores insertion order" => {
+    plan 2;
+    my $t = Selkie::Widget::Table.new;
+    $t.add-column(name => 'n', label => 'N', :sortable);
+    $t.set-rows([{n => 3}, {n => 1}, {n => 2}]);
+    $t.sort-by('n');
+    $t.clear-sort;
+    nok $t.sort-column.defined, "sort cleared";
+    is $t.row-at(0)<n>, 3, "order is insertion order";
+};

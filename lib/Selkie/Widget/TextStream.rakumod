@@ -1,3 +1,76 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::TextStream - Append-only log with ring buffer and auto-scroll
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::TextStream;
+use Selkie::Sizing;
+
+my $log = Selkie::Widget::TextStream.new(
+    sizing    => Sizing.flex,
+    max-lines => 10_000,
+);
+
+$log.append('Starting up...');
+$log.append('Connected', style => Selkie::Style.new(fg => 0x9ECE6A));
+
+# Or drive from a Supply — each emission becomes a line
+$log.start-supply($lines-from-somewhere);
+
+=end code
+
+=head1 DESCRIPTION
+
+A scrollable log of text lines. Internally a ring buffer — bounded by
+C<max-lines> — so it's safe to append from high-volume sources without
+unbounded memory growth.
+
+Auto-scrolls to the bottom on append while the user is "at the end"
+(the default state). When the user scrolls up with arrow keys or the
+mouse wheel, auto-scroll pauses until they scroll back to the bottom.
+
+Arrow keys, Page Up/Down, Home/End, and the scroll wheel are handled
+when the widget is focused.
+
+=head1 EXAMPLES
+
+=head2 A streaming chat view
+
+Pipe every message in a store-held array into the stream:
+
+=begin code :lang<raku>
+
+$app.store.subscribe-with-callback(
+    'message-log',
+    -> $s { $s.get-in('messages') // [] },
+    -> @msgs { $log.clear; $log.append(.<text>) for @msgs },
+    $log,
+);
+
+=end code
+
+=head2 Colour-coded log levels
+
+=begin code :lang<raku>
+
+$log.append("INFO  $line", style => Selkie::Style.new(fg => 0xC0C0C0));
+$log.append("WARN  $line", style => Selkie::Style.new(fg => 0xFFCC00));
+$log.append("ERROR $line", style => Selkie::Style.new(fg => 0xFF5555, bold => True));
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::Text> — static styled block of text
+=item L<Selkie::Widget::ScrollView> — generic virtual-scrolling container
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -13,23 +86,39 @@ class StyledLine {
     has Selkie::Style $.style;
 }
 
+#| Maximum number of lines retained. Older lines are discarded as new
+#| ones arrive (ring buffer). Defaults to 10,000.
 has UInt $.max-lines = 10_000;
+
 has @!lines;
-has UInt $!head = 0;           # ring buffer head (oldest entry)
-has UInt $!count = 0;          # number of entries in buffer
+has UInt $!head = 0;
+has UInt $!count = 0;
 has UInt $!scroll-offset = 0;
-has Bool $!follow = True;      # auto-scroll to bottom on append
+has Bool $!follow = True;
+
+#| Whether to render the vertical scrollbar on the right edge when the
+#| buffer is taller than the viewport.
 has Bool $.show-scrollbar = True;
+
 has Supplier $!input-supplier = Supplier.new;
 
+#| Number of lines currently in the buffer.
 method logical-height(--> UInt) { $!count }
 
+#| Tap this to get every line as it's appended. Useful for mirroring
+#| output to an external sink (log file, network).
 method supply(--> Supply) { $!input-supplier.Supply }
 
+#|( Forward every value from a Supply into the stream, coerced to string
+    and split on newlines. Convenience for piping LLM streams, subprocess
+    output, etc. )
 method start-supply(Supply $s) {
     $s.tap: -> $v { self.append($v.Str) };
 }
 
+#|( Append text. If the text contains newlines, each line becomes a
+    separate buffer entry. The optional C<:style> decorates those lines
+    without affecting the rest of the buffer. )
 method append(Str:D $text, Selkie::Style :$style) {
     my $s = $style // Selkie::Style;
     for $text.lines -> $line {
@@ -55,6 +144,8 @@ method !line-at(UInt $idx --> StyledLine) {
     @!lines[($!head + $idx) % @!lines.elems];
 }
 
+#| Scroll to a specific row (0 = top). Above the max offset is clamped.
+#| Auto-follow is re-enabled when you scroll to the end.
 method scroll-to(UInt $row) {
     my UInt $max = self!max-offset;
     $!scroll-offset = $row min $max;
@@ -62,13 +153,18 @@ method scroll-to(UInt $row) {
     self.mark-dirty;
 }
 
+#| Scroll by a relative delta. Negative goes up, positive goes down.
 method scroll-by(Int $delta) {
     my Int $new = $!scroll-offset + $delta;
     $new = $new max 0;
     self.scroll-to($new.UInt);
 }
 
+#| Jump to the top of the buffer. Disables auto-follow until the user
+#| scrolls back to the end.
 method scroll-to-start() { self.scroll-to(0) }
+
+#| Jump to the bottom and re-enable auto-follow.
 method scroll-to-end()   { self.scroll-to(self!max-offset); $!follow = True }
 
 method !max-offset(--> UInt) {
@@ -76,6 +172,7 @@ method !max-offset(--> UInt) {
     $!count > $vh ?? $!count - $vh !! 0;
 }
 
+#| Empty the buffer and reset to the top.
 method clear() {
     @!lines = ();
     $!head = 0;
@@ -88,7 +185,6 @@ method clear() {
 method render() {
     return without self.plane;
 
-    # Clamp scroll offset to valid range (dimensions may have changed since last scroll)
     my UInt $max = self!max-offset;
     $!scroll-offset = $max if $!scroll-offset > $max;
 

@@ -5,10 +5,7 @@ use Selkie::Widget::MultiLineInput;
 use Selkie::Event;
 use Notcurses::Native::Types;
 
-sub key-event(UInt :$id, Str :$char, Set :$modifiers = Set.new,
-              NcInputType :$input-type = NCTYPE_PRESS --> Selkie::Event) {
-    Selkie::Event.new(:$id, :$char, :$modifiers, :$input-type, event-type => KeyEvent);
-}
+use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 

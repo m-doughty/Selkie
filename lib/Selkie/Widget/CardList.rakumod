@@ -1,3 +1,83 @@
+=begin pod
+
+=head1 NAME
+
+Selkie::Widget::CardList - Cursor-navigated scrollable list of variable-height widgets
+
+=head1 SYNOPSIS
+
+=begin code :lang<raku>
+
+use Selkie::Widget::CardList;
+use Selkie::Widget::Border;
+use Selkie::Widget::RichText;
+use Selkie::Sizing;
+
+my $cards = Selkie::Widget::CardList.new(sizing => Sizing.flex);
+
+# Each card has: an inner widget, a root (often a Border wrapping the
+# inner widget), a height, and an optional border for focus highlighting.
+for @messages -> %msg {
+    my $rich = Selkie::Widget::RichText.new(sizing => Sizing.flex);
+    $rich.set-content(%msg<spans>);
+    my $border = Selkie::Widget::Border.new(sizing => Sizing.flex);
+    $border.set-content($rich);
+    $cards.add-item($rich, root => $border, height => 3, :$border);
+}
+
+$cards.on-select.tap: -> UInt $idx { show-detail($cards.selected-item) };
+
+=end code
+
+=head1 DESCRIPTION
+
+Like L<Selkie::Widget::ListView>, but each item is an arbitrary widget
+of configurable height rather than a string. The cursor moves between
+cards; the selected card always fully fits in the viewport, and the
+card at the opposite end may be partially clipped (with a visual
+truncation hint if the card's widget supports C<set-clipped>).
+
+Use this when your items are structured: chat messages with avatars,
+tasks with metadata, email threads, etc. Use C<ListView> if items are
+just strings.
+
+=head2 Item shape
+
+Each item is registered with:
+
+=item C<$widget> (positional) — the renderable widget inside the card (what the user sees)
+=item C<:root> — the outermost container for the card (usually a Border wrapping the inner widget)
+=item C<:height> — the card's logical height in rows
+=item C<:border> — optional Border for focus-highlight integration
+
+=head1 EXAMPLES
+
+=head2 Chat messages
+
+See C<examples/chat.raku> for the full version. In brief:
+
+=begin code :lang<raku>
+
+$app.store.subscribe-with-callback(
+    'chat-cards',
+    -> $s { $s.get-in('messages') // [] },
+    -> @msgs {
+        $cards.clear-items;
+        for @msgs -> %m { $cards.add-item(|build-card(%m)) }
+        $cards.select-last;
+    },
+    $cards,
+);
+
+=end code
+
+=head1 SEE ALSO
+
+=item L<Selkie::Widget::ListView> — simpler, string-only version
+=item L<Selkie::Widget::ScrollView> — non-interactive virtual scroll
+
+=end pod
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -6,13 +86,6 @@ use Selkie::Widget;
 use Selkie::Widget::Border;
 use Selkie::Event;
 use Selkie::Sizing;
-
-# A cursor-navigated scrollable list of variable-height widgets.
-# Each item has a root widget (renderable), a height, and optionally
-# a border (for highlight/clip flags) and a set-clipped method.
-#
-# The selected item always fully fits in the viewport.
-# The item at the opposite end can be partially clipped.
 
 unit class Selkie::Widget::CardList does Selkie::Widget;
 
@@ -29,6 +102,28 @@ method new(*%args) {
 method on-select(--> Supply) { $!select-supplier.Supply }
 method selected(--> Int) { $!selected }
 method count(--> Int) { @!items.elems }
+
+#|( Resize cascade: own plane + propagate to each card's root. Card
+    items are held in C<@!items> rather than C<self.children>, so
+    the standard container cascade doesn't reach them; we walk them
+    explicitly here.
+
+    Each card's new width is the CardList's new width; height stays
+    whatever was recorded at C<add-item> time (the consumer owns
+    card heights via C<set-item-height>). This is what you want for
+    chat-like use cases where height depends on external state like
+    wrapped message length, which recalculates via a separate
+    subscription path. )
+method handle-resize(UInt $rows, UInt $cols) {
+    my $changed = $rows != self.rows || $cols != self.cols;
+    return unless $changed;
+    self.resize($rows, $cols);
+    self!on-resize;
+    for @!items -> %item {
+        next unless %item<root>.plane;
+        %item<root>.handle-resize(%item<height>.UInt, $cols);
+    }
+}
 
 method selected-item() {
     return Nil unless $!selected >= 0 && $!selected < @!items.elems;
