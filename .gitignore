@@ -6,4 +6,5 @@ lib/.precomp
 *.swp *.swo *~
 *.bak *.tmp *.old
 *.log core *.core
-Selkie-*
+Selkie-*.tar.gz
+Selkie-*/
