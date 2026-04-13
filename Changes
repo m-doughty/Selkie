@@ -1,6 +1,12 @@
 Revision history for Selkie
 
 {{$NEXT}}
+    - Placeholder.
+
+0.2.1 2026-04-13T10:46:15+01:00
+    - Add API docs.
+
+0.2.0 2026-04-12T23:00:39+01:00
     - Poll-based resize detection. notcurses doesn't reliably emit
       NCKEY_RESIZE through the input queue on every platform (macOS
       absorbs SIGWINCH into render without queueing the event),
