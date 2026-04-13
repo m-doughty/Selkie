@@ -115,7 +115,22 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-toolchain
 
-      - name: Install Raku dependencies
+      # zef's fallback extractors (tar, unzip) fail on Windows when
+      # handling the mixed-separator temp paths it generates
+      # (`D:\...\tmp/.zef...`) — Notcurses::Native's tarball never
+      # unpacks. Sidestep by fetching + installing it from source
+      # first; when Selkie's deps-only resolver then runs, it sees
+      # Notcurses::Native already satisfied and skips the download.
+      # Also means Windows CI tests Selkie against head-of-main
+      # Notcurses::Native rather than whatever's published.
+      - name: Install Notcurses::Native from source
+        run: |
+          cd ..
+          git clone --depth=1 https://github.com/m-doughty/Notcurses-Native.git
+          cd Notcurses-Native
+          zef install --/test .
+
+      - name: Install remaining Raku dependencies
         run: zef install --/test --test-depends --deps-only .
 
       # Notcurses's own test harness doesn't run on Windows (upstream
