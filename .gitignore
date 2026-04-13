@@ -8,3 +8,4 @@ lib/.precomp
 *.log core *.core
 Selkie-*.tar.gz
 Selkie-*/
+NUL

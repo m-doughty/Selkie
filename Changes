@@ -1,7 +1,29 @@
 Revision history for Selkie
 
 {{$NEXT}}
-    - Placeholder.
+
+0.2.2  2026-04-13T11:59:55+01:00
+    - Test::Snapshot: terminal restore on END via notcurses_stop.
+      Previously skipped, leaving Kitty keyboard protocol pushed and
+      mouse tracking enabled — after a test run the parent terminal
+      didn't accept Ctrl+C as SIGINT (transmitted as an escape
+      sequence) and Enter arrived as ^M (ICRNL off), so shells /
+      mi6 / prove6 couldn't accept input. Users had to close the
+      terminal tab.
+      Fix: redirect fd 1/2 to /dev/null in an INIT phaser (must be
+      INIT, not module-level mainline — Raku's precomp-and-cache
+      semantics meant mainline fd juggling never re-ran in the
+      consumer process), rerouting Raku's $*OUT to a fd-backed
+      handle pointing at the saved original stdout so TAP keeps
+      flowing. Then call notcurses_stop in END; its stderr warnings
+      ("signals weren't registered" etc) land in /dev/null rather
+      than the TAP stream.
+      Also: previous attempts used open(2) to get the /dev/null fd,
+      but open is variadic on macOS and Raku's NativeCall can't
+      reliably invoke variadic C functions; it silently returned -1
+      and dup2 was a no-op. Switched to fopen + fileno (neither
+      variadic), which works reliably.
+      Plus an stty termios restore as a belt-and-suspenders layer.
 
 0.2.1 2026-04-13T10:46:15+01:00
     - Add API docs.

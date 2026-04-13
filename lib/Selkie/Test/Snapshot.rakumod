@@ -165,6 +165,10 @@ use Selkie::Widget;
 
 sub fopen(Str, Str) returns Pointer is native {*}
 sub fclose(Pointer) returns int32 is native {*}
+sub fileno(Pointer) returns int32 is native {*}
+
+sub dup(int32 --> int32) is native {*}
+sub dup2(int32, int32 --> int32) is native {*}
 
 my Pointer $null-fp;
 sub ensure-null-fp(--> Pointer) {
@@ -174,6 +178,56 @@ sub ensure-null-fp(--> Pointer) {
     $null-fp;
 }
 
+# Redirect fd 1 & 2 to /dev/null at RUNTIME, in every process that
+# uses this module. Has to be an INIT phaser — mainline `my $foo =
+# dup(1)` at module top level runs during PRECOMPILATION in a child
+# process and gets cached; in the consumer process that loads the
+# precomp, the expression doesn't re-execute, so our dup2 never
+# actually runs in the process we care about. INIT guarantees
+# runtime execution in every process.
+#
+# After this block runs:
+#   - fd 1 and fd 2 point at /dev/null; C-level writes (notcurses,
+#     libc) go nowhere.
+#   - Raku's $*OUT is reopened on a fd-backed path pointing to the
+#     SAVED original stdout fd, so Raku-side `print` / `say`
+#     (including Test framework TAP emission and render-to-string's
+#     output capture by the harness) still reach the original pipe.
+my int32 $saved-stdout-fd = -1;
+
+INIT {
+    my $null-path = $*KERNEL.name.lc ~~ /win/ ?? 'NUL' !! '/dev/null';
+
+    # Use fopen + fileno rather than open(2) because open() is
+    # variadic on macOS (int open(const char*, int, ...)) and Raku's
+    # NativeCall can't reliably call variadic functions. fopen
+    # returns a FILE*; fileno extracts the underlying fd.
+    $saved-stdout-fd = dup(1);
+    my Pointer $null-fp = fopen($null-path, 'w');
+    if $null-fp.defined {
+        my int32 $null-fd = fileno($null-fp);
+        if $null-fd >= 0 {
+            dup2($null-fd, 1);
+            dup2($null-fd, 2);
+        }
+    }
+
+    my Bool $rerouted = False;
+    for "/dev/fd/$saved-stdout-fd", "/proc/self/fd/$saved-stdout-fd" -> $path {
+        if $path.IO.e {
+            try {
+                $*OUT = open($path, :w);
+                $rerouted = True;
+                last;
+            }
+        }
+    }
+
+    unless $rerouted {
+        dup2($saved-stdout-fd, 1);
+    }
+}
+
 # --- Shared notcurses instance -------------------------------------------
 #
 # notcurses only allows one init per process — subsequent inits return
@@ -181,19 +235,44 @@ sub ensure-null-fp(--> Pointer) {
 # every render in the same test run. Cleanup on program exit via END.
 
 my $nc-shared;
+my Str $saved-tty-state;
 
 sub ensure-nc() {
     return if $nc-shared;
+
+    # fd 1/2 are already redirected to /dev/null from module load
+    # (see top-level block above). Anything notcurses writes via C
+    # (including stop's "signals weren't registered" warnings) lands
+    # in /dev/null; $*OUT is rerouted to the original stdout.
+
+    # Snapshot /dev/tty termios state BEFORE notcurses_init so we can
+    # restore it on process exit as a belt-and-suspenders layer in
+    # case notcurses_stop misses something.
+    if '/dev/tty'.IO.e {
+        my $proc = run 'stty', '-g', :in('/dev/tty'), :out, :err;
+        my $g = $proc.out.slurp(:close);
+        $proc.err.slurp(:close);
+        $saved-tty-state = $g.chomp if $proc.exitcode == 0 && $g.chars > 0;
+    }
 
     # Give notcurses its own /dev/null FILE* to write into, so its
     # terminal init/restore sequences never reach stdout and never
     # interfere with TAP output.
     my $fp = ensure-null-fp();
 
+    # Let notcurses install its signal handlers. Without them,
+    # notcurses_stop's drop_signals() detects that signal_nc was never
+    # set and emits "signals weren't registered for ..." to stderr —
+    # leaks into TAP even with fd 2 redirected, because the message
+    # goes via libnotcurses's own stderr-equivalent reference that
+    # was established before our dup2. With handlers enabled, stop
+    # unregisters them cleanly and the warning doesn't fire.
+    #
+    # NCOPTION_NO_WINCH_SIGHANDLER stays off because we poll for
+    # resize ourselves (see Selkie::App).
     my $flags = NCOPTION_SUPPRESS_BANNERS
             +| NCOPTION_NO_ALTERNATE_SCREEN
-            +| NCOPTION_NO_WINCH_SIGHANDLER
-            +| NCOPTION_NO_QUIT_SIGHANDLERS;
+            +| NCOPTION_NO_WINCH_SIGHANDLER;
     my $opts = NotcursesOptions.new(:$flags, loglevel => NCLOGLEVEL_SILENT);
     $nc-shared = notcurses_init($opts, $fp);
 
@@ -202,19 +281,52 @@ sub ensure-nc() {
     }
 }
 
-# No END phaser for notcurses cleanup.
+END {
+    # Restore the terminal on process exit. Redirect fd 1/2 to
+    # /dev/null IMMEDIATELY before calling notcurses_stop so any
+    # stderr it emits (warnings about signal handlers it thinks
+    # weren't registered, etc.) lands in /dev/null rather than the
+    # TAP stream. Doing this at END rather than INIT/module-load
+    # because Raku's precomp-and-cache semantics mean top-level
+    # side effects can get baked into the precomp artifact and
+    # never re-run in consumer processes.
+    if $nc-shared {
+        my $null-path = $*KERNEL.name.lc ~~ /win/ ?? 'NUL' !! '/dev/null';
+        my Pointer $null-fp = fopen($null-path, 'w');
+        if $null-fp.defined {
+            my int32 $null-fd = fileno($null-fp);
+            if $null-fd >= 0 {
+                dup2($null-fd, 1);
+                dup2($null-fd, 2);
+            }
+        }
+        notcurses_stop($nc-shared);
+        $nc-shared = Nil;
+    }
+
+    # Belt-and-suspenders: restore /dev/tty termios via stty in case
+    # notcurses_stop missed anything or didn't run (init failed
+    # before $nc-shared was assigned). Best-effort — errors swallowed.
+    if $saved-tty-state && '/dev/tty'.IO.e {
+        try run 'stty', $saved-tty-state,
+            :in('/dev/tty'), :out, :err;
+    }
+}
+
+# Terminal-restore on END is handled by notcurses_stop. That's
+# feasible because ensure-fd-redirect (above) redirects fd 1 & 2 to
+# /dev/null before notcurses_init runs — so notcurses's C-level
+# writes (display resets, "signals weren't registered" warnings, etc)
+# can't leak into prove6's TAP pipe. Raku code that prints via
+# $*OUT still reaches the original stdout via a fd-backed reroute.
 #
-# notcurses_stop writes terminal-restore sequences to stdout — which
-# corrupts the TAP output stream prove6 is reading. We tried redirecting
-# fds around the stop call, but the END-phaser timing races with
-# prove6's TAP consumption: flushes and fd juggling at process exit
-# sometimes swallow the last subtest's output before prove6 sees it.
+# Skipping stop would leave Kitty keyboard protocol pushed and mouse/
+# bracketed-paste protocols enabled — after a test run the parent
+# terminal couldn't accept Ctrl+C as SIGINT (Kitty kbd transmitted
+# it as an escape sequence) and Enter arrived as ^M (ICRNL off).
 #
-# Since our notcurses instance was never attached to a real terminal
-# (we inited against a piped/redirected fd with alternate-screen
-# disabled), there's no terminal state to restore. The OS reclaims the
-# notcurses-internal allocations on process exit. Not calling
-# notcurses_stop is strictly a leak-until-exit — harmless for tests.
+# Plus a stty-based termios restore in the END phaser as a
+# belt-and-suspenders layer.
 
 # --- Rendering ------------------------------------------------------------
 
