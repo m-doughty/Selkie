@@ -102,11 +102,12 @@ method on-close(--> Supply) { $!close-supplier.Supply }
 
 method set-content(Selkie::Widget $w, Bool :$destroy = True) {
     # See Border.set-content — same rationale for parking the outgoing
-    # plane off-screen when C<:!destroy> is passed.
+    # plane off-screen when C<:!destroy> is passed. park() recurses
+    # through containers and cleans up sprixels on Image widgets.
     if $!content && $destroy {
         $!content.destroy;
     } elsif $!content && $!content.plane {
-        $!content.reposition(10_000, 0);
+        $!content.park;
     }
     $!content = $w;
     $w.parent = self;

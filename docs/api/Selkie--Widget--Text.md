@@ -90,6 +90,16 @@ method set-text(
 
 Replace the displayed text. Re-wraps and marks the widget dirty.
 
+### method set-style
+
+```raku
+method set-style(
+    Selkie::Style $s
+) returns Mu
+```
+
+Replace the style override. Pass an undefined Selkie::Style to revert to the theme default.
+
 ### method logical-height
 
 ```raku

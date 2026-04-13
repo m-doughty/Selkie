@@ -187,3 +187,16 @@ method destroy() {
     self!unload;
     self!destroy-plane;
 }
+
+#|( When an Image is parked off-screen by a container swap (e.g. tab
+    switch in CharacterEditor), the parent plane moves but the
+    sprixel — Sixel/Kitty pixel data the terminal renders at an
+    absolute screen position — is NOT cleared by notcurses just
+    because its plane moved. Destroy the blit-plane so the next
+    notcurses_render flushes the sprixel removal to the terminal.
+    The blit-plane gets recreated when render fires again on
+    re-install. )
+method park() {
+    self!destroy-blit-plane;
+    self.reposition(10_000, 0) if self.plane;
+}

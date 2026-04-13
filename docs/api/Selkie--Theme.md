@@ -164,6 +164,14 @@ Scrollbar thumb (the filled bar showing position).
 
 Divider line in `Selkie::Layout::Split`.
 
+### has Selkie::Style $.tab-active
+
+Active tab in `Selkie::Widget::TabBar`. Distinct background so the selected tab is unambiguously different from the rest — bracket decorators alone aren't enough contrast at a glance.
+
+### has Selkie::Style $.tab-inactive
+
+Inactive tabs in `Selkie::Widget::TabBar`.
+
 ### has Associative[Selkie::Style] %.custom
 
 Extra application-specific slots. Keyed by name, values are `Selkie::Style`. Look them up via `slot(name)`.

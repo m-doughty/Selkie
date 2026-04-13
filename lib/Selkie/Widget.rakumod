@@ -624,18 +624,45 @@ method reposition(UInt $y, UInt $x) {
     and call C<self.clear-dirty> at the end. )
 method render() { ... }
 
+#|( Park the widget off-screen — used by container swap operations
+    (e.g. C<Border.set-content(:!destroy)>) when an outgoing widget
+    needs to keep its state but stop appearing on the terminal.
+
+    Default implementation repositions the widget's plane to a
+    far-off Y so notcurses clips it. B<Override in widgets that own
+    other notcurses resources whose visibility doesn't follow plane
+    position> — most importantly Image, where the blit-plane carries
+    a sprixel (Sixel/Kitty pixel image) that the terminal renders
+    at an absolute on-screen position and won't clear just because
+    the parent moved. Such widgets need to destroy their auxiliary
+    plane(s) here so the sprixel gets removed from the terminal.
+
+    Containers should override to recurse: park self + each
+    descendant. )
+method park() {
+    self.reposition(10_000, 0) if $!plane;
+}
+
 #|( Register a keybind for this widget. Fires when the widget has
     focus and an unconsumed event matches the spec. See L<Selkie::Event>
     for the spec syntax (C<'a'>, C<'ctrl+q'>, C<'shift+tab'>, etc).
 
+    Pass C<:description> to surface the bind in
+    L<Selkie::Widget::HelpOverlay>. Binds without a description still
+    work — they just don't appear in the help listing.
+
     Example:
 
-        $list.on-key: 'd', -> $ { delete-item };
-        $list.on-key: 'ctrl+r', -> $ { refresh };
+        $list.on-key: 'd',      -> $ { delete-item }, :description('Delete');
+        $list.on-key: 'ctrl+r', -> $ { refresh },     :description('Refresh');
     )
-method on-key(Str:D $spec, &handler) {
-    @!keybinds.push: Keybind.parse($spec, &handler);
+method on-key(Str:D $spec, &handler, Str :$description = '') {
+    @!keybinds.push: Keybind.parse($spec, &handler, :$description);
 }
+
+#| Read-only access to this widget's registered keybinds. Used by
+#| HelpOverlay to render a listing for the focused widget chain.
+method keybinds(--> List) { @!keybinds.List }
 
 method !check-keybinds(Selkie::Event $ev --> Bool) {
     for @!keybinds -> $kb {

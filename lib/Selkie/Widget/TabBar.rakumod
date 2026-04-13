@@ -215,19 +215,38 @@ method render() {
 
     return unless @!tabs;
 
-    my $base = self.theme.text;
-    my $hl   = self.theme.text-highlight;
+    my $active-style   = self.theme.tab-active;
+    my $inactive-style = self.theme.tab-inactive;
 
     my UInt $x = 0;
     my UInt $w = self.cols;
 
+    # Focus indicator: prepend a chevron prefix when the bar is the
+    # focused widget, blank padding otherwise. Lets users distinguish
+    # focused from unfocused TabBars on the same screen at a glance —
+    # critical when there are multiple TabBars (e.g. server options +
+    # character editor on stacked screens).
+    my $focus-prefix = $!focused ?? '▶ ' !! '  ';
+    self.apply-style($!focused ?? $active-style !! $inactive-style);
+    if $x < $w {
+        my $prefix = $focus-prefix.substr(0, ($w - $x) min $focus-prefix.chars);
+        ncplane_putstr_yx(self.plane, 0, $x, $prefix);
+        $x += $prefix.chars;
+    }
+
     for @!tabs.kv -> $i, %tab {
         my $is-active = $i == $!active-idx;
-        my $style = $is-active ?? $hl !! $base;
+
+        # When unfocused, the active tab keeps its brackets but uses
+        # the inactive style (so it visually recedes — cue: "this
+        # bar isn't being driven right now"). Focused → active style.
+        my $style = $is-active && $!focused
+            ?? $active-style
+            !! $inactive-style;
         self.apply-style($style);
 
-        # Active tab gets brackets; inactive gets padding. Focused bar
-        # further emphasises the active tab with bold.
+        # Brackets always mark the active tab so users can see WHICH
+        # tab is current even when the bar isn't focused.
         my $display = $is-active
             ?? "[ {%tab<label>} ]"
             !! "  {%tab<label>}  ";

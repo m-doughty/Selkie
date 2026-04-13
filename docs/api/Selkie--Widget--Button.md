@@ -47,7 +47,7 @@ SEE ALSO
 
 ### has Str $.label
 
-The text shown on the button. Required and immutable.
+The text shown on the button. Required at construction; use `set-label` to change afterwards (e.g. for counters).
 
 ### method on-press
 
@@ -56,6 +56,16 @@ method on-press() returns Supply
 ```
 
 Supply that emits each time the user activates the button (Enter or Space while focused).
+
+### method set-label
+
+```raku
+method set-label(
+    Str:D $l
+) returns Mu
+```
+
+Replace the displayed label. Marks the widget dirty.
 
 ### method set-focused
 

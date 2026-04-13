@@ -2,6 +2,57 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.2.4  2026-04-13T17:09:44+01:00
+    - Widget::HelpOverlay: new modal that walks the focused widget +
+      its ancestors, collects all `on-key` binds that carry a
+      `:description`, and renders them grouped by widget class.
+      Authors opt in by passing `:description` to `on-key` — undocumented
+      binds (e.g. cursor-movement plumbing) stay out of the overlay.
+    - Widget.on-key: new `:description` named arg. Stored on the
+      Keybind so HelpOverlay can surface it. Existing call sites stay
+      working (no description = bind doesn't appear in the overlay).
+    - Widget: new public `keybinds()` accessor returning the list of
+      registered Keybinds. Used by HelpOverlay; harmless to call from
+      anywhere.
+    - Event: Keybind gained `$.spec` (original spec string, e.g.
+      "ctrl+h") and `$.description` fields. `Keybind.parse` accepts
+      `:description`.
+    - Widget::Button: new `set-label` method — replace the displayed
+      label at runtime (e.g. "Save 3 Edited Entries"). The label
+      attribute was previously immutable.
+    - Widget::Text: new `set-style` method — swaps the style
+      override at runtime and marks the widget dirty. Previously
+      the style attribute was read-only after construction, so
+      changing colour/emphasis required rebuilding the widget.
+    - Widget: new `park()` method — explicit hook for moving a widget
+      off-screen while preserving its state. Default implementation
+      repositions the widget's plane to (10000, 0). Container override
+      recurses through children + content. Image widget overrides to
+      destroy its blit-plane (and thus the sprixel — Sixel/Kitty pixel
+      data the terminal renders at an absolute screen position and
+      won't clear just because the parent plane moved).
+      Every place we previously parked widgets via plain `reposition`
+      now calls `park` instead — App.switch-screen, App.add-screen,
+      Border.set-content(:!destroy), Modal.set-content(:!destroy),
+      and CardList's off-screen item parking. Without this, sprixels
+      (Image widgets' pixel-graphics output) leaked between screens,
+      tabs, and scroll positions, painting over the new content.
+    - Widget::TabBar: focus visibility. Focused bars render a `▶ `
+      chevron prefix and use `tab-active` styling on the active tab;
+      unfocused bars show `  ` padding and dim the active tab to
+      `tab-inactive`. Brackets `[ ]` always mark the active tab so
+      users can tell WHICH tab is current even when the bar isn't
+      driven. Critical for screens with multiple TabBars where the
+      only previous focus cue was "nothing else has focus."
+    - Theme: new `tab-active` / `tab-inactive` slots. Widget::TabBar
+      previously reused text / text-highlight for inactive/active —
+      a subtle bold + color change that users missed. The new
+      dedicated slots default to a distinct bg colour on the active
+      tab so it's unambiguously selected. Bracket decorators on the
+      active tab are retained for low-colour environments and
+      screenshots. Custom themes must add the two new slots (they're
+      `is required`); see `examples/chat.raku` for a reference.
+
 0.2.3  2026-04-13T12:31:11+01:00
     - App: disable IXON / IXOFF flow control after notcurses_init so
       Ctrl+Q (XON) and Ctrl+S (XOFF) reach the application as

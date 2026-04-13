@@ -202,6 +202,14 @@ The target character, if the bind was for a single character.
 
 The modifier set that must be held for a match.
 
+### has Str $.spec
+
+The original spec string the bind was parsed from. Useful for help-overlay rendering ("Ctrl+L — Lorebooks").
+
+### has Str $.description
+
+Optional human-readable description of what the bind does. Set via the `:description` arg on `Widget.on-key`; surfaced by [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md).
+
 ### has Callable &.handler
 
 The handler callable invoked on match.
@@ -211,7 +219,8 @@ The handler callable invoked on match.
 ```raku
 method parse(
     Str:D $spec,
-    &handler
+    &handler,
+    Str :$description = ""
 ) returns Selkie::Event::Keybind
 ```
 

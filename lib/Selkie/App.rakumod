@@ -347,7 +347,11 @@ method add-screen(Str:D $name, Selkie::Container $root) {
     $root.init-plane($!stdplane, y => 0, x => 0, rows => $!rows, cols => $!cols);
     $root.set-viewport(abs-y => 0, abs-x => 0, rows => $!rows, cols => $!cols);
     if $!screen-manager.screen-names.elems > 0 {
-        $root.reposition($!rows, 0);
+        # Newly-added screens that aren't immediately active get
+        # parked off-screen until switch-screen activates them.
+        # park() handles sprixel cleanup the way plain reposition
+        # can't (see switch-screen for the rationale).
+        $root.park;
     }
     $!screen-manager.add-screen($name, $root);
 }
@@ -360,7 +364,14 @@ method switch-screen(Str:D $name) {
     my $old-root = self.root;
     $!screen-manager.switch-to($name);
     my $new-root = self.root;
-    $old-root.reposition($!rows, 0) if $old-root && $old-root !=== $new-root;
+
+    # Park the outgoing screen via park() rather than plain reposition.
+    # park() recurses through the subtree and lets widgets that own
+    # auxiliary notcurses resources (Image's sprixel especially) clean
+    # them up. Without this, sprixels from the outgoing screen
+    # continue to display at their old terminal positions, painting
+    # over the incoming screen's widgets.
+    $old-root.park if $old-root && $old-root !=== $new-root;
     if $new-root {
         $new-root.reposition(0, 0);
         $new-root.resize($!rows, $!cols);

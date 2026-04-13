@@ -145,6 +145,14 @@ method render-children() returns Mu
 
 Render each child, cascading dirty to the whole subtree if the container itself is dirty. This is the rendering helper you almost always want in a custom container's `render` method — it handles the "parent dirty ⇒ children also need redrawing" rule correctly. Private so composed classes can call it as `self!render-children`.
 
+### method park
+
+```raku
+method park() returns Mu
+```
+
+Park self plus every child/content recursively. Container override of Widget.park — without this, swapping a container off-screen only moves the container's own plane; descendants whose visibility isn't tied to their parent's plane position (e.g. Image's sprixel, Modal's bg-plane) keep showing on terminal.
+
 ### method focusable-descendants
 
 ```raku

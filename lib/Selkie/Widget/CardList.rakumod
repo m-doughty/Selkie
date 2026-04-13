@@ -125,6 +125,20 @@ method handle-resize(UInt $rows, UInt $cols) {
     }
 }
 
+#|( Park self plus every card root. CardList stores its items in
+    C<@!items> rather than C<self.children>, so the standard
+    Container.park doesn't reach them; we recurse explicitly here.
+    Without this override, when a CardList scrolls or its host
+    screen is swapped out, sprixels carried by Image widgets inside
+    cards keep painting on the terminal at their last screen
+    position. )
+method park() {
+    self.reposition(10_000, 0) if self.plane;
+    for @!items -> %item {
+        %item<root>.park if %item<root>.plane;
+    }
+}
+
 method selected-item() {
     return Nil unless $!selected >= 0 && $!selected < @!items.elems;
     @!items[$!selected]<widget>;
@@ -250,11 +264,14 @@ method render() {
         $last = $i;
     }
 
-    # Move off-screen items out of view
+    # Park off-screen items via park() rather than plain reposition
+    # so child Image widgets clean up their sprixels (avatars in
+    # Cantina's AvatarList scroll out of view but their pixel data
+    # would otherwise stay painted on the terminal).
     for ^@!items.elems -> $i {
         next if $i >= $first && $i <= $last;
         my $root = @!items[$i]<root>;
-        $root.reposition($vh + 100, 0) if $root.plane;
+        $root.park if $root.plane;
     }
 
     self.clear-dirty;

@@ -116,7 +116,10 @@ method set-content(Selkie::Widget $w, Bool :$destroy = True) {
     if $!content && $destroy {
         $!content.destroy;
     } elsif $!content && $!content.plane {
-        $!content.reposition(10_000, 0);
+        # park() recurses through containers and cleans up sprixels on
+        # Image widgets (which otherwise stay visible on the terminal
+        # even when their parent plane moves off-screen).
+        $!content.park;
     }
     $!content = $w;
     $w.parent = self;

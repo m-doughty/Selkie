@@ -188,6 +188,21 @@ method !render-children() {
     }
 }
 
+#|( Park self plus every child/content recursively. Container override
+    of Widget.park — without this, swapping a container off-screen
+    only moves the container's own plane; descendants whose visibility
+    isn't tied to their parent's plane position (e.g. Image's sprixel,
+    Modal's bg-plane) keep showing on terminal. )
+method park() {
+    self.reposition(10_000, 0) if self.plane;
+    for @!children -> $child {
+        $child.park;
+    }
+    if self.can('content') && self.content.defined {
+        self.content.park;
+    }
+}
+
 #|( Depth-first sequence of focusable descendants. Used by C<Selkie::App>
     to build the Tab/Shift-Tab cycle. Walks children recursively,
     yielding any whose C<focusable> is True. Override if your container

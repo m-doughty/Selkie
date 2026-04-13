@@ -40,6 +40,7 @@
     "Selkie::Widget::CommandPalette": "lib/Selkie/Widget/CommandPalette.rakumod",
     "Selkie::Widget::ConfirmModal": "lib/Selkie/Widget/ConfirmModal.rakumod",
     "Selkie::Widget::FileBrowser": "lib/Selkie/Widget/FileBrowser.rakumod",
+    "Selkie::Widget::HelpOverlay": "lib/Selkie/Widget/HelpOverlay.rakumod",
     "Selkie::Widget::Image": "lib/Selkie/Widget/Image.rakumod",
     "Selkie::Widget::ListView": "lib/Selkie/Widget/ListView.rakumod",
     "Selkie::Widget::Modal": "lib/Selkie/Widget/Modal.rakumod",
@@ -71,5 +72,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.2.3"
+  "version": "0.2.4"
 }

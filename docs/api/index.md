@@ -69,5 +69,6 @@ Auto-generated from Pod6 declarator comments and pod blocks in each module. See 
 ## Other
 
 - [Selkie::Test::Snapshot::Harness](Selkie--Test--Snapshot--Harness.md)
+- [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md)
 - [Selkie::Widget::PasswordStrength](Selkie--Widget--PasswordStrength.md)
 

@@ -86,3 +86,11 @@ method handle-resize(
 
 Resize cascade: own plane + propagate to each card's root. Card items are held in `@!items` rather than `self.children`, so the standard container cascade doesn't reach them; we walk them explicitly here. Each card's new width is the CardList's new width; height stays whatever was recorded at `add-item` time (the consumer owns card heights via `set-item-height`). This is what you want for chat-like use cases where height depends on external state like wrapped message length, which recalculates via a separate subscription path.
 
+### method park
+
+```raku
+method park() returns Mu
+```
+
+Park self plus every card root. CardList stores its items in `@!items` rather than `self.children`, so the standard Container.park doesn't reach them; we recurse explicitly here. Without this override, when a CardList scrolls or its host screen is swapped out, sprixels carried by Image widgets inside cards keep painting on the terminal at their last screen position.
+

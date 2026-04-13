@@ -590,16 +590,33 @@ method render() returns Mu
 
 Render this widget to its plane. **Required override**: the composing class must provide a body. Always guard with `return without self.plane`, and call `self.clear-dirty` at the end.
 
+### method park
+
+```raku
+method park() returns Mu
+```
+
+Park the widget off-screen — used by container swap operations (e.g. `Border.set-content(:!destroy)`) when an outgoing widget needs to keep its state but stop appearing on the terminal. Default implementation repositions the widget's plane to a far-off Y so notcurses clips it. **Override in widgets that own other notcurses resources whose visibility doesn't follow plane position** — most importantly Image, where the blit-plane carries a sprixel (Sixel/Kitty pixel image) that the terminal renders at an absolute on-screen position and won't clear just because the parent moved. Such widgets need to destroy their auxiliary plane(s) here so the sprixel gets removed from the terminal. Containers should override to recurse: park self + each descendant.
+
 ### method on-key
 
 ```raku
 method on-key(
     Str:D $spec,
-    &handler
+    &handler,
+    Str :$description = ""
 ) returns Mu
 ```
 
-Register a keybind for this widget. Fires when the widget has focus and an unconsumed event matches the spec. See [Selkie::Event](Selkie--Event.md) for the spec syntax (`'a'`, `'ctrl+q'`, `'shift+tab'`, etc). Example: $list.on-key: 'd', -> $ { delete-item }; $list.on-key: 'ctrl+r', -> $ { refresh };
+Register a keybind for this widget. Fires when the widget has focus and an unconsumed event matches the spec. See [Selkie::Event](Selkie--Event.md) for the spec syntax (`'a'`, `'ctrl+q'`, `'shift+tab'`, etc). Pass `:description` to surface the bind in [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md). Binds without a description still work — they just don't appear in the help listing. Example: $list.on-key: 'd', -> $ { delete-item }, :description('Delete'); $list.on-key: 'ctrl+r', -> $ { refresh }, :description('Refresh');
+
+### method keybinds
+
+```raku
+method keybinds() returns List
+```
+
+Read-only access to this widget's registered keybinds. Used by HelpOverlay to render a listing for the focused widget chain.
 
 ### method handle-event
 

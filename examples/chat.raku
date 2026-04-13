@@ -44,6 +44,8 @@ sub dark-theme(--> Selkie::Theme) {
         scrollbar-track   => Selkie::Style.new(fg => 0x333344),
         scrollbar-thumb   => Selkie::Style.new(fg => 0x7AA2F7),
         divider           => Selkie::Style.new(fg => 0x444466),
+        tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x7AA2F7, bold => True),
+        tab-inactive      => Selkie::Style.new(fg => 0x8888A0, bg => 0x16162E),
     );
 }
 
@@ -61,6 +63,8 @@ sub light-theme(--> Selkie::Theme) {
         scrollbar-track   => Selkie::Style.new(fg => 0xDDDDDD),
         scrollbar-thumb   => Selkie::Style.new(fg => 0x3366CC),
         divider           => Selkie::Style.new(fg => 0xCCCCCC),
+        tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x3366CC, bold => True),
+        tab-inactive      => Selkie::Style.new(fg => 0x666688, bg => 0xF5F5F0),
     );
 }
 

@@ -166,6 +166,14 @@ has Selkie::Style $.scrollbar-thumb is required;
 #| Divider line in C<Selkie::Layout::Split>.
 has Selkie::Style $.divider is required;
 
+#| Active tab in C<Selkie::Widget::TabBar>. Distinct background so the
+#| selected tab is unambiguously different from the rest — bracket
+#| decorators alone aren't enough contrast at a glance.
+has Selkie::Style $.tab-active is required;
+
+#| Inactive tabs in C<Selkie::Widget::TabBar>.
+has Selkie::Style $.tab-inactive is required;
+
 #|( Extra application-specific slots. Keyed by name, values are
     C<Selkie::Style>. Look them up via C<slot(name)>. )
 has Selkie::Style %.custom;
@@ -194,5 +202,7 @@ method default(--> Selkie::Theme) {
         scrollbar-track   => Selkie::Style.new(fg => 0x2A2A4A, bg => 0x1A1A2E),
         scrollbar-thumb   => Selkie::Style.new(fg => 0x7AA2F7, bg => 0x1A1A2E),
         divider           => Selkie::Style.new(fg => 0x3A3A5A, bg => 0x1A1A2E),
+        tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x7AA2F7, bold => True),
+        tab-inactive      => Selkie::Style.new(fg => 0x8080A0, bg => 0x1A1A2E),
     );
 }

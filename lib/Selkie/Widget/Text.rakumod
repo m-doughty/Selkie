@@ -103,6 +103,13 @@ method set-text(Str:D $t) {
     self.mark-dirty;
 }
 
+#| Replace the style override. Pass an undefined Selkie::Style to
+#| revert to the theme default.
+method set-style(Selkie::Style $s) {
+    $!style = $s;
+    self.mark-dirty;
+}
+
 #| Number of lines the text wraps to at the current width. Used by
 #| C<ScrollView> to compute scrollable extent.
 method logical-height(--> UInt) {

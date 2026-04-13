@@ -261,13 +261,22 @@ class Keybind is export {
     #| The modifier set that must be held for a match.
     has Set $.modifiers;
 
+    #| The original spec string the bind was parsed from. Useful for
+    #| help-overlay rendering ("Ctrl+L  — Lorebooks").
+    has Str $.spec;
+
+    #| Optional human-readable description of what the bind does. Set
+    #| via the C<:description> arg on C<Widget.on-key>; surfaced by
+    #| L<Selkie::Widget::HelpOverlay>.
+    has Str $.description = '';
+
     #| The handler callable invoked on match.
     has &.handler is required;
 
     #|( Parse a keybind spec string into a C<Keybind>. Spec grammar is
         described under L<KEYBIND SYNTAX> in this module's main pod.
         Throws on unknown modifiers or unknown key names. )
-    method parse(Str:D $spec, &handler --> Keybind) {
+    method parse(Str:D $spec, &handler, Str :$description = '' --> Keybind) {
         my @parts = $spec.split('+');
         my @mods;
         my $key = @parts.pop;
@@ -316,7 +325,7 @@ class Keybind is export {
             default { die "Unknown key: $key" }
         }
 
-        Keybind.new(:$id, :$char, modifiers => @mods.Set, :&handler);
+        Keybind.new(:$id, :$char, modifiers => @mods.Set, :&handler, :$spec, :$description);
     }
 
     #|( Does the given event match this keybind? Letter binds are

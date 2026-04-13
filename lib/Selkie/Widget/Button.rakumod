@@ -59,7 +59,8 @@ use Selkie::Event;
 
 unit class Selkie::Widget::Button does Selkie::Widget;
 
-#| The text shown on the button. Required and immutable.
+#| The text shown on the button. Required at construction; use
+#| C<set-label> to change afterwards (e.g. for counters).
 has Str $.label is required;
 
 has Bool $!focused = False;
@@ -73,6 +74,12 @@ method new(*%args --> Selkie::Widget::Button) {
 #| Supply that emits each time the user activates the button (Enter or
 #| Space while focused).
 method on-press(--> Supply) { $!press-supplier.Supply }
+
+#| Replace the displayed label. Marks the widget dirty.
+method set-label(Str:D $l) {
+    $!label = $l;
+    self.mark-dirty;
+}
 
 #| Called by C<Selkie::App.focus>. You don't usually call this yourself.
 method set-focused(Bool $f) {
