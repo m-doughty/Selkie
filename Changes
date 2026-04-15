@@ -2,6 +2,10 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.3.0  2026-04-15T03:00:16+01:00
+    - Add title helper
+    - Auto install with no building for most platforms
+
 0.2.4  2026-04-13T17:09:44+01:00
     - Widget::HelpOverlay: new modal that walks the focused widget +
       its ancestors, collects all `on-key` binds that carry a

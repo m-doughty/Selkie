@@ -379,6 +379,53 @@ method switch-screen(Str:D $name) {
     }
 }
 
+# --- Terminal title -----------------------------------------------------
+
+#|( Set the terminal window title via OSC 0 ("icon name + window title").
+    Writes directly to C</dev/tty> to bypass notcurses's output buffering
+    -- the stdplane's double-buffered render path can otherwise stomp
+    interleaved escape sequences.
+
+    Handles three common cases:
+
+    =item Bare terminal -- emits C<ESC]0;TITLE BEL>.
+    =item Inside tmux (C<$TMUX> set) -- wraps in the DCS passthrough
+      (C<ESC Ptmux; ... ESC \\>) so the host terminal actually sees it.
+      Requires C<set -g allow-passthrough on> in tmux >= 3.3, which is
+      the default from 3.4 onward.
+    =item No C</dev/tty> available (tests, piped stdin) -- silently no-op.
+
+    Control characters (ESC, BEL, CR, LF) in C<$title> are stripped before
+    emission so a hostile title string can't terminate the sequence early
+    or inject further escapes. )
+method set-title(Str:D $title) {
+    return unless '/dev/tty'.IO.e;
+    my $osc = Selkie::App.build-title-osc($title, :tmux(?%*ENV<TMUX>));
+    my $tty = try open('/dev/tty', :w);
+    if $tty {
+        LEAVE { .close with $tty }
+        try $tty.print($osc);
+    }
+}
+
+#|( Build the OSC sequence for a title. Factored out as a class method
+    so tests can exercise the sanitisation + tmux-passthrough logic
+    without needing a real tty. Public for callers that want to emit
+    the sequence elsewhere (logging, snapshot tests, etc). )
+method build-title-osc(Str:D $title, Bool :$tmux = False --> Str) {
+    # Strip anything that could prematurely terminate the OSC sequence
+    # or inject further escapes (ESC, BEL, CR, LF, other C0 / DEL).
+    my $safe = $title.subst(/<[ \x00..\x1f \x7f ]>/, '', :g);
+
+    my $osc = "\e]0;$safe\a";
+    if $tmux {
+        # DCS passthrough: ESC Ptmux; + each ESC doubled + ESC \
+        my $inner = $osc.subst("\e", "\e\e", :g);
+        $osc = "\ePtmux;{$inner}\e\\";
+    }
+    $osc;
+}
+
 # --- Toast ---
 
 #|( Show a temporary message bar at the bottom of the screen. It auto-dismisses

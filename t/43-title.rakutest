@@ -1,0 +1,78 @@
+use Test;
+use lib 'lib';
+
+use Selkie::App;
+
+plan 8;
+
+# build-title-osc is the sanitisation + tmux-passthrough core of
+# Selkie::App.set-title. Tested as a class method so it doesn't need a
+# real notcurses init or a tty.
+
+subtest 'bare terminal: OSC 0 with BEL terminator' => {
+    plan 2;
+    my $s = Selkie::App.build-title-osc('Hello');
+    is $s, "\e]0;Hello\a", 'well-formed OSC 0 sequence';
+    ok $s.starts-with("\e]0;"), 'starts with ESC ] 0 ;';
+};
+
+subtest 'preserves UTF-8 in title' => {
+    plan 1;
+    my $s = Selkie::App.build-title-osc('Café — 日本語');
+    is $s, "\e]0;Café — 日本語\a", 'unicode preserved verbatim';
+};
+
+subtest 'strips embedded ESC / BEL / CR / LF' => {
+    plan 4;
+    nok Selkie::App.build-title-osc("bad\etitle").contains("\etitle"),
+        'ESC inside title removed';
+    nok Selkie::App.build-title-osc("bad\atitle").contains("bad\a"),
+        'embedded BEL removed (would otherwise terminate early)';
+    nok Selkie::App.build-title-osc("bad\ntitle").contains("\n"),
+        'LF stripped';
+    nok Selkie::App.build-title-osc("bad\rtitle").contains("\r"),
+        'CR stripped';
+};
+
+subtest 'strips other C0 control bytes + DEL' => {
+    plan 2;
+    my $s = Selkie::App.build-title-osc("a\x[00]b\x[1f]c\x[7f]d");
+    is $s, "\e]0;abcd\a", 'NUL, US, DEL all removed';
+    is Selkie::App.build-title-osc("\x[7f]only").substr(4, *),
+        'only' ~ "\a", 'leading DEL dropped';
+};
+
+subtest 'tmux passthrough wraps in ESC P tmux; ... ESC \\' => {
+    plan 3;
+    my $s = Selkie::App.build-title-osc('Hi', :tmux);
+    ok $s.starts-with("\ePtmux;"), 'starts with DCS passthrough';
+    ok $s.ends-with("\e\\"), 'ends with ST';
+    # Every ESC in the inner payload must be doubled so tmux forwards
+    # it verbatim instead of interpreting it.
+    like $s, /"\e\e]0;Hi\a"/, 'inner ESC doubled';
+};
+
+subtest 'tmux: sanitisation still applies before passthrough' => {
+    plan 1;
+    my $s = Selkie::App.build-title-osc("a\eb", :tmux);
+    # The smuggled ESC in the input is stripped, so inside the
+    # passthrough payload there must be no bare lone ESC between
+    # "ab" and the BEL.
+    like $s, /"\e\e]0;ab\a"/, 'injected ESC stripped before tmux wrap';
+};
+
+subtest 'empty title is valid: just the terminator' => {
+    plan 1;
+    is Selkie::App.build-title-osc(''), "\e]0;\a",
+        'empty payload accepted';
+};
+
+subtest 'set-title no-ops gracefully without a tty (smoke)' => {
+    plan 1;
+    # Without constructing a full Selkie::App (which would fail in
+    # a headless test env because notcurses has no terminal), we
+    # can only verify build-title-osc above. Assert the method
+    # exists and is callable via the class for a belt-and-braces
+    # regression check.
+    ok Selkie::App.^can('set-title'), 'set-title method present on Selkie::App';
+};

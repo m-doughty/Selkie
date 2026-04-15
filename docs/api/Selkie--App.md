@@ -241,6 +241,27 @@ method switch-screen(
 
 Activate a registered screen by name. The previously-active screen is parked off-screen; the new one is moved to the origin, resized to full terminal dimensions, and marked dirty so its entire subtree renders fresh on the next frame.
 
+### method set-title
+
+```raku
+method set-title(
+    Str:D $title
+) returns Mu
+```
+
+Set the terminal window title via OSC 0 ("icon name + window title"). Writes directly to `/dev/tty` to bypass notcurses's output buffering -- the stdplane's double-buffered render path can otherwise stomp interleaved escape sequences. Handles three common cases: =item Bare terminal -- emits `ESC]0;TITLE BEL`. =item Inside tmux (`$TMUX` set) -- wraps in the DCS passthrough (`ESC Ptmux; ... ESC \\`) so the host terminal actually sees it. Requires `set -g allow-passthrough on` in tmux >= 3.3, which is the default from 3.4 onward. =item No `/dev/tty` available (tests, piped stdin) -- silently no-op. Control characters (ESC, BEL, CR, LF) in `$title` are stripped before emission so a hostile title string can't terminate the sequence early or inject further escapes.
+
+### method build-title-osc
+
+```raku
+method build-title-osc(
+    Str:D $title,
+    Bool :$tmux = Bool::False
+) returns Str
+```
+
+Build the OSC sequence for a title. Factored out as a class method so tests can exercise the sanitisation + tmux-passthrough logic without needing a real tty. Public for callers that want to emit the sequence elsewhere (logging, snapshot tests, etc).
+
 ### method toast
 
 ```raku

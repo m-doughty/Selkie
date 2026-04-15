@@ -66,10 +66,29 @@ INSTALLATION
 zef install Selkie
 ```
 
-System dependencies
--------------------
+That's it on supported platforms. No system dependencies, no compiler, no CMake.
 
-Selkie depends on [Notcurses::Native](https://github.com/m-doughty/Notcurses-Native), which builds notcurses from source on install. You need CMake, a C compiler, and the notcurses native deps before running `zef install`.
+How it works
+------------
+
+Selkie depends on [Notcurses::Native](https://github.com/m-doughty/Notcurses-Native), which ships prebuilt, self-contained notcurses libraries (with bundled ffmpeg / ncurses / libunistring / libdeflate) for the common platforms. On `zef install` the matching archive is downloaded from GitHub Releases, SHA256-verified against a checksum baked into the distribution, and staged into `resources/`. No system packages are touched.
+
+Supported prebuilt platforms:
+
+  * macOS arm64 (Apple Silicon)
+
+  * Linux x86_64 (glibc — Debian / Ubuntu / Fedora / RHEL / Arch)
+
+  * Linux aarch64 (glibc)
+
+  * Windows x86_64
+
+  * Windows arm64
+
+Falling back to a source build
+------------------------------
+
+If you're on a platform not in the list above (Intel Mac, musl Linux, FreeBSD, …), or you set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the usual native deps:
 
 **Linux (Debian / Ubuntu):**
 
@@ -101,9 +120,23 @@ Install MSYS2 from [https://www.msys2.org/](https://www.msys2.org/), open a **UC
         mingw-w64-ucrt-x86_64-ncurses \
         mingw-w64-ucrt-x86_64-ffmpeg
 
-On Windows the module installs and loads, but terminal-dependent tests don't run (upstream notcurses limitation). Use Linux or macOS for the full test suite.
+The source build takes 5–15 minutes; the prebuilt path takes seconds.
 
-See [Notcurses::Native's README](https://github.com/m-doughty/Notcurses-Native) for full details.
+Useful environment variables
+----------------------------
+
+  * `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1` — skip the prebuilt download and always compile from source.
+
+  * `NOTCURSES_NATIVE_BINARY_ONLY=1` — refuse to fall back to source; fail if the prebuilt isn't available for this platform.
+
+  * `NOTCURSES_NATIVE_LIB_DIR=/path/to/dir` — load notcurses from a directory you manage yourself (escape hatch for custom builds).
+
+See [Notcurses::Native's README](https://github.com/m-doughty/Notcurses-Native) for the full set of knobs and the prebuilt-binary security model.
+
+Windows note
+------------
+
+On Windows the module installs and loads, but terminal-dependent tests don't run (upstream notcurses limitation). Use Linux or macOS for the full test suite.
 
 DOCUMENTATION
 =============
