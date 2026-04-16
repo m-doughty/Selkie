@@ -50,6 +50,13 @@ The loop runs at ~60fps: it polls for input with a 16ms timeout, dispatches even
 
 `run` only returns when `quit` is called or an unhandled exception reaches the top of the loop. In either case the terminal is restored before the program exits.
 
+Theme background
+----------------
+
+When constructed with a `theme`, `Selkie::App` paints the notcurses standard plane's base cell from `$theme.base` during init so any region no widget writes to falls through to the theme background rather than the terminal's own default. Combined with `Selkie::Widget` doing the same per-plane on `init-plane` / `set-theme` / each `apply-style`, this gives themed backgrounds full-terminal coverage — no gaps between widgets or at screen edges.
+
+The standard plane itself is exposed via `stdplane` if you need to reach it directly (e.g. to paint a custom base cell from application code).
+
 Default keybinds
 ----------------
 
@@ -179,6 +186,14 @@ SEE ALSO
   * [Selkie::Widget::Modal](Selkie--Widget--Modal.md) — modal dialogs
 
   * [Selkie::Event](Selkie--Event.md) — the keyboard / mouse event abstraction
+
+### method stdplane
+
+```raku
+method stdplane() returns Notcurses::Native::Types::NcplaneHandle
+```
+
+The notcurses standard plane — the root of the compositing tree, with the terminal's full dimensions. Exposed for apps that need to set a base cell (fill colour for otherwise-empty cells) so a theme background reaches every corner. Only valid after `run` has initialised notcurses.
 
 ### has Selkie::Theme $.theme
 

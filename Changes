@@ -2,6 +2,22 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.1  2026-04-17T00:56:00+01:00
+    - Themed terminal background. `Selkie::App` now paints the notcurses
+      standard plane's base cell from `$theme.base` when a theme is
+      supplied, and `Selkie::Widget` syncs each per-widget plane's base
+      cell from the resolved theme on init-plane / set-theme / each
+      apply-style call. Together these give a theme background
+      full-coverage across the terminal — including widget gaps,
+      unwritten padding, and screen edges — instead of falling through
+      to the terminal's own default.
+    - New `Selkie::App.stdplane` public accessor so apps that need to
+      paint a custom base cell (or otherwise reach the standard plane)
+      can do so without reflection.
+    - Docs updated: `Selkie::App` gained a "Theme background" section
+      documenting the stdplane fill; `Selkie::Widget`'s "What you get
+      for free" lists the per-plane base painting.
+
 0.4.0  2026-04-16T16:03:44+01:00
     - Chart / plot widget family. Twelve new modules covering the
       common archetypes: Selkie::Widget::Sparkline (single-row inline

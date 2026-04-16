@@ -55,6 +55,20 @@ C<run> only returns when C<quit> is called or an unhandled exception
 reaches the top of the loop. In either case the terminal is restored
 before the program exits.
 
+=head2 Theme background
+
+When constructed with a C<theme>, C<Selkie::App> paints the notcurses
+standard plane's base cell from C<$theme.base> during init so any
+region no widget writes to falls through to the theme background
+rather than the terminal's own default. Combined with C<Selkie::Widget>
+doing the same per-plane on C<init-plane> / C<set-theme> / each
+C<apply-style>, this gives themed backgrounds full-terminal coverage
+— no gaps between widgets or at screen edges.
+
+The standard plane itself is exposed via C<stdplane> if you need to
+reach it directly (e.g. to paint a custom base cell from application
+code).
+
 =head2 Default keybinds
 
 C<Selkie::App> registers these out of the box so you don't have to:
@@ -205,6 +219,7 @@ use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 use Notcurses::Native::Input;
+use Notcurses::Native::Channel;
 
 use Selkie::Widget;
 use Selkie::Container;
@@ -219,6 +234,13 @@ use Selkie::Widget::Toast;
 
 has NotcursesHandle $!nc;
 has NcplaneHandle $!stdplane;
+
+#| The notcurses standard plane — the root of the compositing tree,
+#| with the terminal's full dimensions. Exposed for apps that need
+#| to set a base cell (fill colour for otherwise-empty cells) so a
+#| theme background reaches every corner. Only valid after
+#| C<run> has initialised notcurses.
+method stdplane(--> NcplaneHandle) { $!stdplane }
 
 #| The theme installed on every screen's root. Defaults to
 #| C<Selkie::Theme.default> if not provided to C<.new>.
@@ -299,6 +321,13 @@ submethod TWEAK() {
     $!rows = $r;
     $!cols = $c;
 
+    # Paint the stdplane's base cell using the theme's `base` style
+    # so gaps between widgets fall through to the theme's background
+    # instead of the terminal's default. Notcurses composites child
+    # planes over the stdplane, and any cell not explicitly written
+    # shows the base-cell's channels.
+    self!paint-stdplane-base if $!theme.defined;
+
     # Drain any pending terminal responses (color queries, etc.)
     my $drain-timeout = Timespec.new(tv_sec => 0, tv_nsec => 50_000_000);
     loop {
@@ -313,6 +342,20 @@ submethod TWEAK() {
     # is idempotent so there's no harm if run's CATCH already ran it.
     my $self = self;
     END { $self.shutdown if $self.defined }
+}
+
+# Apply $!theme.base to the stdplane's base cell so cells that no
+# widget writes fall through to the theme background instead of
+# whatever the terminal was using before. Called once from init —
+# live theme swaps aren't supported yet.
+method !paint-stdplane-base() {
+    return unless $!theme.defined && $!stdplane;
+    my $base = $!theme.base;
+    return without $base;
+    my uint64 $channels = 0;
+    if $base.fg.defined { ncchannels_set_fg_rgb($channels, $base.fg) }
+    if $base.bg.defined { ncchannels_set_bg_rgb($channels, $base.bg) }
+    ncplane_set_base($!stdplane, ' ', 0, $channels);
 }
 
 method !register-focus-handlers() {

@@ -4,13 +4,12 @@
 ■ memory
 ■ iowait
 --- styles ---
-ABCCC
-DBCCCCCC
-EBCCCCCC
+ABBBB
+CBBBBBBB
+DBBBBBBB
 --- legend ---
 .: (default)
 A: fg=#E69F00 bg=#24243E
-B: bg=#24243E
-C: fg=#C0C0C0 bg=#24243E
-D: fg=#56B4E9 bg=#24243E
-E: fg=#009E73 bg=#24243E
+B: fg=#C0C0C0 bg=#24243E
+C: fg=#56B4E9 bg=#24243E
+D: fg=#009E73 bg=#24243E

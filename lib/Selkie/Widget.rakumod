@@ -52,6 +52,7 @@ C<ListView>, and so on).
 
 =item A notcurses plane to render into, created and destroyed for you
 =item Theme inheritance from the widget tree
+=item Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on C<init-plane>, C<set-theme>, and every C<apply-style> call
 =item Keybind registration and event bubbling
 =item Dirty tracking so your C<render> method only runs when needed
 =item Per-widget subscription to the reactive store
@@ -408,7 +409,26 @@ method theme(--> Selkie::Theme) {
     a specific panel (e.g. a modal with its own palette). )
 method set-theme(Selkie::Theme $t) {
     $!theme = $t;
+    self!sync-plane-base;
     self.mark-dirty;
+}
+
+#|( Paint this widget's plane base cell using the active theme's
+    `base` style so `ncplane_erase` and any cell the widget doesn't
+    explicitly write will carry the theme's background / foreground
+    rather than notcurses's default-empty state (which renders as
+    the terminal's own default). Safe to call repeatedly and before
+    the plane or theme are ready — no-op in those cases. )
+method !sync-plane-base() {
+    return without $!plane;
+    my $theme = self.theme;
+    return without $theme.defined;
+    my $base = $theme.base;
+    return without $base.defined;
+    my uint64 $channels = 0;
+    ncchannels_set_fg_rgb($channels, $base.fg) if $base.fg.defined;
+    ncchannels_set_bg_rgb($channels, $base.bg) if $base.bg.defined;
+    ncplane_set_base($!plane, ' ', 0, $channels);
 }
 
 # --- Private helpers (accessible to composed roles/classes) ---
@@ -521,6 +541,11 @@ method init-plane(NcplaneHandle $parent-plane, UInt :$y = 0, UInt :$x = 0,
     $!cols = $cols;
     $!y = $y;
     $!x = $x;
+    # Paint the theme background onto this plane's base cell so
+    # erase / unwritten regions carry the theme colour rather than
+    # falling through to "terminal default" (which visibly breaks
+    # themed backgrounds).
+    self!sync-plane-base;
 }
 
 #|( Borrow an existing plane (owned elsewhere) as this widget's plane.
@@ -558,6 +583,11 @@ method clear-dirty() {
     those attributes. Handles the three distinct notcurses calls
     (styles, fg, bg) in one shot. )
 method apply-style(Selkie::Style $style) {
+    # Every render pass re-syncs the plane base from the theme —
+    # cheap, and it catches cases where the theme only became
+    # resolvable after init-plane ran (e.g. set-store hadn't
+    # propagated the store + theme context yet).
+    self!sync-plane-base;
     ncplane_set_styles($!plane, $style.styles);
     ncplane_set_fg_rgb($!plane, $style.fg) if $style.fg.defined;
     ncplane_set_bg_rgb($!plane, $style.bg) if $style.bg.defined;

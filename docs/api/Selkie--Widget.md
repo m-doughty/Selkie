@@ -46,6 +46,8 @@ What you get for free
 
   * Theme inheritance from the widget tree
 
+  * Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on `init-plane`, `set-theme`, and every `apply-style` call
+
   * Keybind registration and event bubbling
 
   * Dirty tracking so your `render` method only runs when needed
@@ -405,6 +407,14 @@ method set-theme(
 ```
 
 Override the theme for this widget and its subtree. The new theme is used on the next render. Useful for scoping a different look to a specific panel (e.g. a modal with its own palette).
+
+### method sync-plane-base
+
+```raku
+method sync-plane-base() returns Mu
+```
+
+Paint this widget's plane base cell using the active theme's `base` style so `ncplane_erase` and any cell the widget doesn't explicitly write will carry the theme's background / foreground rather than notcurses's default-empty state (which renders as the terminal's own default). Safe to call repeatedly and before the plane or theme are ready — no-op in those cases.
 
 ### method store
 

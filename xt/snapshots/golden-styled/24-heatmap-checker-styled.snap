@@ -11,5 +11,5 @@ ABAB
 BABA
 --- legend ---
 .: (default)
-A: fg=#440154
-B: fg=#FDE725
+A: fg=#440154 bg=#1A1A2E
+B: fg=#FDE725 bg=#1A1A2E

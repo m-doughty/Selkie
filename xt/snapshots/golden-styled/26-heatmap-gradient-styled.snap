@@ -11,12 +11,12 @@ ABCDEFGHI
 ABCDEFGHI
 --- legend ---
 .: (default)
-A: fg=#440154
-B: fg=#402A70
-C: fg=#3B528B
-D: fg=#2E718C
-E: fg=#21908C
-F: fg=#3FAC78
-G: fg=#5DC863
-H: fg=#ADD844
-I: fg=#FDE725
+A: fg=#440154 bg=#1A1A2E
+B: fg=#402A70 bg=#1A1A2E
+C: fg=#3B528B bg=#1A1A2E
+D: fg=#2E718C bg=#1A1A2E
+E: fg=#21908C bg=#1A1A2E
+F: fg=#3FAC78 bg=#1A1A2E
+G: fg=#5DC863 bg=#1A1A2E
+H: fg=#ADD844 bg=#1A1A2E
+I: fg=#FDE725 bg=#1A1A2E
