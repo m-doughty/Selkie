@@ -1,0 +1,96 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::BarChart;
+
+plan 9;
+
+subtest "construction with static data" => {
+	plan 4;
+	my $b = Selkie::Widget::BarChart.new(
+		data => [
+			{ label => 'a', value => 1 },
+			{ label => 'b', value => 2 },
+		],
+	);
+	isa-ok $b, Selkie::Widget::BarChart;
+	is $b.data.elems,    2,           "data stored";
+	is $b.orientation,   'vertical',  "default orientation";
+	is $b.palette,       'okabe-ito', "default palette";
+};
+
+subtest "horizontal orientation stored" => {
+	plan 1;
+	my $b = Selkie::Widget::BarChart.new(
+		data        => [{ label => 'a', value => 1 }, { label => 'b', value => 2 }],
+		orientation => 'horizontal',
+	);
+	is $b.orientation, 'horizontal', "horizontal stored";
+};
+
+subtest "rejects invalid orientation" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::BarChart.new(data => [], orientation => 'diagonal');
+	}, "invalid orientation rejected";
+};
+
+subtest "rejects data + store-path combination" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::BarChart.new(
+			data       => [{ label => 'a', value => 1 }, { label => 'b', value => 2 }],
+			store-path => <stats counts>,
+		);
+	}, "mutually exclusive modes throw";
+};
+
+subtest "show-axis and show-labels default to True and are configurable" => {
+	plan 4;
+	my $b = Selkie::Widget::BarChart.new(data => []);
+	ok  $b.show-axis,   "show-axis defaults True";
+	ok  $b.show-labels, "show-labels defaults True";
+	my $c = Selkie::Widget::BarChart.new(
+		data        => [],
+		show-axis   => False,
+		show-labels => False,
+	);
+	nok $c.show-axis,   "show-axis can be disabled";
+	nok $c.show-labels, "show-labels can be disabled";
+};
+
+subtest "set-data replaces and dirties" => {
+	plan 3;
+	my $b = Selkie::Widget::BarChart.new(
+		data => [{ label => 'a', value => 1 }, { label => 'b', value => 2 }],
+	);
+	$b.clear-dirty;
+	$b.set-data([
+		{ label => 'x', value => 10 },
+		{ label => 'y', value => 20 },
+		{ label => 'z', value => 30 },
+	]);
+	is $b.data.elems, 3, "three bars after replace";
+	is $b.data[0]<label>, 'x', "first label updated";
+	ok $b.is-dirty, "dirty after set-data";
+};
+
+subtest "set-data dies in store-path mode" => {
+	plan 1;
+	my $b = Selkie::Widget::BarChart.new(store-path => <stats x>);
+	dies-ok { $b.set-data([{ label => 'a', value => 1 }]) },
+		"set-data invalid in store-path mode";
+};
+
+subtest "min/max defaults are undefined" => {
+	plan 2;
+	my $b = Selkie::Widget::BarChart.new(data => []);
+	nok $b.min.defined, "min undefined by default";
+	nok $b.max.defined, "max undefined by default";
+};
+
+subtest "non-focusable by default" => {
+	plan 1;
+	my $b = Selkie::Widget::BarChart.new(data => []);
+	nok $b.focusable, "barchart isn't focusable";
+};

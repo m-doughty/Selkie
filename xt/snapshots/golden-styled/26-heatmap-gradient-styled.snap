@@ -1,0 +1,22 @@
+=== styled-snapshot v1 ===
+--- glyphs ---
+█████████
+█████████
+█████████
+█████████
+--- styles ---
+ABCDEFGHI
+ABCDEFGHI
+ABCDEFGHI
+ABCDEFGHI
+--- legend ---
+.: (default)
+A: fg=#440154
+B: fg=#402A70
+C: fg=#3B528B
+D: fg=#2E718C
+E: fg=#21908C
+F: fg=#3FAC78
+G: fg=#5DC863
+H: fg=#ADD844
+I: fg=#FDE725

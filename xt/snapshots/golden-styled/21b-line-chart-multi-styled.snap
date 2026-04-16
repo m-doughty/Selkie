@@ -1,0 +1,26 @@
+=== styled-snapshot v1 ===
+--- glyphs ---
+100┤
+ 80┤⠒⠤⡀⣀⠤⠤⠤⣀           ⣀⠤⠤⠤⠄⣀⠤
+ 60┤ ⢀⠌⠢⡀   ⠑⢄       ⡠⠊   ⢀⠜⠢⡀
+   │⠊⠁  ⠈⠢    ⠢⡀   ⢀⠊   ⢀⠔⠁  ⠈
+ 40┤      ⠑⢄   ⠈⠢⣀⠔⠁   ⡠⠁
+ 20┤        ⠉⠒⠤⠔⠊⠉⠑⠢⠤⠒⠉
+  0┤
+■ sin  ■ cos
+--- styles ---
+AAAB
+.AABCCCDDDDD...........CCCCCDD
+.AAB.DCCC...DD.......CC...DCCC
+...BDD..CC....DD...CC...DDD..C
+.AAB......CC...DDCCC...DD
+.AAB........CCCCCCDDDDD
+..AB
+D.EEE..C.EEE
+--- legend ---
+.: (default)
+A: fg=#8080A0
+B: fg=#808098
+C: fg=#EE6677
+D: fg=#4477AA
+E: fg=#C0C0C0

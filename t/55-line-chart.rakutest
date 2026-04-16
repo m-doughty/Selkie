@@ -1,0 +1,101 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::LineChart;
+
+plan 10;
+
+subtest "construction with single series" => {
+	plan 4;
+	my $c = Selkie::Widget::LineChart.new(
+		series => [{ label => 's1', values => [1, 2, 3, 4, 5] }],
+	);
+	isa-ok $c, Selkie::Widget::LineChart;
+	is $c.series.elems, 1, "one series stored";
+	ok  $c.show-axis,   "show-axis defaults True";
+	ok  $c.show-legend, "show-legend defaults True";
+};
+
+subtest "fill-below defaults to False" => {
+	plan 1;
+	my $c = Selkie::Widget::LineChart.new(series => []);
+	nok $c.fill-below, "fill-below defaults False";
+};
+
+subtest "fill-below configurable" => {
+	plan 1;
+	my $c = Selkie::Widget::LineChart.new(
+		series => [{ label => 's', values => [1, 2] }],
+		fill-below => True,
+	);
+	ok $c.fill-below, "fill-below set";
+};
+
+subtest "explicit y bounds stored" => {
+	plan 2;
+	my $c = Selkie::Widget::LineChart.new(
+		series => [],
+		y-min  => -10,
+		y-max  =>  100,
+	);
+	is $c.y-min, -10,  "y-min stored";
+	is $c.y-max,  100, "y-max stored";
+};
+
+subtest "set-series replaces and dirties" => {
+	plan 2;
+	my $c = Selkie::Widget::LineChart.new(
+		series => [{ label => 'a', values => [1, 2] }],
+	);
+	$c.clear-dirty;
+	$c.set-series([
+		{ label => 'b', values => [10, 20, 30] },
+		{ label => 'c', values => [5, 15, 25] },
+	]);
+	is $c.series.elems, 2, "two series";
+	ok $c.is-dirty, "marked dirty";
+};
+
+subtest "rejects series + store-path-fn combo" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::LineChart.new(
+			series        => [{ label => 's', values => [1] }],
+			store-path-fn => -> $s { [] },
+		);
+	}, "mutually exclusive";
+};
+
+subtest "rejects unknown overlap" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::LineChart.new(series => [], overlap => 'blend');
+	}, "unknown overlap rejected";
+};
+
+subtest "set-series dies in store-path-fn mode" => {
+	plan 1;
+	my $c = Selkie::Widget::LineChart.new(store-path-fn => -> $s { [] });
+	dies-ok { $c.set-series([{ label => 'a', values => [1] }]) },
+		"set-series invalid in store-path-fn mode";
+};
+
+subtest "non-focusable by default" => {
+	plan 1;
+	my $c = Selkie::Widget::LineChart.new(series => []);
+	nok $c.focusable, "linechart isn't focusable";
+};
+
+subtest "series built from a Seq of values survives repeated access" => {
+	plan 2;
+	# TUI apps re-render on every frame; if values were stored as a
+	# one-shot Seq they'd appear empty after the first render walk.
+	my $c = Selkie::Widget::LineChart.new(
+		series => [{
+			label  => 'wave',
+			values => (^5).map: { $_ * 2 },
+		}],
+	);
+	is $c.series[0]<values>[2], 4, "first access sees values[2] = 4";
+	is $c.series[0]<values>[2], 4, "second access still sees 4";
+};

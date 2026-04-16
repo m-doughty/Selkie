@@ -1,0 +1,136 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Plot::Scaler;
+
+plan 14;
+
+subtest "linear constructor accepts valid args" => {
+	plan 4;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 20);
+	isa-ok $s, Selkie::Plot::Scaler;
+	is $s.min,    0,     "min stored";
+	is $s.max,    100,   "max stored";
+	is $s.cells,  20,    "cells stored";
+};
+
+subtest "linear constructor rejects cells == 0" => {
+	plan 1;
+	dies-ok { Selkie::Plot::Scaler.linear(min => 0, max => 1, cells => 0) },
+		"zero-cell scaler is rejected";
+};
+
+subtest "linear constructor rejects min > max" => {
+	plan 1;
+	dies-ok { Selkie::Plot::Scaler.linear(min => 10, max => 5, cells => 20) },
+		"min > max is rejected (use :invert instead)";
+};
+
+subtest "linear constructor accepts min == max (degenerate)" => {
+	plan 1;
+	lives-ok { Selkie::Plot::Scaler.linear(min => 7, max => 7, cells => 20) },
+		"min == max is permitted (degenerate range)";
+};
+
+subtest "value-to-cell at endpoints, midpoint, and inside" => {
+	plan 5;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 20);
+	is $s.value-to-cell(0),    0,  "min maps to cell 0";
+	is $s.value-to-cell(100),  19, "max maps to cell cells-1";
+	is $s.value-to-cell(50),   10, "midpoint maps to cell 10 (round of 9.5)";
+	is $s.value-to-cell(25),   5,  "25% maps to cell 5 (round of 4.75)";
+	is $s.value-to-cell(75),   14, "75% maps to cell 14 (round of 14.25)";
+};
+
+subtest "value-to-cell clamps below min and above max" => {
+	plan 4;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 20);
+	is $s.value-to-cell(-50),  0,  "below-min clamps to 0";
+	is $s.value-to-cell(-1),   0,  "just-below-min clamps to 0";
+	is $s.value-to-cell(101),  19, "just-above-max clamps to cells-1";
+	is $s.value-to-cell(1e9),  19, "extreme above-max clamps to cells-1";
+};
+
+subtest "value-to-cell handles NaN and infinities" => {
+	plan 3;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 20);
+	nok $s.value-to-cell(NaN).defined, "NaN propagates as undef";
+	is $s.value-to-cell(Inf),  19, "+Inf clamps to cells-1";
+	is $s.value-to-cell(-Inf), 0,  "-Inf clamps to 0";
+};
+
+subtest "inverted axis flips cell direction" => {
+	plan 5;
+	my $s = Selkie::Plot::Scaler.linear(
+		min => 0, max => 100, cells => 20, :invert,
+	);
+	is $s.value-to-cell(100),  0,  "max maps to cell 0 under :invert";
+	is $s.value-to-cell(0),    19, "min maps to cell cells-1 under :invert";
+	is $s.value-to-cell(50),   9,  "midpoint flips around midpoint";
+	is $s.value-to-cell(Inf),  0,  "+Inf clamps to 0 under :invert";
+	is $s.value-to-cell(-Inf), 19, "-Inf clamps to cells-1 under :invert";
+};
+
+subtest "single-cell axis maps everything to 0" => {
+	plan 4;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 1);
+	is $s.value-to-cell(0),    0, "min";
+	is $s.value-to-cell(50),   0, "mid";
+	is $s.value-to-cell(100),  0, "max";
+	is $s.value-to-cell(-1),   0, "out-of-range";
+};
+
+subtest "degenerate domain (min == max) maps to middle cell" => {
+	plan 4;
+	my $s = Selkie::Plot::Scaler.linear(min => 7, max => 7, cells => 21);
+	# cells - 1 = 20; (cells - 1) div 2 = 10
+	is $s.value-to-cell(7),     10, "value at the degenerate point";
+	is $s.value-to-cell(0),     10, "any other value also maps to middle";
+	is $s.value-to-cell(1e9),   10, "extreme value too";
+	# cell-to-value of degenerate domain returns min (== max)
+	is $s.cell-to-value(0),     7,  "cell-to-value returns the degenerate value";
+};
+
+subtest "cell-to-value at endpoints and midpoint" => {
+	plan 3;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 21);
+	# (cells - 1) = 20
+	is-approx $s.cell-to-value(0),   0,    "cell 0 → min";
+	is-approx $s.cell-to-value(20),  100,  "cell cells-1 → max";
+	is-approx $s.cell-to-value(10),  50,   "cell 10 → midpoint";
+};
+
+subtest "cell-to-value under :invert" => {
+	plan 3;
+	my $s = Selkie::Plot::Scaler.linear(
+		min => 0, max => 100, cells => 21, :invert,
+	);
+	is-approx $s.cell-to-value(0),   100, "cell 0 → max under :invert";
+	is-approx $s.cell-to-value(20),  0,   "cell cells-1 → min under :invert";
+	is-approx $s.cell-to-value(10),  50,  "midpoint cell → midpoint value";
+};
+
+subtest "round-trip cell-to-value(value-to-cell(v)) within tolerance" => {
+	plan 7;
+	my $cells = 41;
+	my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => $cells);
+	# Tolerance per the documented half-cell precision floor:
+	#   ± (max - min) / (2 * (cells - 1))
+	my $tol = (100 - 0) / (2 * ($cells - 1));
+	for 0, 1, 13.7, 50, 73.2, 99, 100 -> $v {
+		my $rt = $s.cell-to-value($s.value-to-cell($v));
+		ok ($rt - $v).abs <= $tol,
+			"round-trip $v → $rt within ±{$tol.fmt('%.4f')}";
+	}
+};
+
+subtest "negative domain works correctly" => {
+	plan 5;
+	my $s = Selkie::Plot::Scaler.linear(min => -50, max => 50, cells => 21);
+	# (cells - 1) = 20
+	is $s.value-to-cell(-50),  0,  "min (-50) → 0";
+	is $s.value-to-cell(50),   20, "max (+50) → 20";
+	is $s.value-to-cell(0),    10, "zero → middle cell";
+	is-approx $s.cell-to-value(0),  -50, "cell 0 → -50";
+	is-approx $s.cell-to-value(20),  50, "cell 20 → +50";
+};

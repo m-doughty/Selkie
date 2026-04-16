@@ -1,0 +1,16 @@
+=== styled-snapshot v1 ===
+--- glyphs ---
+■ cpu
+■ memory
+■ iowait
+--- styles ---
+ABCCC
+DBCCCCCC
+EBCCCCCC
+--- legend ---
+.: (default)
+A: fg=#E69F00 bg=#24243E
+B: bg=#24243E
+C: fg=#C0C0C0 bg=#24243E
+D: fg=#56B4E9 bg=#24243E
+E: fg=#009E73 bg=#24243E

@@ -47,9 +47,11 @@ Under the hood:
 
 Trailing whitespace is trimmed from each row; trailing empty rows are dropped so resizes don't churn snapshots unnecessarily.
 
-**Currently snapshots capture character content only**, not styles. That's a deliberate v1 tradeoff — catches layout bugs, text mistakes, and most rendering regressions without the complexity of a style-aware snapshot format.
+**By default, snapshots capture character content only**, not styles. That's a deliberate tradeoff — catches layout bugs, text mistakes, and most rendering regressions without the complexity of a style-aware snapshot format. Diffs stay one-row-per-row legible in PR review.
 
-Practical consequence: widgets whose state changes are style-only (e.g. `ListView` cursor, `Button` focus highlight, `Checkbox` toggle color) won't produce a different snapshot between states. Test those via the widget's attributes or the `Selkie::Test::Keys` + event assertions directly, not via snapshots.
+Practical consequence: widgets whose state changes are style-only (e.g. `ListView` cursor, `Button` focus highlight, `Checkbox` toggle color) won't produce a different snapshot between states. Test those via the widget's attributes or the `Selkie::Test::Keys` + event assertions directly, not via plain snapshots.
+
+For widgets where colour *is* the regression — `Heatmap`, multi-series `LineChart`, multi-bar `BarChart`, themed elements — pass `:capture-styles` to `render-to-string` (or `snapshot-ok`). The output then includes a parallel grid of style keys and a legend mapping each key to `(fg, bg, stylemask)`. The harness routes styled goldens to `xt/snapshots/golden-styled/` automatically (it detects the format marker on the first line of stdout).
 
 WORKFLOW
 ========
@@ -103,6 +105,19 @@ Custom snapshot directory
 snapshot-ok $widget, 'thing', :rows(4), :cols(20), dir => 'xt/snaps';
 ```
 
+Style-aware snapshot
+--------------------
+
+For widgets where colour or text style is the regression you care about, opt into the styled format:
+
+```raku
+snapshot-ok $heatmap, 'heatmap-viridis', :rows(8), :cols(20), :capture-styles;
+```
+
+The captured output begins with `=== styled-snapshot v1 ===` and contains three blocks (`--- glyphs ---`, `--- styles ---`, `--- legend ---`). The harness recognises the marker and stores the golden under `{$dir}/golden-styled/{$name}.snap` rather than `{$dir}/golden/{$name}.snap`.
+
+Style equality is the `(fg-rgb, bg-rgb, stylemask)` tuple. Cells with no fg, no bg, and no styles get the `.` key. Other tuples get single-character keys (`A`, `B`, ..., `Z`, `a`, ..., `z`, `0`, ..., `9`) in first-seen order.
+
 FILE FORMAT
 ===========
 
@@ -132,17 +147,29 @@ SEE ALSO
 
   * [Selkie::Test::Focus](Selkie--Test--Focus.md) — focus-gated rendering paths
 
+### sub fopen
+
+```raku
+sub fopen(
+    Str $,
+    Str $
+) returns NativeCall::Types::Pointer
+```
+
+Marker line that identifies a styled snapshot. The fork-per-scenario harness (`Selkie::Test::Snapshot::Harness`) detects this on the first line of subprocess stdout and routes the golden file to a separate `golden-styled/` subdirectory. Plain snapshots without this marker continue to use the existing `golden/` subdirectory.
+
 ### sub render-to-string
 
 ```raku
 sub render-to-string(
     Selkie::Widget $widget,
     Int :$rows where { ... } = 24,
-    Int :$cols where { ... } = 80
+    Int :$cols where { ... } = 80,
+    Bool :$capture-styles = Bool::False
 ) returns Str
 ```
 
-Render a widget to a plain-text string via a shared headless notcurses instance. Returns the rendered cells row-by-row, joined with newlines. Trailing whitespace on each line is stripped, and trailing blank lines are removed. The widget is given its own plane as a child of the stdplane, sized to `$rows` × `$cols`. Containers that manage child planes in their `render` work correctly — the standard mount path is exercised. The notcurses instance persists across calls within a test process (init is once-per-process). The widget's plane is destroyed after each call so renders don't leak.
+Render a widget to a plain-text string via a shared headless notcurses instance. Returns the rendered cells row-by-row, joined with newlines. Trailing whitespace on each line is stripped, and trailing blank lines are removed. The widget is given its own plane as a child of the stdplane, sized to `$rows` × `$cols`. Containers that manage child planes in their `render` work correctly — the standard mount path is exercised. The notcurses instance persists across calls within a test process (init is once-per-process). The widget's plane is destroyed after each call so renders don't leak. Pass `:capture-styles` to emit the style-aware format instead of the plain glyph grid — see [Selkie::Test::Snapshot](Selkie--Test--Snapshot.md) Pod6 for the format spec. The harness routes styled goldens to `golden-styled/` automatically.
 
 ### sub snapshot-ok
 
@@ -152,9 +179,10 @@ sub snapshot-ok(
     Str:D $name,
     Int :$rows where { ... } = 24,
     Int :$cols where { ... } = 80,
-    Str :$dir = "t/snapshots"
+    Bool :$capture-styles = Bool::False,
+    Str :$dir is copy
 ) returns Mu
 ```
 
-Test assertion: render the widget to `$rows` × `$cols` and compare against a stored snapshot file at `$dir/$name.snap`. =item First run or missing file: the snapshot is created and the test passes. =item Matching output: the test passes. =item Differing output: the test fails and a unified-ish diff is printed as TAP diagnostics. Set the env var `SELKIE_UPDATE_SNAPSHOTS` to a truthy value to overwrite existing snapshots with current output. The snapshot directory defaults to `t/snapshots` and is auto-created on first use.
+Test assertion: render the widget to `$rows` × `$cols` and compare against a stored snapshot file. =item First run or missing file: the snapshot is created and the test passes. =item Matching output: the test passes. =item Differing output: the test fails and a unified-ish diff is printed as TAP diagnostics. Set the env var `SELKIE_UPDATE_SNAPSHOTS` to a truthy value to overwrite existing snapshots with current output. The snapshot directory defaults to `t/snapshots`. With `:capture-styles` the directory is automatically suffixed with `-styled` (default: `t/snapshots-styled`) so plain and styled goldens never collide. Override `$dir` for a custom location; when overriding alongside `:capture-styles`, suffix `$dir` yourself. The directory is auto-created on first use.
 

@@ -91,8 +91,12 @@ $store.subscribe-with-callback(
 
 =head1 SLOTS
 
-Every slot is a C<Selkie::Style>. All slots are C<is required> — a theme
-must explicitly define every one.
+Every slot is a C<Selkie::Style>. The base UI slots are C<is required>
+— a theme must explicitly define every one. Chart slots have
+backward-compatible defaults derived from the base UI slots, so themes
+predating the chart widgets keep working without modification.
+
+=head2 Required (UI core)
 
 =item C<base> — default background plus text color
 =item C<text>, C<text-dim>, C<text-highlight> — normal, subdued, and emphasised text
@@ -100,6 +104,27 @@ must explicitly define every one.
 =item C<input>, C<input-focused>, C<input-placeholder> — text input states
 =item C<scrollbar-track>, C<scrollbar-thumb> — vertical scrollbar
 =item C<divider> — the split bar in C<Selkie::Layout::Split>
+=item C<tab-active>, C<tab-inactive> — active and inactive tabs in C<Selkie::Widget::TabBar>
+
+=head2 Chart slots (defaulted, override for chart-rich apps)
+
+Used by C<Selkie::Widget::Axis>, C<Selkie::Widget::Legend>, and the
+chart family (C<Sparkline>, C<Plot>, C<BarChart>, C<Histogram>,
+C<Heatmap>, C<ScatterPlot>, C<LineChart>). Defaults derive from the
+required slots so existing themes work as-is; override these for a
+distinct chart palette.
+
+=item C<graph-axis> — axis line and tick marks (default: C<text-dim>)
+=item C<graph-axis-label> — tick labels (default: C<text-dim>)
+=item C<graph-grid> — optional gridlines behind chart bodies (default: C<divider>)
+=item C<graph-line> — single-series line/sparkline color (default: C<border-focused>)
+=item C<graph-fill> — fill-below color in line charts (default: C<border-focused>; consider a darker shade)
+=item C<graph-legend-bg> — legend pane background (default: same bg as C<base>)
+
+Multi-series colors are I<not> theme slots — see L<Selkie::Plot::Palette>
+for the colorblind-safe series palettes (C<okabe-ito>, C<tol-bright>,
+C<tableau-10>) and color ramps (C<viridis>, C<magma>, C<plasma>,
+C<coolwarm>, C<grayscale>) used by chart widgets.
 
 =head2 Custom slots
 
@@ -174,6 +199,36 @@ has Selkie::Style $.tab-active is required;
 #| Inactive tabs in C<Selkie::Widget::TabBar>.
 has Selkie::Style $.tab-inactive is required;
 
+#|( Axis line and tick-mark style for chart widgets. Defaults to
+    C<text-dim> so existing themes inherit a reasonable look without
+    needing to define this slot. Override for a distinct chart axis
+    color. )
+has Selkie::Style $.graph-axis = $!text-dim;
+
+#|( Tick label style for chart axes. Defaults to C<text-dim>. )
+has Selkie::Style $.graph-axis-label = $!text-dim;
+
+#|( Optional gridline style for chart bodies (used by C<LineChart> and
+    C<ScatterPlot> when grids are enabled). Defaults to C<divider>. )
+has Selkie::Style $.graph-grid = $!divider;
+
+#|( Default series color for single-series chart widgets
+    (C<Sparkline>, single-series C<LineChart>). Multi-series widgets
+    pull colors from C<Selkie::Plot::Palette> instead of this slot.
+    Defaults to C<border-focused>. )
+has Selkie::Style $.graph-line = $!border-focused;
+
+#|( Fill-below color for C<LineChart> when fill is enabled. Defaults
+    to C<border-focused>; for visual depth set this to a darker shade
+    of C<graph-line>. )
+has Selkie::Style $.graph-fill = $!border-focused;
+
+#|( Background style for C<Selkie::Widget::Legend>. Defaults to a
+    style with the same background as C<base>, so legends blend by
+    default. Override with a contrasting bg for a distinct legend
+    pane. )
+has Selkie::Style $.graph-legend-bg = Selkie::Style.new(bg => $!base.bg);
+
 #|( Extra application-specific slots. Keyed by name, values are
     C<Selkie::Style>. Look them up via C<slot(name)>. )
 has Selkie::Style %.custom;
@@ -204,5 +259,11 @@ method default(--> Selkie::Theme) {
         divider           => Selkie::Style.new(fg => 0x3A3A5A, bg => 0x1A1A2E),
         tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x7AA2F7, bold => True),
         tab-inactive      => Selkie::Style.new(fg => 0x8080A0, bg => 0x1A1A2E),
+        graph-axis        => Selkie::Style.new(fg => 0x808098),
+        graph-axis-label  => Selkie::Style.new(fg => 0x8080A0),
+        graph-grid        => Selkie::Style.new(fg => 0x2A2A4A),
+        graph-line        => Selkie::Style.new(fg => 0x7AA2F7),
+        graph-fill        => Selkie::Style.new(fg => 0x3A4A8A),
+        graph-legend-bg   => Selkie::Style.new(bg => 0x24243E),
     );
 }

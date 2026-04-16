@@ -1,0 +1,124 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Plot::Palette;
+
+plan 11;
+
+subtest "default series palette is okabe-ito" => {
+	plan 2;
+	my @default = Selkie::Plot::Palette.series;
+	my @explicit = Selkie::Plot::Palette.series('okabe-ito');
+	is @default.elems, 8, "default palette has 8 colors";
+	is @default, @explicit, "default name resolves to okabe-ito";
+};
+
+subtest "okabe-ito palette has documented RGB values" => {
+	plan 8;
+	my @p = Selkie::Plot::Palette.series('okabe-ito');
+	is @p[0], 0x999999, "gray (substituted from black)";
+	is @p[1], 0xE69F00, "orange";
+	is @p[2], 0x56B4E9, "sky blue";
+	is @p[3], 0x009E73, "bluish green";
+	is @p[4], 0xF0E442, "yellow";
+	is @p[5], 0x0072B2, "blue";
+	is @p[6], 0xD55E00, "vermillion";
+	is @p[7], 0xCC79A7, "reddish purple";
+};
+
+subtest "tol-bright palette has 7 documented colors" => {
+	plan 7;
+	my @p = Selkie::Plot::Palette.series('tol-bright');
+	is @p[0], 0x4477AA, "blue";
+	is @p[1], 0x66CCEE, "cyan";
+	is @p[2], 0x228833, "green";
+	is @p[3], 0xCCBB44, "yellow";
+	is @p[4], 0xEE6677, "red";
+	is @p[5], 0xAA3377, "purple";
+	is @p[6], 0xBBBBBB, "gray";
+};
+
+subtest "tableau-10 palette has 10 documented colors" => {
+	plan 1;
+	my @p = Selkie::Plot::Palette.series('tableau-10');
+	is @p.elems, 10, "ten colors";
+};
+
+subtest "unknown series palette dies with helpful message" => {
+	plan 2;
+	dies-ok { Selkie::Plot::Palette.series('not-a-palette') },
+		"unknown name throws";
+	throws-like { Selkie::Plot::Palette.series('not-a-palette') },
+		Exception,
+		message => /'okabe-ito'/,
+		"error mentions known palettes";
+};
+
+subtest "default ramp is viridis" => {
+	plan 2;
+	my @default = Selkie::Plot::Palette.ramp;
+	my @explicit = Selkie::Plot::Palette.ramp('viridis');
+	is @default.elems, 5, "five stops";
+	is @default, @explicit, "default name resolves to viridis";
+};
+
+subtest "viridis stops match documented values" => {
+	plan 5;
+	my @stops = Selkie::Plot::Palette.ramp('viridis');
+	is @stops[0].key, 0.00,    "stop 0 position";
+	is @stops[0].value, 0x440154, "stop 0 color";
+	is @stops[2].key, 0.50,    "midpoint position";
+	is @stops[2].value, 0x21908C, "midpoint color";
+	is @stops[4].value, 0xFDE725, "final color (yellow)";
+};
+
+subtest "all five named ramps are present" => {
+	plan 5;
+	for <viridis magma plasma coolwarm grayscale> -> $name {
+		my @stops = Selkie::Plot::Palette.ramp($name);
+		is @stops.elems, 5, "$name has 5 stops";
+	}
+};
+
+subtest "sample at exact stop returns that stop's color" => {
+	plan 5;
+	is Selkie::Plot::Palette.sample('viridis', 0.0),  0x440154, "0.0 → stop 0";
+	is Selkie::Plot::Palette.sample('viridis', 0.25), 0x3B528B, "0.25 → stop 1";
+	is Selkie::Plot::Palette.sample('viridis', 0.5),  0x21908C, "0.5 → stop 2";
+	is Selkie::Plot::Palette.sample('viridis', 0.75), 0x5DC863, "0.75 → stop 3";
+	is Selkie::Plot::Palette.sample('viridis', 1.0),  0xFDE725, "1.0 → stop 4";
+};
+
+subtest "sample interpolates between adjacent stops" => {
+	plan 3;
+	# Between stop 0 (0xFF0000-equivalent... wait, viridis 0=0x440154)
+	# At t=0.125, halfway between viridis stop 0 (0x440154) and stop 1 (0x3B528B):
+	#   r: (0x44+0x3B)/2 = 0x3F (0x44=68, 0x3B=59, avg=63.5→64=0x40)
+	#   g: (0x01+0x52)/2 = 0x29 (1+82=83/2=41.5→42=0x2A)
+	#   b: (0x54+0x8B)/2 = 0x6F (84+139=223/2=111.5→112=0x70)
+	# Expected: 0x402A70
+	my $mid = Selkie::Plot::Palette.sample('viridis', 0.125);
+	is $mid, 0x402A70, "halfway between stop 0 and stop 1";
+
+	# Between stop 1 (0x3B528B) and stop 2 (0x21908C) at t=0.375:
+	#   r: avg(0x3B, 0x21) = avg(59, 33) = 46 = 0x2E
+	#   g: avg(0x52, 0x90) = avg(82, 144) = 113 = 0x71
+	#   b: avg(0x8B, 0x8C) = avg(139, 140) = 139.5→140 = 0x8C
+	is Selkie::Plot::Palette.sample('viridis', 0.375), 0x2E718C,
+		"halfway between stop 1 and stop 2";
+
+	# Grayscale midpoint between 0 and 0.25:
+	#   stop 0 = 0x101010, stop 1 = 0x404040
+	#   t=0.125 means halfway: avg(0x10, 0x40) = avg(16, 64) = 40 = 0x28
+	#   0x282828
+	is Selkie::Plot::Palette.sample('grayscale', 0.125), 0x282828,
+		"grayscale interpolation is uniform per channel";
+};
+
+subtest "sample clamps out-of-range t to nearest stop" => {
+	plan 4;
+	is Selkie::Plot::Palette.sample('viridis', -0.5),  0x440154, "negative clamps to first stop";
+	is Selkie::Plot::Palette.sample('viridis', -1e9),  0x440154, "extreme negative clamps";
+	is Selkie::Plot::Palette.sample('viridis',  1.5),  0xFDE725, "above 1 clamps to last stop";
+	is Selkie::Plot::Palette.sample('viridis',  1e9),  0xFDE725, "extreme above clamps";
+};

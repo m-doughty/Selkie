@@ -1,0 +1,90 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Axis;
+use Selkie::Sizing;
+
+plan 9;
+
+subtest "construction with valid args" => {
+	plan 5;
+	my $a = Selkie::Widget::Axis.new(
+		edge => 'bottom', min => 0, max => 100,
+	);
+	isa-ok $a, Selkie::Widget::Axis;
+	is $a.edge,       'bottom', "edge stored";
+	is $a.min,        0,        "min stored";
+	is $a.max,        100,      "max stored";
+	is $a.tick-count, 5,        "tick-count defaults to 5";
+};
+
+subtest "rejects invalid edge" => {
+	plan 1;
+	dies-ok { Selkie::Widget::Axis.new(edge => 'middle', min => 0, max => 1) },
+		"unknown edge is rejected";
+};
+
+subtest "rejects min > max" => {
+	plan 1;
+	dies-ok { Selkie::Widget::Axis.new(edge => 'bottom', min => 5, max => 1) },
+		"min > max is rejected";
+};
+
+subtest "reserved-rows reflects edge orientation" => {
+	plan 4;
+	my $bot = Selkie::Widget::Axis.new(edge => 'bottom', min => 0, max => 1);
+	my $top = Selkie::Widget::Axis.new(edge => 'top',    min => 0, max => 1);
+	my $left = Selkie::Widget::Axis.new(edge => 'left',  min => 0, max => 1);
+	my $right = Selkie::Widget::Axis.new(edge => 'right',min => 0, max => 1);
+	is $bot.reserved-rows,   2, "bottom needs 2 rows";
+	is $top.reserved-rows,   2, "top needs 2 rows";
+	is $left.reserved-rows,  0, "left doesn't reserve rows";
+	is $right.reserved-rows, 0, "right doesn't reserve rows";
+};
+
+subtest "reserved-cols accounts for label width" => {
+	plan 3;
+	# Range 0..100 → ticks at 0,20,40,...,100 → labels up to 3 chars → reserved 4
+	my $a = Selkie::Widget::Axis.new(edge => 'left', min => 0, max => 100);
+	is $a.reserved-cols, 4, "0..100 reserves 4 cols (label '100' + line)";
+
+	# Range 0..1 → ticks at 0,0.2,...,1.0 → labels 3 chars ('1.0') → reserved 4
+	my $b = Selkie::Widget::Axis.new(edge => 'left', min => 0, max => 1);
+	is $b.reserved-cols, 4, "0..1 reserves 4 cols";
+
+	# Negative range: '-100' is 4 chars → reserved 5
+	my $c = Selkie::Widget::Axis.new(edge => 'left', min => -100, max => 100);
+	ok $c.reserved-cols >= 5, "negative range reserves enough for '-100'";
+};
+
+subtest "horizontal axes' reserved-cols is 0" => {
+	plan 2;
+	my $bot = Selkie::Widget::Axis.new(edge => 'bottom', min => 0, max => 100);
+	my $top = Selkie::Widget::Axis.new(edge => 'top',    min => 0, max => 100);
+	is $bot.reserved-cols, 0, "bottom doesn't reserve cols";
+	is $top.reserved-cols, 0, "top doesn't reserve cols";
+};
+
+subtest "tick-count carries through" => {
+	plan 1;
+	my $a = Selkie::Widget::Axis.new(
+		edge => 'bottom', min => 0, max => 100, tick-count => 11,
+	);
+	is $a.tick-count, 11, "tick-count stored";
+};
+
+subtest "show-line defaults to True and is configurable" => {
+	plan 2;
+	my $a = Selkie::Widget::Axis.new(edge => 'bottom', min => 0, max => 1);
+	ok  $a.show-line, "show-line defaults to True";
+	my $b = Selkie::Widget::Axis.new(
+		edge => 'bottom', min => 0, max => 1, show-line => False,
+	);
+	nok $b.show-line, "show-line can be disabled";
+};
+
+subtest "non-focusable by default" => {
+	plan 1;
+	my $a = Selkie::Widget::Axis.new(edge => 'bottom', min => 0, max => 1);
+	nok $a.focusable, "axis isn't focusable (it's a display widget)";
+};

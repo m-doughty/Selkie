@@ -1,0 +1,110 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Theme;
+use Selkie::Style;
+
+plan 6;
+
+subtest "default theme exposes all graph slots" => {
+	plan 6;
+	my $t = Selkie::Theme.default;
+	ok $t.graph-axis.defined,       "graph-axis defined";
+	ok $t.graph-axis-label.defined, "graph-axis-label defined";
+	ok $t.graph-grid.defined,       "graph-grid defined";
+	ok $t.graph-line.defined,       "graph-line defined";
+	ok $t.graph-fill.defined,       "graph-fill defined";
+	ok $t.graph-legend-bg.defined,  "graph-legend-bg defined";
+};
+
+subtest "default theme graph colors match documented values" => {
+	plan 6;
+	my $t = Selkie::Theme.default;
+	is $t.graph-axis.fg,        0x808098, "graph-axis fg";
+	is $t.graph-axis-label.fg,  0x8080A0, "graph-axis-label fg";
+	is $t.graph-grid.fg,        0x2A2A4A, "graph-grid fg";
+	is $t.graph-line.fg,        0x7AA2F7, "graph-line fg";
+	is $t.graph-fill.fg,        0x3A4A8A, "graph-fill fg";
+	is $t.graph-legend-bg.bg,   0x24243E, "graph-legend-bg bg";
+};
+
+subtest "custom theme without graph slots derives defaults from base UI slots" => {
+	plan 6;
+	# Construct a minimal theme defining only the required UI slots.
+	# This is the construction pattern used by every theme written
+	# before the chart widgets shipped — we must not break it.
+	my $t = Selkie::Theme.new(
+		base              => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x000000),
+		border            => Selkie::Style.new(fg => 0x444444),
+		border-focused    => Selkie::Style.new(fg => 0x00FF00, bold => True),
+		text              => Selkie::Style.new(fg => 0xEEEEEE),
+		text-dim          => Selkie::Style.new(fg => 0x888888),
+		text-highlight    => Selkie::Style.new(fg => 0xFFFFFF, bold => True),
+		input             => Selkie::Style.new(fg => 0xEEEEEE, bg => 0x111111),
+		input-focused     => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x222222),
+		input-placeholder => Selkie::Style.new(fg => 0x666666, italic => True),
+		scrollbar-track   => Selkie::Style.new(fg => 0x333333),
+		scrollbar-thumb   => Selkie::Style.new(fg => 0x00FF00),
+		divider           => Selkie::Style.new(fg => 0x555555),
+		tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x00FF00, bold => True),
+		tab-inactive      => Selkie::Style.new(fg => 0x888888),
+	);
+	is $t.graph-axis.fg,        0x888888, "graph-axis derives from text-dim";
+	is $t.graph-axis-label.fg,  0x888888, "graph-axis-label derives from text-dim";
+	is $t.graph-grid.fg,        0x555555, "graph-grid derives from divider";
+	is $t.graph-line.fg,        0x00FF00, "graph-line derives from border-focused";
+	is $t.graph-fill.fg,        0x00FF00, "graph-fill derives from border-focused";
+	is $t.graph-legend-bg.bg,   0x000000, "graph-legend-bg derives bg from base.bg";
+};
+
+subtest "custom theme can override individual graph slots" => {
+	plan 2;
+	my $t = Selkie::Theme.new(
+		base              => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x000000),
+		border            => Selkie::Style.new(fg => 0x444444),
+		border-focused    => Selkie::Style.new(fg => 0x00FF00, bold => True),
+		text              => Selkie::Style.new(fg => 0xEEEEEE),
+		text-dim          => Selkie::Style.new(fg => 0x888888),
+		text-highlight    => Selkie::Style.new(fg => 0xFFFFFF, bold => True),
+		input             => Selkie::Style.new(fg => 0xEEEEEE, bg => 0x111111),
+		input-focused     => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x222222),
+		input-placeholder => Selkie::Style.new(fg => 0x666666, italic => True),
+		scrollbar-track   => Selkie::Style.new(fg => 0x333333),
+		scrollbar-thumb   => Selkie::Style.new(fg => 0x00FF00),
+		divider           => Selkie::Style.new(fg => 0x555555),
+		tab-active        => Selkie::Style.new(fg => 0xFFFFFF, bg => 0x00FF00, bold => True),
+		tab-inactive      => Selkie::Style.new(fg => 0x888888),
+		graph-line        => Selkie::Style.new(fg => 0xFF00FF),
+		graph-grid        => Selkie::Style.new(fg => 0x101010),
+	);
+	is $t.graph-line.fg, 0xFF00FF, "graph-line override applied";
+	is $t.graph-grid.fg, 0x101010, "graph-grid override applied";
+};
+
+subtest "graph-line is not bold by default in default theme" => {
+	plan 1;
+	# border-focused inherits bold=True; graph-line should not, so
+	# chart series colors render at the documented hue rather than
+	# the brightened terminal-bold variant.
+	my $t = Selkie::Theme.default;
+	nok $t.graph-line.bold, "graph-line in default theme is not bold";
+};
+
+subtest "all 14 required UI slots still load (no regression)" => {
+	plan 14;
+	my $t = Selkie::Theme.default;
+	ok $t.base.defined,              "base";
+	ok $t.border.defined,            "border";
+	ok $t.border-focused.defined,    "border-focused";
+	ok $t.text.defined,              "text";
+	ok $t.text-dim.defined,          "text-dim";
+	ok $t.text-highlight.defined,    "text-highlight";
+	ok $t.input.defined,             "input";
+	ok $t.input-focused.defined,     "input-focused";
+	ok $t.input-placeholder.defined, "input-placeholder";
+	ok $t.scrollbar-track.defined,   "scrollbar-track";
+	ok $t.scrollbar-thumb.defined,   "scrollbar-thumb";
+	ok $t.divider.defined,           "divider";
+	ok $t.tab-active.defined,        "tab-active";
+	ok $t.tab-inactive.defined,      "tab-inactive";
+};

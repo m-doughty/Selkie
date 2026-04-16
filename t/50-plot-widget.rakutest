@@ -1,0 +1,78 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Plot;
+
+plan 9;
+
+subtest "construction with defaults" => {
+	plan 5;
+	my $p = Selkie::Widget::Plot.new;
+	isa-ok $p, Selkie::Widget::Plot;
+	is $p.type,   'uint', "type defaults to uint";
+	is $p.min-y,  0,      "min-y defaults to 0";
+	is $p.max-y,  100,    "max-y defaults to 100";
+	nok $p.has-handle,    "no handle until plane attached";
+};
+
+subtest "construction with double type" => {
+	plan 1;
+	my $p = Selkie::Widget::Plot.new(:type<double>, :min-y(-1.0), :max-y(1.0));
+	is $p.type, 'double', "type stored";
+};
+
+subtest "rejects invalid type" => {
+	plan 1;
+	dies-ok { Selkie::Widget::Plot.new(:type<integer>) },
+		"unknown type rejected";
+};
+
+subtest "rejects min-y >= max-y" => {
+	plan 2;
+	dies-ok { Selkie::Widget::Plot.new(:min-y(50), :max-y(10)) },
+		"min > max rejected";
+	dies-ok { Selkie::Widget::Plot.new(:min-y(50), :max-y(50)) },
+		"min == max rejected (no range)";
+};
+
+subtest "push-sample buffers when no handle exists" => {
+	plan 2;
+	my $p = Selkie::Widget::Plot.new;
+	$p.clear-dirty;
+	$p.push-sample(0, 50);
+	$p.push-sample(1, 75);
+	ok $p.is-dirty, "marked dirty after pushes";
+	# We can't directly inspect the buffered list (private), but the
+	# render path will flush it once a plane attaches. Verified via
+	# integration / snapshot.
+	pass "no errors buffering pre-attach";
+};
+
+subtest "set-sample is no-op without handle" => {
+	plan 1;
+	my $p = Selkie::Widget::Plot.new;
+	# No handle, no plane — should no-op silently.
+	lives-ok { $p.set-sample(0, 50) },
+		"set-sample is silent when no handle exists";
+};
+
+subtest "store-path stores correctly" => {
+	plan 1;
+	my $p = Selkie::Widget::Plot.new(store-path => <metrics throughput>);
+	is $p.store-path.list, ('metrics', 'throughput'), "store-path stored";
+};
+
+subtest "non-focusable by default" => {
+	plan 1;
+	my $p = Selkie::Widget::Plot.new;
+	nok $p.focusable, "plot isn't focusable";
+};
+
+subtest "rangex defaults to 0 (auto-derive at handle creation)" => {
+	plan 2;
+	my $p = Selkie::Widget::Plot.new;
+	is $p.rangex, 0, "rangex defaults to 0";
+
+	my $explicit = Selkie::Widget::Plot.new(rangex => 200);
+	is $explicit.rangex, 200, "explicit rangex stored";
+};

@@ -47,16 +47,24 @@ Under the hood:
 Trailing whitespace is trimmed from each row; trailing empty rows are
 dropped so resizes don't churn snapshots unnecessarily.
 
-B<Currently snapshots capture character content only>, not styles. That's
-a deliberate v1 tradeoff — catches layout bugs, text mistakes, and most
-rendering regressions without the complexity of a style-aware snapshot
-format.
+B<By default, snapshots capture character content only>, not styles.
+That's a deliberate tradeoff — catches layout bugs, text mistakes, and
+most rendering regressions without the complexity of a style-aware
+snapshot format. Diffs stay one-row-per-row legible in PR review.
 
 Practical consequence: widgets whose state changes are style-only (e.g.
 C<ListView> cursor, C<Button> focus highlight, C<Checkbox> toggle color)
 won't produce a different snapshot between states. Test those via the
 widget's attributes or the C<Selkie::Test::Keys> + event assertions
-directly, not via snapshots.
+directly, not via plain snapshots.
+
+For widgets where colour I<is> the regression — C<Heatmap>, multi-series
+C<LineChart>, multi-bar C<BarChart>, themed elements — pass
+C<:capture-styles> to C<render-to-string> (or C<snapshot-ok>). The
+output then includes a parallel grid of style keys and a legend mapping
+each key to C<(fg, bg, stylemask)>. The harness routes styled goldens
+to C<xt/snapshots/golden-styled/> automatically (it detects the format
+marker on the first line of stdout).
 
 =head1 WORKFLOW
 
@@ -113,6 +121,28 @@ snapshot-ok $widget, 'thing', :rows(4), :cols(20), dir => 'xt/snaps';
 
 =end code
 
+=head2 Style-aware snapshot
+
+For widgets where colour or text style is the regression you care about,
+opt into the styled format:
+
+=begin code :lang<raku>
+
+snapshot-ok $heatmap, 'heatmap-viridis', :rows(8), :cols(20), :capture-styles;
+
+=end code
+
+The captured output begins with C<=== styled-snapshot v1 ===> and
+contains three blocks (C<--- glyphs --->, C<--- styles --->,
+C<--- legend --->). The harness recognises the marker and stores the
+golden under C<{$dir}/golden-styled/{$name}.snap> rather than
+C<{$dir}/golden/{$name}.snap>.
+
+Style equality is the C<(fg-rgb, bg-rgb, stylemask)> tuple. Cells with
+no fg, no bg, and no styles get the C<.> key. Other tuples get
+single-character keys (C<A>, C<B>, ..., C<Z>, C<a>, ..., C<z>, C<0>,
+..., C<9>) in first-seen order.
+
 =head1 FILE FORMAT
 
 Snapshots are plain UTF-8 text files. One line per rendered row; trailing
@@ -153,8 +183,16 @@ use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 use Notcurses::Native::Context;
+use Notcurses::Native::Channel;
 
 use Selkie::Widget;
+
+#| Marker line that identifies a styled snapshot. The fork-per-scenario
+#| harness (C<Selkie::Test::Snapshot::Harness>) detects this on the
+#| first line of subprocess stdout and routes the golden file to a
+#| separate C<golden-styled/> subdirectory. Plain snapshots without
+#| this marker continue to use the existing C<golden/> subdirectory.
+constant STYLED-SNAPSHOT-MARKER is export = '=== styled-snapshot v1 ===';
 
 # --- Output redirection for notcurses ------------------------------------
 #
@@ -341,10 +379,16 @@ END {
 
     The notcurses instance persists across calls within a test process
     (init is once-per-process). The widget's plane is destroyed after
-    each call so renders don't leak. )
+    each call so renders don't leak.
+
+    Pass C<:capture-styles> to emit the style-aware format instead of
+    the plain glyph grid — see L<Selkie::Test::Snapshot> Pod6 for the
+    format spec. The harness routes styled goldens to
+    C<golden-styled/> automatically. )
 sub render-to-string(Selkie::Widget $widget,
                      UInt :$rows = 24,
-                     UInt :$cols = 80
+                     UInt :$cols = 80,
+                     Bool :$capture-styles = False,
                      --> Str
 ) is export {
     ensure-nc();
@@ -370,6 +414,20 @@ sub render-to-string(Selkie::Widget $widget,
     # rendered-frame buffer — the composited view we want.
     notcurses_render($nc-shared);
 
+    my $result = $capture-styles
+        ?? styled-readback($rows, $cols)
+        !! plain-readback($rows, $cols);
+
+    # Destroy the widget's plane so the next render gets a fresh one.
+    # The shared notcurses instance lives on.
+    $widget.destroy;
+
+    $result;
+}
+
+# Plain readback — character-only grid; existing v1 behaviour. Trailing
+# whitespace per row stripped; trailing blank rows dropped.
+sub plain-readback(UInt $rows, UInt $cols --> Str) {
     my @lines;
     for ^$rows -> $y {
         my $line = '';
@@ -378,29 +436,129 @@ sub render-to-string(Selkie::Widget $widget,
             my uint64 $channels = 0;
             my $egc = notcurses_at_yx($nc-shared, $y, $x,
                                       $stylemask, $channels);
-            # notcurses returns "" (not Nil) for never-drawn cells; treat
-            # them as a single space so column positions are preserved.
             $line ~= ($egc && $egc.chars ?? $egc !! ' ');
         }
         @lines.push($line.trim-trailing);
     }
-
-    # Destroy the widget's plane so the next render gets a fresh one.
-    # The shared notcurses instance lives on.
-    $widget.destroy;
-
-    # Drop trailing blank lines
     while @lines && @lines[*-1] eq '' {
         @lines.pop;
     }
-
     @lines.join("\n");
+}
+
+# Styled readback — emits the marker, a glyphs block, a parallel styles
+# block, and a legend. Each cell is keyed by its (fg-rgb, bg-rgb,
+# stylemask) tuple. The default tuple (no fg, no bg, no styles) gets
+# '.'; subsequent tuples get A-Z, a-z, 0-9 in first-seen order.
+#
+# Trailing-blank trimming: a row is "blank" iff its glyph row is all
+# spaces AND its styles row is all '.'. The two rows are trimmed
+# in lockstep so they stay aligned in the output.
+sub styled-readback(UInt $rows, UInt $cols --> Str) {
+    my @glyph-rows;
+    my @style-rows;
+    my %tuple-to-key{Str} = '__default__' => '.';
+    my @tuple-order;        # tuples in first-seen order, for legend
+    my @letters = flat ('A'..'Z'), ('a'..'z'), ('0'..'9');
+    my $next-letter = 0;
+
+    for ^$rows -> $y {
+        my $glyph-line = '';
+        my $style-line = '';
+        for ^$cols -> $x {
+            my uint16 $stylemask = 0;
+            my uint64 $channels = 0;
+            my $egc = notcurses_at_yx($nc-shared, $y, $x,
+                                      $stylemask, $channels);
+            my $glyph = ($egc && $egc.chars ?? $egc !! ' ');
+
+            my $fg-default = ?ncchannels_fg_default_p($channels);
+            my $bg-default = ?ncchannels_bg_default_p($channels);
+            my $fg-rgb = $fg-default ?? -1 !! ncchannels_fg_rgb($channels).Int;
+            my $bg-rgb = $bg-default ?? -1 !! ncchannels_bg_rgb($channels).Int;
+            my $sm     = $stylemask.Int;
+
+            my $tuple-key = ($fg-default && $bg-default && $sm == 0)
+                ?? '__default__'
+                !! "$fg-rgb|$bg-rgb|$sm";
+
+            unless %tuple-to-key{$tuple-key}:exists {
+                if $next-letter >= @letters.elems {
+                    die "styled-snapshot: more than {@letters.elems} unique"
+                        ~ " styles in render — extend the alphabet or"
+                        ~ " split the snapshot";
+                }
+                %tuple-to-key{$tuple-key} = @letters[$next-letter++];
+                @tuple-order.push($tuple-key);
+            }
+
+            $glyph-line ~= $glyph;
+            $style-line ~= %tuple-to-key{$tuple-key};
+        }
+        @glyph-rows.push($glyph-line);
+        @style-rows.push($style-line);
+    }
+
+    # Lockstep trim trailing blank rows.
+    while @glyph-rows
+            && @glyph-rows[*-1] ~~ /^ ' '* $/
+            && @style-rows[*-1] ~~ /^ '.'* $/ {
+        @glyph-rows.pop;
+        @style-rows.pop;
+    }
+
+    # Per-row trim: cut both glyph and style rows to the same trimmed
+    # length so they stay aligned. Use the glyph row's trim length as
+    # canonical (style cells corresponding to trailing spaces are
+    # always '.' — they wouldn't be trimmed if a non-default style
+    # were set there).
+    for ^@glyph-rows.elems -> $i {
+        my $trimmed = @glyph-rows[$i].trim-trailing;
+        my $len = $trimmed.chars;
+        @glyph-rows[$i] = $trimmed;
+        @style-rows[$i] = @style-rows[$i].substr(0, $len);
+    }
+
+    my @legend = ('.: (default)',);
+    for @tuple-order -> $tk {
+        next if $tk eq '__default__';
+        @legend.push(%tuple-to-key{$tk} ~ ': ' ~ describe-tuple($tk));
+    }
+
+    join("\n",
+        STYLED-SNAPSHOT-MARKER,
+        '--- glyphs ---',
+        |@glyph-rows,
+        '--- styles ---',
+        |@style-rows,
+        '--- legend ---',
+        |@legend,
+    );
+}
+
+# Format a tuple key (fg|bg|stylemask) as a human-readable description.
+# fg/bg of -1 mean "default / inherited" and are omitted; stylemask of
+# 0 is omitted.
+sub describe-tuple(Str $tk --> Str) {
+    my ($fg, $bg, $sm) = $tk.split('|').map(*.Int);
+    my @parts;
+    @parts.push: sprintf('fg=#%06X', $fg) unless $fg == -1;
+    @parts.push: sprintf('bg=#%06X', $bg) unless $bg == -1;
+    if $sm != 0 {
+        my @flags;
+        @flags.push: 'BOLD'      if $sm +& NCSTYLE_BOLD;
+        @flags.push: 'ITALIC'    if $sm +& NCSTYLE_ITALIC;
+        @flags.push: 'UNDERLINE' if $sm +& NCSTYLE_UNDERLINE;
+        @flags.push: 'STRUCK'    if $sm +& NCSTYLE_STRUCK;
+        @parts.push: 'styles=' ~ @flags.join('|') if @flags;
+    }
+    @parts ?? @parts.join(' ') !! '(default)';
 }
 
 # --- Snapshot comparison --------------------------------------------------
 
 #|( Test assertion: render the widget to C<$rows> × C<$cols> and compare
-    against a stored snapshot file at C<$dir/$name.snap>.
+    against a stored snapshot file.
 
     =item First run or missing file: the snapshot is created and the test passes.
     =item Matching output: the test passes.
@@ -409,16 +567,24 @@ sub render-to-string(Selkie::Widget $widget,
     Set the env var C<SELKIE_UPDATE_SNAPSHOTS> to a truthy value to
     overwrite existing snapshots with current output.
 
-    The snapshot directory defaults to C<t/snapshots> and is auto-created
-    on first use. )
+    The snapshot directory defaults to C<t/snapshots>. With
+    C<:capture-styles> the directory is automatically suffixed with
+    C<-styled> (default: C<t/snapshots-styled>) so plain and styled
+    goldens never collide. Override C<$dir> for a custom location;
+    when overriding alongside C<:capture-styles>, suffix C<$dir>
+    yourself. The directory is auto-created on first use. )
 sub snapshot-ok(Selkie::Widget $widget,
                 Str:D $name,
                 UInt :$rows = 24,
                 UInt :$cols = 80,
-                Str  :$dir = 't/snapshots'
+                Bool :$capture-styles = False,
+                Str  :$dir is copy
 ) is export {
+    without $dir {
+        $dir = $capture-styles ?? 't/snapshots-styled' !! 't/snapshots';
+    }
     my $snap = $dir.IO.add("$name.snap");
-    my $rendered = render-to-string($widget, :$rows, :$cols);
+    my $rendered = render-to-string($widget, :$rows, :$cols, :$capture-styles);
 
     mkdir $dir unless $dir.IO.d;
 

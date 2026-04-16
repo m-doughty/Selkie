@@ -65,8 +65,28 @@ C<run-snapshots> accepts named args:
 
 =item C<:snap-dir('xt/snapshots')> — directory containing scenario scripts
 =item C<:golden-subdir('golden')> — subdirectory of C<snap-dir> for goldens
+=item C<:styled-golden-subdir('golden-styled')> — subdirectory for styled goldens; the harness routes scenarios that emit the C<=== styled-snapshot v1 ===> marker (via L<Selkie::Test::Snapshot>'s C<:capture-styles> mode) here automatically
 =item C<:raku-args> — extra C<-I> flags for the subprocess (defaults to C<-I lib>)
 =item C<:disable-spesh(True)> — set C<MVM_SPESH_DISABLE=1>. Set to False if you want to test with spesh enabled, but expect flakes.
+
+=head1 STYLED SCENARIOS
+
+Plain and styled scenarios can live in the same C<xt/snapshots/> dir.
+The harness reads each subprocess's stdout, peeks at the first line,
+and routes to C<golden/> or C<golden-styled/> accordingly. No
+configuration is needed in scenario scripts beyond passing
+C<:capture-styles> to C<render-to-string>:
+
+=begin code :lang<raku>
+
+# xt/snapshots/24-heatmap-styled.raku
+use lib 'lib';
+use Selkie::Test::Snapshot;
+use My::Heatmap;
+
+print render-to-string(My::Heatmap.new(...), :rows(8), :cols(20), :capture-styles);
+
+=end code
 
 =end pod
 
@@ -74,21 +94,32 @@ unit module Selkie::Test::Snapshot::Harness;
 
 use Test;
 
+# Marker that identifies a styled snapshot. Kept inline rather than
+# imported from Selkie::Test::Snapshot to avoid loading notcurses in
+# the harness process — the harness is the test driver, not a
+# rendering consumer.
+constant STYLED-MARKER = '=== styled-snapshot v1 ===';
+
 #|( Run every C<*.raku> file in C<$snap-dir> as an isolated subprocess,
     capture stdout, and snapshot-test it against
-    C<{$snap-dir}/{$golden-subdir}/{name}.snap>.
+    C<{$snap-dir}/{$golden-subdir}/{name}.snap> (plain) or
+    C<{$snap-dir}/{$styled-golden-subdir}/{name}.snap> (styled, when the
+    scenario emits the C<=== styled-snapshot v1 ===> marker).
 
     Emits one TAP assertion per scenario. Call this from an xt/
     rakutest file — nothing else needed. )
 sub run-snapshots(
-    IO() :$snap-dir        = 'xt/snapshots',
-    Str  :$golden-subdir   = 'golden',
-         :@raku-args       = <-I lib>,
-    Bool :$disable-spesh   = True,
+    IO() :$snap-dir              = 'xt/snapshots',
+    Str  :$golden-subdir         = 'golden',
+    Str  :$styled-golden-subdir  = 'golden-styled',
+         :@raku-args             = <-I lib>,
+    Bool :$disable-spesh         = True,
 ) is export {
     my $dir = $snap-dir.IO;
-    my $golden-dir = $dir.add($golden-subdir);
-    $golden-dir.mkdir unless $golden-dir.d;
+    my $golden-dir         = $dir.add($golden-subdir);
+    my $styled-golden-dir  = $dir.add($styled-golden-subdir);
+    $golden-dir.mkdir         unless $golden-dir.d;
+    $styled-golden-dir.mkdir  unless $styled-golden-dir.d;
 
     my @scenarios = $dir.dir(test => /\.raku$/).sort(*.basename);
     unless @scenarios {
@@ -109,7 +140,6 @@ sub run-snapshots(
 
     for @scenarios -> $script {
         my $name = $script.basename.subst(/\.raku$/, '');
-        my $golden = $golden-dir.add("$name.snap");
 
         my $proc = run 'raku', |@raku-args, $script.Str, :out, :err, :%env;
         my $stdout = $proc.out.slurp(:close);
@@ -123,23 +153,32 @@ sub run-snapshots(
             next;
         }
 
-        my $rendered = normalise($stdout);
+        # Detect styled scenarios by their first-line marker. Routing
+        # is automatic — scenario scripts don't need to know which
+        # subdir their golden lives in. Empty stdout (e.g. a widget
+        # that legitimately renders blank) is never styled.
+        my $first-line = $stdout.lines.head // '';
+        my $is-styled  = $first-line eq STYLED-MARKER;
+        my $rendered  = $is-styled
+            ?? normalise-styled($stdout)
+            !! normalise($stdout);
+        my $golden    = ($is-styled ?? $styled-golden-dir !! $golden-dir).add("$name.snap");
 
         if !$golden.e {
             $golden.spurt($rendered ~ "\n");
-            pass "snapshot '$name' created";
+            pass "snapshot '$name' created" ~ ($is-styled ?? ' (styled)' !! '');
             next;
         }
 
         if $update {
             $golden.spurt($rendered ~ "\n");
-            pass "snapshot '$name' updated";
+            pass "snapshot '$name' updated" ~ ($is-styled ?? ' (styled)' !! '');
             next;
         }
 
         my $expected = $golden.slurp.chomp;
         if $rendered eq $expected {
-            pass "snapshot '$name'";
+            pass "snapshot '$name'" ~ ($is-styled ?? ' (styled)' !! '');
         } else {
             flunk "snapshot '$name' differs from {$golden.Str}";
             diag "  expected ({$expected.lines.elems} lines) → got ({$rendered.lines.elems} lines):";
@@ -156,6 +195,14 @@ sub normalise(Str $s --> Str) {
     my @lines = $s.lines.map(*.trim-trailing);
     while @lines && @lines[*-1] eq '' { @lines.pop }
     @lines.join("\n");
+}
+
+# Styled output is emitted by Selkie::Test::Snapshot::render-to-string
+# already trim-friendly (it does its own lockstep trim). We just chomp
+# the trailing newline if any so byte-for-byte comparison works after
+# spurt-with-newline.
+sub normalise-styled(Str $s --> Str) {
+    $s.chomp;
 }
 
 sub diff-lines(Str $expected, Str $got --> List) {

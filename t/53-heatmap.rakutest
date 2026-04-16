@@ -1,0 +1,91 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Heatmap;
+
+plan 9;
+
+subtest "construction with default ramp" => {
+	plan 3;
+	my $h = Selkie::Widget::Heatmap.new(
+		data => [[1, 2], [3, 4]],
+	);
+	isa-ok $h, Selkie::Widget::Heatmap;
+	is $h.ramp, 'viridis', "default ramp is viridis";
+	nok $h.focusable, "non-focusable by default";
+};
+
+subtest "rejects data + store-path combo" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::Heatmap.new(
+			data       => [[1, 2]],
+			store-path => <metrics grid>,
+		);
+	}, "mutually exclusive modes";
+};
+
+subtest "min/max defaults are undefined" => {
+	plan 2;
+	my $h = Selkie::Widget::Heatmap.new(data => [[1, 2]]);
+	nok $h.min.defined, "min undefined";
+	nok $h.max.defined, "max undefined";
+};
+
+subtest "explicit min/max stored" => {
+	plan 2;
+	my $h = Selkie::Widget::Heatmap.new(
+		data => [[1, 2]],
+		min  => -1,
+		max  =>  1,
+	);
+	is $h.min, -1, "min stored";
+	is $h.max,  1, "max stored";
+};
+
+subtest "ramp can be overridden" => {
+	plan 1;
+	my $h = Selkie::Widget::Heatmap.new(
+		data => [[1, 2]],
+		ramp => 'coolwarm',
+	);
+	is $h.ramp, 'coolwarm', "ramp stored";
+};
+
+subtest "set-data replaces and dirties" => {
+	plan 3;
+	my $h = Selkie::Widget::Heatmap.new(data => [[1, 2]]);
+	$h.clear-dirty;
+	$h.set-data([[10, 20], [30, 40]]);
+	is $h.data.elems, 2, "two rows after replace";
+	is $h.data[0][0], 10, "first cell updated";
+	ok $h.is-dirty, "dirty after set-data";
+};
+
+subtest "set-data dies in store-path mode" => {
+	plan 1;
+	my $h = Selkie::Widget::Heatmap.new(store-path => <metrics grid>);
+	dies-ok { $h.set-data([[1, 2]]) },
+		"set-data invalid in store-path mode";
+};
+
+subtest "store-path stored" => {
+	plan 1;
+	my $h = Selkie::Widget::Heatmap.new(store-path => <metrics utilization>);
+	is $h.store-path.list, ('metrics', 'utilization'), "store-path stored";
+};
+
+subtest "data constructed from a Seq-of-Seqs survives repeated access" => {
+	plan 2;
+	# Callers frequently build heatmap data via nested
+	# `(^N).map: { ... }`, which produces Seqs. A long-lived TUI app
+	# renders the same widget every frame; if the Seqs weren't
+	# realised once at construction, the second render would see
+	# empty rows.
+	my $h = Selkie::Widget::Heatmap.new(
+		data => ((^3).map: -> $r { (^3).map: -> $c { ($r + $c) / 4.0 } }),
+	);
+	# Access the data twice — both should see the same values.
+	is $h.data[0][0], 0,    "first access sees (0,0) = 0";
+	is $h.data[0][0], 0,    "second access still sees (0,0) = 0 (Seq not consumed)";
+};

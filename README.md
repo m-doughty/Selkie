@@ -146,7 +146,7 @@ This README covers the framework's concepts, lifecycle, and common patterns. For
 EXAMPLES
 ========
 
-The `examples/` directory has seven runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
+The `examples/` directory has eight runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
 
   * `counter.raku` — The smallest correct-pattern app. VBox, Text, Button, store handler returning `(db =` ...)>, path subscription, global keybind. Start here.
 
@@ -160,7 +160,9 @@ The `examples/` directory has seven runnable apps that together demonstrate ever
 
   * `chat.raku` — CardList of variable-height RichText cards, MultiLineInput compose, Border auto-focus highlight, Toast, runtime theme toggle (Ctrl+T).
 
-  * `dashboard.raku` — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, and CommandPalette bound to Ctrl+P.
+  * `dashboard.raku` — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, CommandPalette bound to Ctrl+P, and an inline Sparkline column on the Servers tab rendering each row's recent latency history.
+
+  * `charts.raku` — Showcase of the chart family: Sparkline reactively bound to a store path, LineChart updated via a subscribe-with-callback (live p50 / p99 latencies), BarChart + Histogram + Heatmap + ScatterPlot demonstrating the static archetypes, and a streaming Plot pushing samples into its own native ring buffer.
 
 Run any of them with:
 
@@ -788,6 +790,318 @@ $table.on-activate.tap: -> UInt $idx {
 
 $table.sort-by('name');   # cycles asc → desc → unsorted
 ```
+
+CHART WIDGETS
+=============
+
+A family of seven widgets for rendering numeric data, plus three pure-logic helpers. All chart widgets accept either static data (`:data` / `:series`) or a reactive binding to the store (`:store-path` or `subscribe-with-callback` from app code), and all render a centered "No data" placeholder until the first sample arrives — the expected startup state for monitoring dashboards.
+
+The shared primitives
+---------------------
+
+The chart widgets share three pure-logic helpers under `Selkie::Plot::*`. You'll occasionally use them directly when composing your own visualisations or when feeding chart widgets pre-computed data.
+
+`Selkie::Plot::Scaler` — linear value→cell mapping. Clamps out-of-domain values, preserves NaN as undef, supports `:invert` for y-axes (so cell 0 holds the maximum value at the top of the screen):
+
+```raku
+use Selkie::Plot::Scaler;
+
+my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 80);
+$s.value-to-cell(50);   # → 40
+$s.cell-to-value(20);   # → 25.31...
+```
+
+`Selkie::Plot::Ticks` — Heckbert nice-number tick generation, picking labels from `{1, 2, 5} × 10ⁿ`. Returns a tick set whose endpoints may extend slightly past the data range so labels land on round numbers:
+
+```raku
+use Selkie::Plot::Ticks;
+
+my $t = Selkie::Plot::Ticks.nice(min => 0, max => 100, count => 5);
+$t.values;     # → (0, 20, 40, 60, 80, 100)
+$t.labels;     # → ("0", "20", "40", "60", "80", "100")
+$t.step;       # → 20
+```
+
+`Selkie::Plot::Palette` — colourblind-safe series palettes (`okabe-ito`, `tol-bright`, `tableau-10`) and continuous color ramps (`viridis`, `magma`, `plasma`, `coolwarm`, `grayscale`):
+
+```raku
+use Selkie::Plot::Palette;
+
+my @colors = Selkie::Plot::Palette.series('okabe-ito');
+my $color  = Selkie::Plot::Palette.sample('viridis', 0.42);   # interpolates
+```
+
+Selkie::Widget::Sparkline
+-------------------------
+
+Single-row inline chart using the `▁▂▃▄▅▆▇█` block series. Designed to live in tables and status bars, not as a standalone visualisation. Hand- rolled with no native handle, so cheap to embed many instances (e.g. one per Table row).
+
+```raku
+use Selkie::Widget::Sparkline;
+
+# Static
+my $sl = Selkie::Widget::Sparkline.new(
+    data   => [1, 4, 2, 8, 5, 9, 3, 7],
+    sizing => Sizing.fixed(1),
+);
+
+# Streaming
+my $stream = Selkie::Widget::Sparkline.new(sizing => Sizing.fixed(1));
+$cpu-supply.tap: -> $sample { $stream.push-sample($sample) };
+
+# Reactive — auto-subscribes to the store path
+my $bound = Selkie::Widget::Sparkline.new(
+    store-path => <metrics latency-history>,
+    min        => 0,
+    max        => 100,
+    sizing     => Sizing.fixed(1),
+);
+```
+
+The three modes (`:data` / `:store-path` / streaming) are mutually exclusive. Pin `:min` / `:max` when streaming so the heights don't jitter as new samples shift the auto-range.
+
+Selkie::Widget::Plot
+--------------------
+
+Streaming chart wrapping the native `ncuplot` (uint64 samples) / `ncdplot` (num64 samples) widgets in notcurses. The native code handles scaling, blitter selection (braille by default), and incremental rendering — this widget's job is lifecycle management, the Selkie sample-push API, and optional store binding.
+
+```raku
+use Selkie::Widget::Plot;
+
+my $cpu = Selkie::Widget::Plot.new(
+    type   => 'uint',          # or 'double' for fractional measurements
+    min-y  => 0,
+    max-y  => 100,
+    title  => 'CPU %',
+    sizing => Sizing.flex,
+);
+
+# Push samples as they arrive
+$cpu-supply.tap: -> $pct {
+    state $tick = 0;
+    $cpu.push-sample($tick++, $pct);
+};
+```
+
+The native handle is created lazily on the first `render()` after the widget gets a plane. It's destroyed and recreated on resize — sample history is lost, which is fine for a streaming dashboard but worth knowing. For chart history that survives terminal resize, use `Selkie::Widget::LineChart` with a store-held sample buffer instead.
+
+Selkie::Widget::BarChart
+------------------------
+
+Categorical bar chart, vertical (default) or horizontal. Each entry is a labelled value; the widget renders one bar per entry with 1/8-cell precision (`▁▂▃▄▅▆▇█` vertically, `▏▎▍▌▋▊▉█` horizontally) so bar heights aren't constrained to whole cells.
+
+```raku
+use Selkie::Widget::BarChart;
+
+my $bars = Selkie::Widget::BarChart.new(
+    data => [
+        { label => 'Q1', value => 1230 },
+        { label => 'Q2', value => 1875 },
+        { label => 'Q3', value => 2042 },
+        { label => 'Q4', value => 1611 },
+    ],
+    sizing => Sizing.flex,
+);
+
+# Horizontal layout
+my $hbars = Selkie::Widget::BarChart.new(
+    data        => @data,
+    orientation => 'horizontal',
+    sizing      => Sizing.flex,
+);
+```
+
+Bar colours come from `:palette` (default `okabe-ito`) cycling through its entries, or from per-bar `color =`> overrides for status indicators where colour means something specific:
+
+```raku
+my @data = $tasks.map: -> $t {
+    {
+        label => $t.name,
+        value => $t.duration-ms,
+        color => $t.status eq 'failed' ?? 0xCC4444 !! 0x44AA44,
+    }
+};
+```
+
+Y-range auto-derives from `min(0, min-data)` to `max-data`; pass `:min` / `:max` to fix it.
+
+Selkie::Widget::Histogram
+-------------------------
+
+Adapter that bins a numeric series into the format `BarChart` expects. Same rendering and styling — just feeds `(label, count)` pairs in.
+
+```raku
+use Selkie::Widget::Histogram;
+
+# Equal-width bins
+my $h = Selkie::Widget::Histogram.new(
+    values => @latency-samples,
+    bins   => 20,
+    sizing => Sizing.flex,
+);
+
+# Custom bin edges (non-uniform — useful for skewed data)
+my $log-h = Selkie::Widget::Histogram.new(
+    values    => @latency-samples,
+    bin-edges => [0, 5, 10, 25, 50, 100, 250, 500, 1000, 5000],
+    sizing    => Sizing.flex,
+);
+```
+
+Bins are **left-closed, right-open** (`[0,10), [10,20)` ...) with the final bin closed-closed (`[90, 100]`) so the maximum sample is always counted. Matches numpy / R / matplotlib defaults.
+
+Selkie::Widget::Heatmap
+-----------------------
+
+2D grid coloured by value via a ramp lookup. Each cell renders as `█` with a foreground colour interpolated from the chosen ramp.
+
+```raku
+use Selkie::Widget::Heatmap;
+
+my $h = Selkie::Widget::Heatmap.new(
+    data   => @grid,            # 2D array of Real
+    ramp   => 'viridis',        # or magma, plasma, coolwarm, grayscale
+    sizing => Sizing.flex,
+);
+
+# Diverging data centred on zero (e.g. correlations)
+my $diverging = Selkie::Widget::Heatmap.new(
+    data   => @correlation-matrix,
+    ramp   => 'coolwarm',
+    min    => -1,                # pin the range so 0 stays at the white midpoint
+    max    =>  1,
+    sizing => Sizing.flex,
+);
+```
+
+Each input cell becomes one terminal cell — no aspect-ratio compensation. A 10×10 data grid renders tall and narrow because terminal cells are roughly 2:1. Pre-process (e.g. duplicate columns) for square display. NaN cells render with the `text-dim` theme slot so missing data is visually distinct from in-range zero.
+
+Selkie::Widget::ScatterPlot
+---------------------------
+
+2D point plot using braille (U+2800-U+28FF) for **sub-cell** resolution: each terminal cell holds a 2×4 dot grid (8 dots per cell), so a 50-cell-wide plot resolves 100 distinct x-positions.
+
+```raku
+use Selkie::Widget::ScatterPlot;
+
+# Use Pair (x => y), [x, y] arrays, or hash form per point.
+# Bare lists `(x, y)` flatten in array context — don't use them.
+my @points = (1..50).map: { (rand * 100) => (rand * 100) };
+
+my $sp = Selkie::Widget::ScatterPlot.new(
+    series => [{ label => 'samples', points => @points }],
+    sizing => Sizing.flex,
+);
+
+# Multi-series with explicit colours
+my $sp2 = Selkie::Widget::ScatterPlot.new(
+    series => [
+        { label => 'group A', points => @group-a, color => 0xE69F00 },
+        { label => 'group B', points => @group-b, color => 0x56B4E9 },
+    ],
+    sizing => Sizing.flex,
+);
+```
+
+Per-cell colour limitation: a braille codepoint holds all 8 sub-pixels under a single foreground colour. When two series have dots in the same 2×4 cell window, the `:overlap` setting decides who wins — currently only `z-order` is supported (last-drawn series wins). For heavily-overlapping series, prefer faceted layouts (one scatter per series) over single-plot overlay.
+
+Selkie::Widget::LineChart
+-------------------------
+
+Static-data multi-series line chart, hand-rolled with the same braille sub-cell resolution as `ScatterPlot`. Composes its own y-axis and legend; supports optional fill-below for area-emphasis charts.
+
+```raku
+use Selkie::Widget::LineChart;
+
+# Single series
+my $cpu = Selkie::Widget::LineChart.new(
+    series => [{ label => 'cpu %', values => @cpu-history }],
+    y-min  => 0,
+    y-max  => 100,
+    sizing => Sizing.flex,
+);
+
+# Multi-series with explicit colours and fill
+my $cmp = Selkie::Widget::LineChart.new(
+    series => [
+        { label => 'p50', values => @p50, color => 0xE69F00 },
+        { label => 'p99', values => @p99, color => 0xCC4444 },
+    ],
+    fill-below => True,
+    sizing     => Sizing.flex,
+);
+```
+
+For **streaming** data, use `Selkie::Widget::Plot` instead (it has a native ring buffer better suited to high sample rates). `LineChart` expects you to hand it the full series each time — typically via `set-series` from a `subscribe-with-callback`:
+
+```raku
+$app.store.subscribe-with-callback(
+    'latency-series',
+    -> $s {
+        [
+            $s.get-in('metrics', 'p50') // [],
+            $s.get-in('metrics', 'p99') // [],
+        ]
+    },
+    -> @paths {
+        $line-chart.set-series([
+            { label => 'p50', values => @paths[0], color => 0x4477AA },
+            { label => 'p99', values => @paths[1], color => 0xEE6677 },
+        ]);
+    },
+    $line-chart,
+);
+```
+
+The same per-cell colour limitation as `ScatterPlot` applies for multi-series crossings. See `examples/charts.raku` for the canonical reactive setup.
+
+Selkie::Widget::Axis and Selkie::Widget::Legend
+-----------------------------------------------
+
+Standalone primitives that chart widgets compose internally, exposed for consumers who want to lay out a custom chart by hand. `Axis` renders labelled tick marks along one of the four edges; `Legend` renders a colour-swatch + label row per series.
+
+```raku
+use Selkie::Widget::Axis;
+use Selkie::Widget::Legend;
+
+my $axis = Selkie::Widget::Axis.new(
+    edge       => 'bottom',
+    min        => 0,
+    max        => 1000,
+    tick-count => 5,
+    sizing     => Sizing.fixed(2),    # 1 row line + 1 row labels
+);
+
+my $legend = Selkie::Widget::Legend.new(
+    series => [
+        { label => 'cpu',    color => 0xE69F00 },
+        { label => 'memory', color => 0x56B4E9 },
+    ],
+    orientation => 'vertical',
+    sizing      => Sizing.fixed(2),
+);
+```
+
+`Axis.reserved-rows` (for top/bottom) and `Axis.reserved-cols` (for left/right) report the exact dimensions the axis needs given its data range — useful when sizing the parent layout precisely.
+
+Theming chart widgets
+---------------------
+
+Six new theme slots cover chart elements:
+
+  * `graph-axis` — axis line and tick marks
+
+  * `graph-axis-label` — tick labels
+
+  * `graph-grid` — optional gridlines
+
+  * `graph-line` — single-series line / sparkline colour
+
+  * `graph-fill` — fill-below colour in line charts
+
+  * `graph-legend-bg` — legend background
+
+All are non-required with defaults derived from existing slots (`text-dim`, `divider`, `border-focused`, `base.bg`), so themes written before the chart widgets shipped keep working. Multi-series chart colours come from `Selkie::Plot::Palette` (not theme slots) so the palette can scale to N series without polluting the theme.
 
 THEMING
 =======

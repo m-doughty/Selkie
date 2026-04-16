@@ -1,0 +1,15 @@
+=== styled-snapshot v1 ===
+--- glyphs ---
+████
+████
+████
+████
+--- styles ---
+ABAB
+BABA
+ABAB
+BABA
+--- legend ---
+.: (default)
+A: fg=#440154
+B: fg=#FDE725

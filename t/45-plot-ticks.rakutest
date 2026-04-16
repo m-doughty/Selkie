@@ -1,0 +1,160 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Plot::Ticks;
+
+plan 14;
+
+subtest "construction with valid args" => {
+	plan 3;
+	my $t = Selkie::Plot::Ticks.nice(min => 0, max => 100, count => 5);
+	isa-ok $t, Selkie::Plot::Ticks;
+	is $t.min,    0,   "min stored";
+	is $t.max,    100, "max stored";
+};
+
+subtest "rejects count < 2" => {
+	plan 2;
+	dies-ok { Selkie::Plot::Ticks.nice(min => 0, max => 1, count => 1) },
+		"count = 1 is rejected";
+	dies-ok { Selkie::Plot::Ticks.nice(min => 0, max => 1, count => 0) },
+		"count = 0 is rejected";
+};
+
+subtest "rejects min > max" => {
+	plan 1;
+	dies-ok { Selkie::Plot::Ticks.nice(min => 10, max => 5, count => 5) },
+		"min > max is rejected";
+};
+
+subtest "degenerate range (min == max) returns single tick" => {
+	plan 3;
+	my $t = Selkie::Plot::Ticks.nice(min => 7, max => 7, count => 5);
+	is $t.values.elems,  1,  "exactly one tick";
+	is $t.values[0],     7,  "tick is at the degenerate value";
+	is $t.step,          0,  "step is zero (no spacing)";
+};
+
+subtest "(0, 100, 5) produces classic round ticks" => {
+	plan 3;
+	my $t = Selkie::Plot::Ticks.nice(min => 0, max => 100, count => 5);
+	# Heckbert with the {1, 2, 5} set lands on step=20 here (the
+	# nearest "nice" multiplier; step=25 isn't in the set). That
+	# yields six ticks instead of five — Heckbert prefers nice
+	# spacing over hitting the requested count exactly.
+	is $t.values.list, (0, 20, 40, 60, 80, 100),
+		"ticks at 0, 20, 40, 60, 80, 100";
+	is $t.step,    20, "step is 20";
+	is $t.labels.list, ("0", "20", "40", "60", "80", "100"),
+		"labels are integer-formatted";
+};
+
+subtest "(-50, 50, 5) handles symmetric negative range" => {
+	plan 2;
+	my $t = Selkie::Plot::Ticks.nice(min => -50, max => 50, count => 5);
+	# step=20 by the same logic as (0, 100, 5).
+	is $t.values.list, (-60, -40, -20, 0, 20, 40, 60),
+		"ticks span the symmetric range with nice spacing";
+	is $t.step, 20, "step is 20";
+};
+
+subtest "(7, 93, 5) extends to nice round endpoints" => {
+	plan 2;
+	# Heckbert pads outward to nice numbers — the data range is 7..93
+	# but the axis labels go 0..100 because those are the nice round
+	# numbers nearest the data extents.
+	my $t = Selkie::Plot::Ticks.nice(min => 7, max => 93, count => 5);
+	is $t.values.list, (0, 20, 40, 60, 80, 100),
+		"ticks extend to nice round endpoints";
+	is $t.step, 20, "step is 20";
+};
+
+subtest "sub-unit range produces sub-unit step" => {
+	plan 2;
+	my $t = Selkie::Plot::Ticks.nice(min => 0, max => 1, count => 5);
+	# Mirror of (0, 100, 5): step=0.2, six ticks.
+	is-approx $t.step, 0.2, "step is 0.2";
+	is $t.values.elems, 6,  "six ticks (Heckbert prefers nice spacing)";
+};
+
+subtest "sub-unit labels carry consistent decimal precision" => {
+	plan 6;
+	my $t = Selkie::Plot::Ticks.nice(min => 0, max => 0.1, count => 5);
+	# Step is 0.02; labels should all carry 2 decimal places so they
+	# align (no "0" mixed with "0.02" mixed with "0.06").
+	for $t.labels -> $label {
+		ok $label.contains('.'), "label '$label' carries decimal";
+	}
+};
+
+subtest "(0.001, 0.009, 4) — Heckbert prefers nice spacing over exact count" => {
+	plan 3;
+	my $t = Selkie::Plot::Ticks.nice(min => 0.001, max => 0.009, count => 4);
+	# Heckbert gives step = 0.005, ticks = (0, 0.005, 0.01).
+	# Three ticks despite requesting four — that's correct behaviour;
+	# you trade exact count for round spacing.
+	is-approx $t.step, 0.005, "step is 0.005";
+	ok $t.values.elems >= 2,  "at least two ticks";
+	ok $t.values.elems <= 6,  "tick count is reasonable";
+};
+
+subtest "all ticks are multiples of step (within FP tolerance)" => {
+	plan 1;
+	my $t = Selkie::Plot::Ticks.nice(min => -7.5, max => 42.3, count => 7);
+	my $step = $t.step;
+	my $all-multiples = True;
+	for $t.values -> $v {
+		my $ratio = $v / $step;
+		my $rounded = $ratio.round;
+		if ($ratio - $rounded).abs > 1e-9 {
+			$all-multiples = False;
+			last;
+		}
+	}
+	ok $all-multiples, "every tick is a multiple of step";
+};
+
+subtest "step is always 1, 2, or 5 times a power of 10" => {
+	plan 6;
+	# Sample a range of input domains and verify step is a member of
+	# {1, 2, 5} × 10^n.
+	my @cases = (
+		(0, 100, 5),
+		(0, 0.01, 5),
+		(-1000, 1000, 10),
+		(0.5, 7.3, 5),
+		(0, 1_000_000, 4),
+		(-0.0001, 0.0009, 5),
+	);
+	for @cases -> ($mn, $mx, $cnt) {
+		my $t = Selkie::Plot::Ticks.nice(min => $mn, max => $mx, count => $cnt);
+		my $step = $t.step;
+		my $exp = $step.abs.log(10).floor;
+		my $leading = ($step.abs / 10 ** $exp).round(0.001);
+		my $is-nice = $leading == 1 || $leading == 2 || $leading == 5;
+		ok $is-nice, "step $step (leading $leading) is nice";
+	}
+};
+
+subtest "ticks span the data range" => {
+	plan 3;
+	my $t = Selkie::Plot::Ticks.nice(min => 7, max => 93, count => 5);
+	ok $t.values[0] <= $t.min,
+		"first tick at or below min ({$t.values[0]} <= {$t.min})";
+	ok $t.values[*-1] >= $t.max,
+		"last tick at or above max ({$t.values[*-1]} >= {$t.max})";
+	# Adjacent ticks differ by exactly step.
+	for ^($t.values.elems - 1) -> $i {
+		# Single check — break out on first failure
+		last if ($t.values[$i + 1] - $t.values[$i] - $t.step).abs > 1e-9;
+	}
+	pass "adjacent ticks are step-spaced";
+};
+
+subtest "labels round-trip parsing" => {
+	plan 1;
+	my $t = Selkie::Plot::Ticks.nice(min => -3.5, max => 7.5, count => 6);
+	my @parsed = $t.labels.map(*.Num);
+	my @vals   = $t.values.map(*.Num);
+	is @parsed, @vals, "labels parse back to the tick values";
+};

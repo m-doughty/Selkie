@@ -82,7 +82,10 @@ $store.subscribe-with-callback(
 SLOTS
 =====
 
-Every slot is a `Selkie::Style`. All slots are `is required` — a theme must explicitly define every one.
+Every slot is a `Selkie::Style`. The base UI slots are `is required` — a theme must explicitly define every one. Chart slots have backward-compatible defaults derived from the base UI slots, so themes predating the chart widgets keep working without modification.
+
+Required (UI core)
+------------------
 
   * `base` — default background plus text color
 
@@ -95,6 +98,27 @@ Every slot is a `Selkie::Style`. All slots are `is required` — a theme must ex
   * `scrollbar-track`, `scrollbar-thumb` — vertical scrollbar
 
   * `divider` — the split bar in `Selkie::Layout::Split`
+
+  * `tab-active`, `tab-inactive` — active and inactive tabs in `Selkie::Widget::TabBar`
+
+Chart slots (defaulted, override for chart-rich apps)
+-----------------------------------------------------
+
+Used by `Selkie::Widget::Axis`, `Selkie::Widget::Legend`, and the chart family (`Sparkline`, `Plot`, `BarChart`, `Histogram`, `Heatmap`, `ScatterPlot`, `LineChart`). Defaults derive from the required slots so existing themes work as-is; override these for a distinct chart palette.
+
+  * `graph-axis` — axis line and tick marks (default: `text-dim`)
+
+  * `graph-axis-label` — tick labels (default: `text-dim`)
+
+  * `graph-grid` — optional gridlines behind chart bodies (default: `divider`)
+
+  * `graph-line` — single-series line/sparkline color (default: `border-focused`)
+
+  * `graph-fill` — fill-below color in line charts (default: `border-focused`; consider a darker shade)
+
+  * `graph-legend-bg` — legend pane background (default: same bg as `base`)
+
+Multi-series colors are *not* theme slots — see [Selkie::Plot::Palette](Selkie--Plot--Palette.md) for the colorblind-safe series palettes (`okabe-ito`, `tol-bright`, `tableau-10`) and color ramps (`viridis`, `magma`, `plasma`, `coolwarm`, `grayscale`) used by chart widgets.
 
 Custom slots
 ------------
@@ -171,6 +195,30 @@ Active tab in `Selkie::Widget::TabBar`. Distinct background so the selected tab 
 ### has Selkie::Style $.tab-inactive
 
 Inactive tabs in `Selkie::Widget::TabBar`.
+
+### has Selkie::Style $.graph-axis
+
+Axis line and tick-mark style for chart widgets. Defaults to `text-dim` so existing themes inherit a reasonable look without needing to define this slot. Override for a distinct chart axis color.
+
+### has Selkie::Style $.graph-axis-label
+
+Tick label style for chart axes. Defaults to `text-dim`.
+
+### has Selkie::Style $.graph-grid
+
+Optional gridline style for chart bodies (used by `LineChart` and `ScatterPlot` when grids are enabled). Defaults to `divider`.
+
+### has Selkie::Style $.graph-line
+
+Default series color for single-series chart widgets (`Sparkline`, single-series `LineChart`). Multi-series widgets pull colors from `Selkie::Plot::Palette` instead of this slot. Defaults to `border-focused`.
+
+### has Selkie::Style $.graph-fill
+
+Fill-below color for `LineChart` when fill is enabled. Defaults to `border-focused`; for visual depth set this to a darker shade of `graph-line`.
+
+### has Selkie::Style $.graph-legend-bg
+
+Background style for `Selkie::Widget::Legend`. Defaults to a style with the same background as `base`, so legends blend by default. Override with a contrasting bg for a distinct legend pane.
 
 ### has Associative[Selkie::Style] %.custom
 

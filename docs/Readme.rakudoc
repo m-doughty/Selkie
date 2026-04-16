@@ -154,7 +154,7 @@ the code by construction.
 
 =head1 EXAMPLES
 
-The C<examples/> directory has seven runnable apps that together demonstrate
+The C<examples/> directory has eight runnable apps that together demonstrate
 every widget and store pattern in the framework. Each is self-contained and
 heavily commented — read them in this order:
 
@@ -164,7 +164,8 @@ heavily commented — read them in this order:
 =item C<tasks.raku> — Todo list with ListView, TextInput, Checkbox filter, ConfirmModal for deletion, Toast notifications, and ScreenManager (list ↔ stats screen).
 =item C<job-runner.raku> — ProgressBar (both determinate and indeterminate), TextStream log, async store effect for background work, dispatch-effect chaining, frame callback driving animation.
 =item C<chat.raku> — CardList of variable-height RichText cards, MultiLineInput compose, Border auto-focus highlight, Toast, runtime theme toggle (Ctrl+T).
-=item C<dashboard.raku> — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, and CommandPalette bound to Ctrl+P.
+=item C<dashboard.raku> — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, CommandPalette bound to Ctrl+P, and an inline Sparkline column on the Servers tab rendering each row's recent latency history.
+=item C<charts.raku> — Showcase of the chart family: Sparkline reactively bound to a store path, LineChart updated via a subscribe-with-callback (live p50 / p99 latencies), BarChart + Histogram + Heatmap + ScatterPlot demonstrating the static archetypes, and a streaming Plot pushing samples into its own native ring buffer.
 
 Run any of them with:
 
@@ -889,6 +890,391 @@ $table.on-activate.tap: -> UInt $idx {
 $table.sort-by('name');   # cycles asc → desc → unsorted
 
 =end code
+
+=head1 CHART WIDGETS
+
+A family of seven widgets for rendering numeric data, plus three pure-logic
+helpers. All chart widgets accept either static data (C<:data> / C<:series>)
+or a reactive binding to the store (C<:store-path> or
+C<subscribe-with-callback> from app code), and all render a centered
+"No data" placeholder until the first sample arrives — the expected startup
+state for monitoring dashboards.
+
+=head2 The shared primitives
+
+The chart widgets share three pure-logic helpers under C<Selkie::Plot::*>.
+You'll occasionally use them directly when composing your own visualisations
+or when feeding chart widgets pre-computed data.
+
+C<Selkie::Plot::Scaler> — linear value→cell mapping. Clamps out-of-domain
+values, preserves NaN as undef, supports C<:invert> for y-axes (so cell 0
+holds the maximum value at the top of the screen):
+
+=begin code :lang<raku>
+
+use Selkie::Plot::Scaler;
+
+my $s = Selkie::Plot::Scaler.linear(min => 0, max => 100, cells => 80);
+$s.value-to-cell(50);   # → 40
+$s.cell-to-value(20);   # → 25.31...
+
+=end code
+
+C<Selkie::Plot::Ticks> — Heckbert nice-number tick generation, picking
+labels from C<{1, 2, 5} × 10ⁿ>. Returns a tick set whose endpoints may
+extend slightly past the data range so labels land on round numbers:
+
+=begin code :lang<raku>
+
+use Selkie::Plot::Ticks;
+
+my $t = Selkie::Plot::Ticks.nice(min => 0, max => 100, count => 5);
+$t.values;     # → (0, 20, 40, 60, 80, 100)
+$t.labels;     # → ("0", "20", "40", "60", "80", "100")
+$t.step;       # → 20
+
+=end code
+
+C<Selkie::Plot::Palette> — colourblind-safe series palettes
+(C<okabe-ito>, C<tol-bright>, C<tableau-10>) and continuous color ramps
+(C<viridis>, C<magma>, C<plasma>, C<coolwarm>, C<grayscale>):
+
+=begin code :lang<raku>
+
+use Selkie::Plot::Palette;
+
+my @colors = Selkie::Plot::Palette.series('okabe-ito');
+my $color  = Selkie::Plot::Palette.sample('viridis', 0.42);   # interpolates
+
+=end code
+
+=head2 Selkie::Widget::Sparkline
+
+Single-row inline chart using the C<▁▂▃▄▅▆▇█> block series. Designed to
+live in tables and status bars, not as a standalone visualisation. Hand-
+rolled with no native handle, so cheap to embed many instances (e.g. one
+per Table row).
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Sparkline;
+
+# Static
+my $sl = Selkie::Widget::Sparkline.new(
+    data   => [1, 4, 2, 8, 5, 9, 3, 7],
+    sizing => Sizing.fixed(1),
+);
+
+# Streaming
+my $stream = Selkie::Widget::Sparkline.new(sizing => Sizing.fixed(1));
+$cpu-supply.tap: -> $sample { $stream.push-sample($sample) };
+
+# Reactive — auto-subscribes to the store path
+my $bound = Selkie::Widget::Sparkline.new(
+    store-path => <metrics latency-history>,
+    min        => 0,
+    max        => 100,
+    sizing     => Sizing.fixed(1),
+);
+
+=end code
+
+The three modes (C<:data> / C<:store-path> / streaming) are mutually
+exclusive. Pin C<:min> / C<:max> when streaming so the heights don't
+jitter as new samples shift the auto-range.
+
+=head2 Selkie::Widget::Plot
+
+Streaming chart wrapping the native C<ncuplot> (uint64 samples) /
+C<ncdplot> (num64 samples) widgets in notcurses. The native code handles
+scaling, blitter selection (braille by default), and incremental
+rendering — this widget's job is lifecycle management, the Selkie
+sample-push API, and optional store binding.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Plot;
+
+my $cpu = Selkie::Widget::Plot.new(
+    type   => 'uint',          # or 'double' for fractional measurements
+    min-y  => 0,
+    max-y  => 100,
+    title  => 'CPU %',
+    sizing => Sizing.flex,
+);
+
+# Push samples as they arrive
+$cpu-supply.tap: -> $pct {
+    state $tick = 0;
+    $cpu.push-sample($tick++, $pct);
+};
+
+=end code
+
+The native handle is created lazily on the first C<render()> after the
+widget gets a plane. It's destroyed and recreated on resize — sample
+history is lost, which is fine for a streaming dashboard but worth knowing.
+For chart history that survives terminal resize, use
+C<Selkie::Widget::LineChart> with a store-held sample buffer instead.
+
+=head2 Selkie::Widget::BarChart
+
+Categorical bar chart, vertical (default) or horizontal. Each entry is a
+labelled value; the widget renders one bar per entry with 1/8-cell
+precision (C<▁▂▃▄▅▆▇█> vertically, C<▏▎▍▌▋▊▉█> horizontally) so
+bar heights aren't constrained to whole cells.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::BarChart;
+
+my $bars = Selkie::Widget::BarChart.new(
+    data => [
+        { label => 'Q1', value => 1230 },
+        { label => 'Q2', value => 1875 },
+        { label => 'Q3', value => 2042 },
+        { label => 'Q4', value => 1611 },
+    ],
+    sizing => Sizing.flex,
+);
+
+# Horizontal layout
+my $hbars = Selkie::Widget::BarChart.new(
+    data        => @data,
+    orientation => 'horizontal',
+    sizing      => Sizing.flex,
+);
+
+=end code
+
+Bar colours come from C<:palette> (default C<okabe-ito>) cycling through
+its entries, or from per-bar C<color =>> overrides for status indicators
+where colour means something specific:
+
+=begin code :lang<raku>
+
+my @data = $tasks.map: -> $t {
+    {
+        label => $t.name,
+        value => $t.duration-ms,
+        color => $t.status eq 'failed' ?? 0xCC4444 !! 0x44AA44,
+    }
+};
+
+=end code
+
+Y-range auto-derives from C<min(0, min-data)> to C<max-data>; pass C<:min>
+/ C<:max> to fix it.
+
+=head2 Selkie::Widget::Histogram
+
+Adapter that bins a numeric series into the format C<BarChart> expects.
+Same rendering and styling — just feeds C<(label, count)> pairs in.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Histogram;
+
+# Equal-width bins
+my $h = Selkie::Widget::Histogram.new(
+    values => @latency-samples,
+    bins   => 20,
+    sizing => Sizing.flex,
+);
+
+# Custom bin edges (non-uniform — useful for skewed data)
+my $log-h = Selkie::Widget::Histogram.new(
+    values    => @latency-samples,
+    bin-edges => [0, 5, 10, 25, 50, 100, 250, 500, 1000, 5000],
+    sizing    => Sizing.flex,
+);
+
+=end code
+
+Bins are B<left-closed, right-open> (C<[0,10), [10,20)> ...) with the
+final bin closed-closed (C<[90, 100]>) so the maximum sample is always
+counted. Matches numpy / R / matplotlib defaults.
+
+=head2 Selkie::Widget::Heatmap
+
+2D grid coloured by value via a ramp lookup. Each cell renders as
+C<█> with a foreground colour interpolated from the chosen ramp.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Heatmap;
+
+my $h = Selkie::Widget::Heatmap.new(
+    data   => @grid,            # 2D array of Real
+    ramp   => 'viridis',        # or magma, plasma, coolwarm, grayscale
+    sizing => Sizing.flex,
+);
+
+# Diverging data centred on zero (e.g. correlations)
+my $diverging = Selkie::Widget::Heatmap.new(
+    data   => @correlation-matrix,
+    ramp   => 'coolwarm',
+    min    => -1,                # pin the range so 0 stays at the white midpoint
+    max    =>  1,
+    sizing => Sizing.flex,
+);
+
+=end code
+
+Each input cell becomes one terminal cell — no aspect-ratio compensation.
+A 10×10 data grid renders tall and narrow because terminal cells are
+roughly 2:1. Pre-process (e.g. duplicate columns) for square display.
+NaN cells render with the C<text-dim> theme slot so missing data is
+visually distinct from in-range zero.
+
+=head2 Selkie::Widget::ScatterPlot
+
+2D point plot using braille (U+2800-U+28FF) for B<sub-cell> resolution:
+each terminal cell holds a 2×4 dot grid (8 dots per cell), so a
+50-cell-wide plot resolves 100 distinct x-positions.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::ScatterPlot;
+
+# Use Pair (x => y), [x, y] arrays, or hash form per point.
+# Bare lists `(x, y)` flatten in array context — don't use them.
+my @points = (1..50).map: { (rand * 100) => (rand * 100) };
+
+my $sp = Selkie::Widget::ScatterPlot.new(
+    series => [{ label => 'samples', points => @points }],
+    sizing => Sizing.flex,
+);
+
+# Multi-series with explicit colours
+my $sp2 = Selkie::Widget::ScatterPlot.new(
+    series => [
+        { label => 'group A', points => @group-a, color => 0xE69F00 },
+        { label => 'group B', points => @group-b, color => 0x56B4E9 },
+    ],
+    sizing => Sizing.flex,
+);
+
+=end code
+
+Per-cell colour limitation: a braille codepoint holds all 8 sub-pixels
+under a single foreground colour. When two series have dots in the same
+2×4 cell window, the C<:overlap> setting decides who wins —
+currently only C<z-order> is supported (last-drawn series wins). For
+heavily-overlapping series, prefer faceted layouts (one scatter per
+series) over single-plot overlay.
+
+=head2 Selkie::Widget::LineChart
+
+Static-data multi-series line chart, hand-rolled with the same braille
+sub-cell resolution as C<ScatterPlot>. Composes its own y-axis and
+legend; supports optional fill-below for area-emphasis charts.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::LineChart;
+
+# Single series
+my $cpu = Selkie::Widget::LineChart.new(
+    series => [{ label => 'cpu %', values => @cpu-history }],
+    y-min  => 0,
+    y-max  => 100,
+    sizing => Sizing.flex,
+);
+
+# Multi-series with explicit colours and fill
+my $cmp = Selkie::Widget::LineChart.new(
+    series => [
+        { label => 'p50', values => @p50, color => 0xE69F00 },
+        { label => 'p99', values => @p99, color => 0xCC4444 },
+    ],
+    fill-below => True,
+    sizing     => Sizing.flex,
+);
+
+=end code
+
+For B<streaming> data, use C<Selkie::Widget::Plot> instead (it has a
+native ring buffer better suited to high sample rates). C<LineChart>
+expects you to hand it the full series each time — typically via
+C<set-series> from a C<subscribe-with-callback>:
+
+=begin code :lang<raku>
+
+$app.store.subscribe-with-callback(
+    'latency-series',
+    -> $s {
+        [
+            $s.get-in('metrics', 'p50') // [],
+            $s.get-in('metrics', 'p99') // [],
+        ]
+    },
+    -> @paths {
+        $line-chart.set-series([
+            { label => 'p50', values => @paths[0], color => 0x4477AA },
+            { label => 'p99', values => @paths[1], color => 0xEE6677 },
+        ]);
+    },
+    $line-chart,
+);
+
+=end code
+
+The same per-cell colour limitation as C<ScatterPlot> applies for
+multi-series crossings. See C<examples/charts.raku> for the canonical
+reactive setup.
+
+=head2 Selkie::Widget::Axis and Selkie::Widget::Legend
+
+Standalone primitives that chart widgets compose internally, exposed for
+consumers who want to lay out a custom chart by hand. C<Axis> renders
+labelled tick marks along one of the four edges; C<Legend> renders a
+colour-swatch + label row per series.
+
+=begin code :lang<raku>
+
+use Selkie::Widget::Axis;
+use Selkie::Widget::Legend;
+
+my $axis = Selkie::Widget::Axis.new(
+    edge       => 'bottom',
+    min        => 0,
+    max        => 1000,
+    tick-count => 5,
+    sizing     => Sizing.fixed(2),    # 1 row line + 1 row labels
+);
+
+my $legend = Selkie::Widget::Legend.new(
+    series => [
+        { label => 'cpu',    color => 0xE69F00 },
+        { label => 'memory', color => 0x56B4E9 },
+    ],
+    orientation => 'vertical',
+    sizing      => Sizing.fixed(2),
+);
+
+=end code
+
+C<Axis.reserved-rows> (for top/bottom) and C<Axis.reserved-cols> (for
+left/right) report the exact dimensions the axis needs given its data
+range — useful when sizing the parent layout precisely.
+
+=head2 Theming chart widgets
+
+Six new theme slots cover chart elements:
+
+=item C<graph-axis> — axis line and tick marks
+=item C<graph-axis-label> — tick labels
+=item C<graph-grid> — optional gridlines
+=item C<graph-line> — single-series line / sparkline colour
+=item C<graph-fill> — fill-below colour in line charts
+=item C<graph-legend-bg> — legend background
+
+All are non-required with defaults derived from existing slots
+(C<text-dim>, C<divider>, C<border-focused>, C<base.bg>), so themes
+written before the chart widgets shipped keep working. Multi-series
+chart colours come from C<Selkie::Plot::Palette> (not theme slots) so
+the palette can scale to N series without polluting the theme.
 
 =head1 THEMING
 

@@ -68,7 +68,19 @@ Auto-generated from Pod6 declarator comments and pod blocks in each module. See 
 
 ## Other
 
+- [Selkie::Plot::Palette](Selkie--Plot--Palette.md)
+- [Selkie::Plot::Scaler](Selkie--Plot--Scaler.md)
+- [Selkie::Plot::Ticks](Selkie--Plot--Ticks.md)
 - [Selkie::Test::Snapshot::Harness](Selkie--Test--Snapshot--Harness.md)
+- [Selkie::Widget::Axis](Selkie--Widget--Axis.md)
+- [Selkie::Widget::BarChart](Selkie--Widget--BarChart.md)
+- [Selkie::Widget::Heatmap](Selkie--Widget--Heatmap.md)
 - [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md)
+- [Selkie::Widget::Histogram](Selkie--Widget--Histogram.md)
+- [Selkie::Widget::Legend](Selkie--Widget--Legend.md)
+- [Selkie::Widget::LineChart](Selkie--Widget--LineChart.md)
 - [Selkie::Widget::PasswordStrength](Selkie--Widget--PasswordStrength.md)
+- [Selkie::Widget::Plot](Selkie--Widget--Plot.md)
+- [Selkie::Widget::ScatterPlot](Selkie--Widget--ScatterPlot.md)
+- [Selkie::Widget::Sparkline](Selkie--Widget--Sparkline.md)
 

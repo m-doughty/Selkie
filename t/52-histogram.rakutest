@@ -1,0 +1,96 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Histogram;
+
+plan 9;
+
+subtest "construction with equal-width bins" => {
+	plan 3;
+	my $h = Selkie::Widget::Histogram.new(
+		values => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+		bins   => 5,
+	);
+	isa-ok $h, Selkie::Widget::Histogram;
+	is $h.values.elems, 10, "values stored";
+	is $h.bins,         5,  "bins stored";
+};
+
+subtest "construction with explicit edges" => {
+	plan 1;
+	my $h = Selkie::Widget::Histogram.new(
+		values    => [1, 5, 10, 15, 20],
+		bin-edges => [0, 10, 20],
+	);
+	is $h.bin-edges.list, (0, 10, 20), "edges stored";
+};
+
+subtest "rejects neither bins nor bin-edges" => {
+	plan 1;
+	dies-ok { Selkie::Widget::Histogram.new(values => [1, 2, 3]) },
+		"requires bins or bin-edges";
+};
+
+subtest "rejects both bins and bin-edges" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::Histogram.new(
+			values    => [1, 2, 3],
+			bins      => 3,
+			bin-edges => [0, 1, 2, 3],
+		);
+	}, "mutually exclusive";
+};
+
+subtest "rejects non-ascending bin-edges" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::Histogram.new(
+			values    => [1, 2],
+			bin-edges => [10, 5, 0],
+		);
+	}, "descending edges rejected";
+};
+
+subtest "equal-width bins count correctly" => {
+	plan 5;
+	# 100 values evenly distributed in [0, 100). 10 bins of width 10
+	# each get exactly 10 samples.
+	my @vals = (0..99).map: *.Real;
+	my $h = Selkie::Widget::Histogram.new(values => @vals, bins => 10);
+	is $h.data.elems, 10,       "ten bins";
+	is $h.data[0]<value>, 10,    "bin 0 has 10 samples";
+	is $h.data[9]<value>, 10,    "bin 9 has 10 samples";
+	is $h.data[5]<value>, 10,    "middle bin has 10 samples";
+	# Total counts should sum to input size
+	my $total = $h.data.map(*.<value>).sum;
+	is $total, 100, "total counts match input size";
+};
+
+subtest "explicit edges with left-closed/right-open intervals" => {
+	plan 4;
+	# Edges [0, 10, 20, 30] → bins [0,10), [10,20), [20,30]
+	# Values: 0 → bin 0; 10 → bin 1; 20 → bin 2; 29.9 → bin 2; 30 → bin 2
+	my $h = Selkie::Widget::Histogram.new(
+		values    => [0, 5, 10, 15, 20, 25, 29.9, 30],
+		bin-edges => [0, 10, 20, 30],
+	);
+	is $h.data.elems,    3,  "three bins";
+	is $h.data[0]<value>, 2, "bin 0: 2 samples (0, 5)";
+	is $h.data[1]<value>, 2, "bin 1: 2 samples (10, 15) — boundary 10 goes to bin 1, not bin 0";
+	is $h.data[2]<value>, 4, "bin 2: 4 samples (20, 25, 29.9, 30) — last bin includes max";
+};
+
+subtest "empty values produce zero bars" => {
+	plan 1;
+	my $h = Selkie::Widget::Histogram.new(values => [], bins => 5);
+	is $h.data.elems, 0, "no bars when input is empty";
+};
+
+subtest "single-value input produces a single bar" => {
+	plan 2;
+	my $h = Selkie::Widget::Histogram.new(values => [42, 42, 42], bins => 5);
+	# All identical — degenerate case, returns one bar with all counts
+	is $h.data.elems, 1, "single bar for degenerate input";
+	is $h.data[0]<value>, 3, "all three samples counted";
+};

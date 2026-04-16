@@ -89,8 +89,10 @@ for @module-files.sort -> $src {
 
     # Shell out to raku --doc=Markdown to get the rendered output. This
     # path exercises Pod::To::Markdown which already handles declarator
-    # blocks and =begin pod blocks cleanly.
-    my $proc = run 'raku', '--doc=Markdown', $src.Str, :out, :err;
+    # blocks and =begin pod blocks cleanly. -I lib is required so that
+    # modules which import other modules from this same distribution
+    # (before install) can still resolve.
+    my $proc = run 'raku', '-I', 'lib', '--doc=Markdown', $src.Str, :out, :err;
     my $md = $proc.out.slurp(:close);
     my $err = $proc.err.slurp(:close);
 

@@ -2,6 +2,93 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.0  2026-04-16T16:03:44+01:00
+    - Chart / plot widget family. Twelve new modules covering the
+      common archetypes: Selkie::Widget::Sparkline (single-row inline
+      chart, block glyphs), Selkie::Widget::Plot (streaming wrapper
+      over notcurses ncuplot / ncdplot), Selkie::Widget::BarChart
+      (vertical or horizontal, 1/8-cell precision via block glyphs),
+      Selkie::Widget::Histogram (adapter that bins a numeric series
+      and feeds it into BarChart), Selkie::Widget::Heatmap (2D grid
+      coloured by value via a ramp), Selkie::Widget::ScatterPlot
+      (braille dots at 2×4 sub-cell resolution), Selkie::Widget::
+      LineChart (hand-rolled braille multi-series renderer for
+      static data with fill-below + legend). Each widget supports
+      both static construction (:data / :series / :values) and
+      reactive binding (:store-path / :store-path-fn /
+      subscribe-with-callback).
+    - Selkie::Plot::Scaler — linear value→cell mapping primitive
+      shared across chart widgets. Auto-clamps out-of-domain values,
+      preserves NaN as undef, handles ±Inf, supports :invert for
+      y-axes (cell 0 at the top of the plane, max value at row 0).
+    - Selkie::Plot::Ticks — Heckbert nice-number algorithm for axis
+      labels at {1, 2, 5} × 10ⁿ. Returns values + formatted labels
+      with fixed decimal precision so sub-unit ticks line up
+      visually ("0.000", "0.005", "0.010" rather than "0", "0.005",
+      "0.01").
+    - Selkie::Plot::Palette — named series palettes and color ramps.
+      Default series palette is okabe-ito (8 colours, colourblind-
+      safe); tol-bright (7), tableau-10 (10) also available. Default
+      heatmap ramp is viridis (perceptually uniform, colourblind-
+      safe); magma, plasma, coolwarm, grayscale also provided.
+      Ramp sampling is linear interpolation in RGB space.
+    - Selkie::Widget::Axis — labelled tick axis for chart edges,
+      renders along top / bottom / left / right. Composes internally
+      or exposes reserved-rows / reserved-cols for layout callers
+      that want to size their chart body precisely.
+    - Selkie::Widget::Legend — colour-swatch + label rows for chart
+      series. Vertical (one row per series) or horizontal (single
+      row, spaces between). Truncates labels with ellipsis when
+      sizing-constrained. Theme-aware via new graph-legend-bg slot.
+    - Theme: six new graph-* slots — graph-axis, graph-axis-label,
+      graph-grid, graph-line, graph-fill, graph-legend-bg. All are
+      non-required with defaults derived from existing slots
+      (text-dim, divider, border-focused, base.bg), so themes
+      predating the chart widgets keep working without modification.
+      The default dark theme explicitly sets chart-tuned values for
+      a distinct presentation.
+    - All chart widgets render a centered "No data" placeholder in
+      text-dim style when their input is empty. This is the expected
+      startup state for monitoring dashboards — the widget is
+      mounted before the first sample arrives. Each widget accepts
+      :empty-message to customise the text (default "No data"; pass
+      "" to suppress).
+    - Test::Snapshot: new :capture-styles mode. Emits a format-
+      marked output with parallel glyph + style grids and a legend
+      keying each unique (fg, bg, stylemask) tuple to a letter.
+      Heatmaps, multi-series LineChart, and multi-coloured BarChart
+      can now be snapshot-tested without losing the colour semantics.
+    - Test::Snapshot::Harness: auto-routes styled scenarios to
+      xt/snapshots/golden-styled/ by detecting the format marker on
+      the first line of subprocess stdout. Plain and styled
+      scenarios coexist in the same directory — authors don't need
+      to know which bin their golden goes in.
+    - examples/charts.raku — reactive showcase of the whole chart
+      family. Sparkline binds to a store path; LineChart rebuilds
+      from a subscribe-with-callback over two latency paths
+      (p50 stays ≤ p99 by construction); Plot streams its own
+      native buffer. BarChart + Histogram + Heatmap + ScatterPlot
+      stay static to demonstrate the different chart archetypes.
+    - examples/dashboard.raku — new "History" column on the Servers
+      table renders an inline sparkline-as-string per row. Proves
+      the most demanding inline-chart-in-table case works cleanly
+      (high instance count, no native handles per row).
+    - tools/build-api-docs.raku: added -I lib to the subprocess
+      invocation so modules that import other modules from the same
+      distribution can resolve their deps before install. Previously
+      any new module with an in-dist `use` line would fail doc
+      generation with "Could not find X" and silently produce no
+      docs/api/*.md.
+    - Widget authors — two Raku gotchas surfaced during this work
+      that are worth internalising: (1) `@data.all ~~ Pair` is true
+      when a single-hash array flattened into a list of pairs, and
+      `@x = { |@pairs }` produces a Block not a Hash; use `%(|@pairs)`
+      instead. Affects any widget that accepts a list of structured
+      entries. (2) `.map: { ... }` in a constructor arg list swallows
+      trailing named arguments because Raku parses `.map: { ... },
+      foo => bar` as `.map(: { ... }, foo => bar)`. Use explicit
+      parens — `.map({ ... })` — in constructor arg lists.
+
 0.3.0  2026-04-15T03:00:16+01:00
     - Add title helper
     - Auto install with no building for most platforms

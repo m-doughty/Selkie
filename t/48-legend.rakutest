@@ -1,0 +1,84 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Legend;
+
+plan 8;
+
+subtest "construction with default vertical orientation" => {
+	plan 3;
+	my $l = Selkie::Widget::Legend.new(
+		series => [{ label => 'a', color => 0xFF0000 }],
+	);
+	isa-ok $l, Selkie::Widget::Legend;
+	is $l.orientation, 'vertical', "default orientation is vertical";
+	is $l.swatch,      '■',         "default swatch is ■";
+};
+
+subtest "construction with horizontal orientation" => {
+	plan 1;
+	my $l = Selkie::Widget::Legend.new(
+		series      => [{ label => 'a', color => 0xFF0000 }],
+		orientation => 'horizontal',
+	);
+	is $l.orientation, 'horizontal', "horizontal stored";
+};
+
+subtest "rejects invalid orientation" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::Legend.new(
+			series      => [],
+			orientation => 'diagonal',
+		);
+	}, "invalid orientation rejected";
+};
+
+subtest "set-series replaces and dirties" => {
+	plan 3;
+	my $l = Selkie::Widget::Legend.new(
+		series => [{ label => 'a', color => 0xFF0000 }],
+	);
+	$l.clear-dirty;
+	is $l.series.elems, 1, "starts with one series";
+	$l.set-series([
+		{ label => 'b', color => 0x00FF00 },
+		{ label => 'c', color => 0x0000FF },
+	]);
+	is $l.series.elems, 2, "replaced with two";
+	ok $l.is-dirty, "marked dirty after set-series";
+};
+
+subtest "non-focusable by default" => {
+	plan 1;
+	my $l = Selkie::Widget::Legend.new(series => []);
+	nok $l.focusable, "legend isn't focusable";
+};
+
+subtest "configurable swatch glyph" => {
+	plan 1;
+	my $l = Selkie::Widget::Legend.new(
+		series => [{ label => 'a', color => 0xFF0000 }],
+		swatch => '●',
+	);
+	is $l.swatch, '●', "custom swatch stored";
+};
+
+subtest "empty series list constructs cleanly" => {
+	plan 2;
+	my $l = Selkie::Widget::Legend.new(series => []);
+	isa-ok $l, Selkie::Widget::Legend;
+	is $l.series.elems, 0, "no series";
+};
+
+subtest "series with all-required-fields constructs" => {
+	plan 1;
+	my $l = Selkie::Widget::Legend.new(
+		series => [
+			{ label => 'cpu',     color => 0xE69F00 },
+			{ label => 'memory',  color => 0x56B4E9 },
+			{ label => 'iowait',  color => 0x009E73 },
+		],
+	);
+	is $l.series.elems, 3, "three series stored";
+};

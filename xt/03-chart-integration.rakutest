@@ -1,0 +1,45 @@
+use Test;
+use lib 'lib';
+
+# Cross-size sanity: build a panel containing every chart widget and
+# verify it renders without crashing across realistic terminal sizes.
+#
+# Each size runs in its own subprocess with MVM_SPESH_DISABLE=1 set,
+# for the same reason xt/02-snapshots.rakutest does: the MoarVM
+# specializer intermittently crashes when nested-widget renders
+# accumulate within a single process (see memory:
+# feedback_moarvm_spesh_bug.md). Subprocess isolation avoids the
+# flake.
+
+plan 5;
+
+my @sizes = (
+    { name => '80x24',   rows => 24, cols =>  80 },
+    { name => '120x40',  rows => 40, cols => 120 },
+    { name => '200x60',  rows => 60, cols => 200 },
+    { name => '60x20',   rows => 20, cols =>  60 },
+    { name => '40x10',   rows => 10, cols =>  40 },
+);
+
+my $script = $?FILE.IO.parent.add('chart-panel-render.raku').Str;
+
+my %env = %*ENV;
+%env<MVM_SPESH_DISABLE> = '1';
+
+for @sizes -> %size {
+    subtest "panel renders at {%size<name>} without crashing" => {
+        plan 2;
+        my $proc = run 'raku', '-I', 'lib', $script,
+            %size<rows>.Str, %size<cols>.Str, :out, :err, :%env;
+        my $stdout = $proc.out.slurp(:close);
+        my $stderr = $proc.err.slurp(:close);
+        my $exit   = $proc.exitcode;
+
+        is $exit, 0, "subprocess exited cleanly";
+        if $exit != 0 {
+            diag "  stderr: {$stderr.substr(0, 500)}";
+        }
+        ok $stdout.chars > 0,
+            "produced non-empty output (got {$stdout.chars} chars)";
+    };
+}

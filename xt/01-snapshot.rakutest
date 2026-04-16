@@ -14,7 +14,7 @@ use Selkie::Style;
 my $tmp-dir = $*TMPDIR.add("selkie-snap-{$*PID}").Str;
 LEAVE { shell "rm -rf $tmp-dir" if $tmp-dir.IO.d }
 
-plan 5;
+plan 9;
 
 subtest "render-to-string of a simple Text widget" => {
     plan 2;
@@ -65,13 +65,77 @@ subtest "snapshot-ok passes when content matches stored snapshot" => {
     snapshot-ok $text2, 'stable', rows => 1, cols => 10, dir => $tmp-dir;
 };
 
+subtest "styled render emits the marker and three blocks" => {
+    plan 4;
+    my $text = Selkie::Widget::Text.new(
+        text   => 'hi',
+        sizing => Sizing.fixed(1),
+        style  => Selkie::Style.new(fg => 0xFF8800, bold => True),
+    );
+    my $out = render-to-string($text, rows => 1, cols => 5, :capture-styles);
+    ok $out.starts-with('=== styled-snapshot v1 ==='),
+        'first line is the format marker';
+    ok $out.contains('--- glyphs ---'),  'glyphs block present';
+    ok $out.contains('--- styles ---'),  'styles block present';
+    ok $out.contains('--- legend ---'),  'legend block present';
+};
+
+subtest "styled render encodes fg/bg in legend" => {
+    plan 2;
+    my $text = Selkie::Widget::Text.new(
+        text   => 'x',
+        sizing => Sizing.fixed(1),
+        style  => Selkie::Style.new(fg => 0x123456),
+    );
+    my $out = render-to-string($text, rows => 1, cols => 3, :capture-styles);
+    ok $out.contains('fg=#123456'), 'fg color appears in legend';
+    ok $out.contains('.: (default)'), 'default key documented';
+};
+
+subtest "styled render encodes BOLD/ITALIC/UNDERLINE flags" => {
+    plan 3;
+    my @cases = (
+        { flag => 'BOLD',      kw => :bold       },
+        { flag => 'ITALIC',    kw => :italic     },
+        { flag => 'UNDERLINE', kw => :underline  },
+    );
+    for @cases -> %case {
+        my $style = Selkie::Style.new(fg => 0xFFFFFF, |%case<kw>);
+        my $text = Selkie::Widget::Text.new(text => 'x', sizing => Sizing.fixed(1), :$style);
+        my $out = render-to-string($text, rows => 1, cols => 3, :capture-styles);
+        ok $out.contains("styles={%case<flag>}"), "{%case<flag>} flag appears in legend";
+    }
+};
+
+subtest "snapshot-ok :capture-styles routes to caller-provided styled dir" => {
+    plan 4;     # snapshot-ok's own pass + 3 explicit oks below
+    my $styled-dir = $tmp-dir ~ '-styled';
+    LEAVE { shell "rm -rf $styled-dir" if $styled-dir.IO.d }
+
+    my $text = Selkie::Widget::Text.new(
+        text   => 'styled',
+        sizing => Sizing.fixed(1),
+        style  => Selkie::Style.new(fg => 0xAA00AA),
+    );
+    snapshot-ok $text, 'styled-routing', :rows(1), :cols(10),
+        :capture-styles, dir => $styled-dir;
+
+    my $path = $styled-dir.IO.add('styled-routing.snap');
+    ok $path.e, 'styled snapshot file created in custom dir';
+    ok $path.slurp.starts-with('=== styled-snapshot v1 ==='),
+        'styled file starts with marker';
+    ok $path.slurp.contains('fg=#AA00AA'), 'styled file records the fg color';
+};
+
 # This file tests Selkie::Test::Snapshot's helper behaviour (trimming,
-# file creation, match-on-second-run) using leaf widgets only — keeping
-# it strictly a unit test for the helper mechanics.
+# file creation, match-on-second-run, styled mode) using leaf widgets
+# only — keeping it strictly a unit test for the helper mechanics.
 #
 # Real widget-rendering regressions (Border, nested layouts, CardList,
 # etc.) live under xt/snapshots/*.raku and are driven by the
 # fork-per-scenario harness in xt/02-snapshots.rakutest. That harness
 # isolates each render in a subprocess, which both sidesteps the MoarVM
 # spesh bug on nested-widget readback and lets each scenario be
-# maintained as an independent plain-text golden file.
+# maintained as an independent plain-text golden file. Styled scenarios
+# in the same directory are auto-routed to golden-styled/ based on the
+# format marker.

@@ -1,0 +1,116 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::ScatterPlot;
+
+plan 9;
+
+subtest "construction with single series" => {
+	plan 3;
+	my $sp = Selkie::Widget::ScatterPlot.new(
+		series => [
+			{ label => 's1', points => [1 => 2, 3 => 4] },
+		],
+	);
+	isa-ok $sp, Selkie::Widget::ScatterPlot;
+	is $sp.series.elems, 1, "one series stored";
+	is $sp.overlap, 'z-order', "default overlap is z-order";
+};
+
+subtest "rejects series + store-path combo" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::ScatterPlot.new(
+			series     => [{ label => 's', points => [] }],
+			store-path => <viz scatter>,
+		);
+	}, "mutually exclusive";
+};
+
+subtest "rejects unknown overlap mode" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::ScatterPlot.new(series => [], overlap => 'blend');
+	}, "unknown overlap rejected";
+};
+
+subtest "explicit ranges stored" => {
+	plan 4;
+	my $sp = Selkie::Widget::ScatterPlot.new(
+		series => [],
+		x-min  => -10, x-max => 10,
+		y-min  =>   0, y-max =>  5,
+	);
+	is $sp.x-min, -10, "x-min";
+	is $sp.x-max,  10, "x-max";
+	is $sp.y-min,   0, "y-min";
+	is $sp.y-max,   5, "y-max";
+};
+
+subtest "set-series replaces and dirties" => {
+	plan 2;
+	my $sp = Selkie::Widget::ScatterPlot.new(
+		series => [{ label => 'a', points => [1 => 1] }],
+	);
+	$sp.clear-dirty;
+	$sp.set-series([
+		{ label => 'b', points => [2 => 2] },
+		{ label => 'c', points => [3 => 3] },
+	]);
+	is $sp.series.elems, 2, "two series";
+	ok $sp.is-dirty, "marked dirty";
+};
+
+subtest "braille-bit returns correct sub-cell positions" => {
+	plan 8;
+	my $sp = Selkie::Widget::ScatterPlot.new(series => []);
+	# Sub-cell layout: bit 0..7 for the 8 dot positions
+	is $sp.braille-bit(0, 0), 0, "(col 0, row 0) → bit 0";
+	is $sp.braille-bit(0, 1), 1, "(col 0, row 1) → bit 1";
+	is $sp.braille-bit(0, 2), 2, "(col 0, row 2) → bit 2";
+	is $sp.braille-bit(0, 3), 6, "(col 0, row 3) → bit 6";
+	is $sp.braille-bit(1, 0), 3, "(col 1, row 0) → bit 3";
+	is $sp.braille-bit(1, 1), 4, "(col 1, row 1) → bit 4";
+	is $sp.braille-bit(1, 2), 5, "(col 1, row 2) → bit 5";
+	is $sp.braille-bit(1, 3), 7, "(col 1, row 3) → bit 7";
+};
+
+subtest "braille-glyph maps each of 256 patterns to a unique codepoint" => {
+	plan 3;
+	my $sp = Selkie::Widget::ScatterPlot.new(series => []);
+	# Sample boundary cases
+	is $sp.braille-glyph(0),   '⠀', "0 → U+2800 (empty cell)";
+	is $sp.braille-glyph(255), '⣿', "255 → U+28FF (all 8 dots)";
+	# Single dot at bit 0 = U+2801 = '⠁'
+	is $sp.braille-glyph(1),   '⠁', "bit 0 → U+2801";
+};
+
+subtest "braille glyphs are exhaustively unique across all 256 patterns" => {
+	plan 1;
+	my $sp = Selkie::Widget::ScatterPlot.new(series => []);
+	my %seen;
+	my $duplicate = False;
+	for ^256 -> $bits {
+		my $g = $sp.braille-glyph($bits);
+		if %seen{$g}:exists {
+			$duplicate = True;
+			last;
+		}
+		%seen{$g} = $bits;
+	}
+	nok $duplicate, "all 256 bit patterns produce unique glyphs";
+};
+
+subtest "series built from a Seq of points survives repeated access" => {
+	plan 2;
+	# TUI apps re-render every frame; points must survive beyond the
+	# first iteration or the scatter plot would go blank on frame 2.
+	my $sp = Selkie::Widget::ScatterPlot.new(
+		series => [{
+			label  => 'dots',
+			points => (1..5).map: { $_ => $_ * 2 },
+		}],
+	);
+	is $sp.series[0]<points>[2].value, 6, "first access sees points[2] = 3 => 6";
+	is $sp.series[0]<points>[2].value, 6, "second access still sees 6";
+};

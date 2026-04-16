@@ -1,0 +1,94 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Sparkline;
+use Selkie::Sizing;
+
+plan 9;
+
+subtest "construction with static data" => {
+	plan 3;
+	my $s = Selkie::Widget::Sparkline.new(data => [1, 2, 3, 4, 5]);
+	isa-ok $s, Selkie::Widget::Sparkline;
+	is $s.data.elems, 5, "data stored";
+	nok $s.focusable, "non-focusable by default";
+};
+
+subtest "construction with store-path" => {
+	plan 1;
+	my $s = Selkie::Widget::Sparkline.new(store-path => <metrics cpu>);
+	is $s.store-path.list, ('metrics', 'cpu'), "store-path stored";
+};
+
+subtest "construction with neither (streaming mode) is allowed" => {
+	plan 2;
+	my $s = Selkie::Widget::Sparkline.new;
+	is $s.data.elems,        0, "no static data";
+	is $s.store-path.elems,  0, "no store path";
+};
+
+subtest "data + store-path combination is rejected" => {
+	plan 1;
+	dies-ok {
+		Selkie::Widget::Sparkline.new(
+			data => [1, 2, 3],
+			store-path => <metrics x>,
+		);
+	}, "mutually exclusive modes throw";
+};
+
+subtest "push-sample appends to streaming buffer and dirties" => {
+	plan 3;
+	my $s = Selkie::Widget::Sparkline.new;
+	$s.clear-dirty;
+	$s.push-sample(1.0);
+	$s.push-sample(2.0);
+	$s.push-sample(3.0);
+	ok $s.is-dirty, "marked dirty after push";
+
+	# We can't access the ring directly, but we can verify behaviour
+	# transitively: a NaN sample should render as space, integers as
+	# block glyphs. Without rendering, just check construct survives.
+	pass "no errors after three pushes";
+
+	# A push-sample on :data-mode is a no-op
+	my $static = Selkie::Widget::Sparkline.new(data => [1, 2, 3]);
+	$static.clear-dirty;
+	$static.push-sample(99);
+	nok $static.is-dirty, "push-sample is no-op in :data mode";
+};
+
+subtest "set-data replaces static data and dirties" => {
+	plan 3;
+	my $s = Selkie::Widget::Sparkline.new(data => [1, 2, 3]);
+	$s.clear-dirty;
+	$s.set-data([10, 20, 30, 40]);
+	is $s.data.elems, 4, "data replaced";
+	is $s.data[0],   10, "first element updated";
+	ok $s.is-dirty, "dirty after set-data";
+};
+
+subtest "set-data on store-path mode dies" => {
+	plan 1;
+	my $s = Selkie::Widget::Sparkline.new(store-path => <metrics x>);
+	dies-ok { $s.set-data([1, 2, 3]) },
+		"set-data not valid in store-path mode";
+};
+
+subtest "min and max defaults are undefined (auto-range)" => {
+	plan 2;
+	my $s = Selkie::Widget::Sparkline.new(data => [1, 2, 3]);
+	nok $s.min.defined, "min is undefined by default";
+	nok $s.max.defined, "max is undefined by default";
+};
+
+subtest "explicit min/max are stored" => {
+	plan 2;
+	my $s = Selkie::Widget::Sparkline.new(
+		data => [1, 2, 3],
+		min  => 0,
+		max  => 100,
+	);
+	is $s.min, 0,   "min stored";
+	is $s.max, 100, "max stored";
+};

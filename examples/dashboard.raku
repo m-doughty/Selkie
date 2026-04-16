@@ -65,24 +65,57 @@ $app.store.register-handler('task/toggle', -> $st, %ev {
 
 sub seed-servers(Bool :$jitter) {
     my @rows = (
-        { host => 'api-1.example.com',  status => 'up',   uptime => 87_200,  latency => 12 },
-        { host => 'api-2.example.com',  status => 'up',   uptime => 12_350,  latency => 18 },
-        { host => 'db-primary',         status => 'up',   uptime => 432_100, latency => 3  },
-        { host => 'db-replica-1',       status => 'up',   uptime => 418_900, latency => 4  },
-        { host => 'cache-1',            status => 'down', uptime => 0,       latency => 0  },
-        { host => 'queue-worker-1',     status => 'up',   uptime => 56_700,  latency => 8  },
-        { host => 'queue-worker-2',     status => 'warn', uptime => 56_700,  latency => 142 },
-        { host => 'batch-runner',       status => 'up',   uptime => 201_400, latency => 22 },
+        { host => 'api-1.example.com',  status => 'up',   uptime => 87_200,  latency => 12,  history => [12, 11, 13, 12, 14, 13, 12, 15, 13, 12, 14, 12, 13, 14, 13, 12, 13, 12, 14, 12] },
+        { host => 'api-2.example.com',  status => 'up',   uptime => 12_350,  latency => 18,  history => [15, 17, 19, 20, 22, 19, 18, 20, 18, 17, 19, 18, 16, 17, 18, 19, 20, 18, 19, 18] },
+        { host => 'db-primary',         status => 'up',   uptime => 432_100, latency => 3,   history => [3, 2, 3, 3, 4, 3, 2, 3, 3, 4, 3, 3, 2, 3, 3, 4, 3, 3, 2, 3] },
+        { host => 'db-replica-1',       status => 'up',   uptime => 418_900, latency => 4,   history => [4, 3, 4, 5, 4, 3, 4, 4, 3, 4, 5, 4, 3, 4, 4, 5, 4, 3, 4, 4] },
+        { host => 'cache-1',            status => 'down', uptime => 0,       latency => 0,   history => [8, 9, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+        { host => 'queue-worker-1',     status => 'up',   uptime => 56_700,  latency => 8,   history => [7, 8, 9, 8, 7, 8, 9, 10, 8, 7, 8, 9, 8, 7, 8, 9, 8, 7, 8, 8] },
+        { host => 'queue-worker-2',     status => 'warn', uptime => 56_700,  latency => 142, history => [12, 15, 20, 35, 55, 78, 92, 115, 138, 142, 150, 145, 140, 142, 139, 144, 142, 141, 143, 142] },
+        { host => 'batch-runner',       status => 'up',   uptime => 201_400, latency => 22,  history => [20, 22, 25, 22, 20, 22, 24, 22, 23, 22, 21, 22, 24, 22, 23, 22, 22, 21, 23, 22] },
     );
     if $jitter {
         # Small perturbation so refreshes feel alive without thrashing the
         # table redraw — refreshes still cascade through the widget tree.
+        # Each refresh shifts the history buffer (drop oldest, append new).
         @rows = @rows.map({
             my $l = .<latency>;
-            %(|$_, latency => $l == 0 ?? 0 !! $l + ((-1, 0, 1).pick));
+            my $new-l = $l == 0 ?? 0 !! $l + ((-1, 0, 1).pick);
+            my @h = .<history>.list;
+            my @shifted = @h.tail(@h.elems - 1).Array;
+            @shifted.push: $new-l;
+            %(|$_, latency => $new-l, history => @shifted);
         }).Array;
     }
     @rows;
+}
+
+# Tiny sparkline-as-string helper. Same mapping as
+# Selkie::Widget::Sparkline, but applied at the cell level so each
+# Table row can render its own inline history without spinning up a
+# widget per row.
+sub sparkline-str(@values --> Str) {
+    return '' unless @values;
+    my @levels = '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█';
+    my @clean = @values.grep: { .defined && $_ !=== NaN };
+    return ' ' x @values.elems unless @clean;
+    my $lo = @clean.min;
+    my $hi = @clean.max;
+    if $lo == $hi {
+        # All identical — show a flat middle row
+        return '▄' x @values.elems;
+    }
+    @values.map(-> $v {
+        if !$v.defined || $v === NaN {
+            ' ';
+        } else {
+            my $t = ($v - $lo) / ($hi - $lo);
+            my $idx = ($t * 7).round.Int;
+            $idx = 0 if $idx < 0;
+            $idx = 7 if $idx > 7;
+            @levels[$idx];
+        }
+    }).join;
 }
 
 sub seed-tasks() {
@@ -165,6 +198,11 @@ $servers-table.add-column(
     sizing   => Sizing.fixed(10), :sortable,
     render   => -> $ms { $ms == 0 ?? '—' !! "{$ms}ms" },
     sort-key => -> $ms { $ms },
+);
+$servers-table.add-column(
+    name   => 'history', label => 'History',
+    sizing => Sizing.fixed(20),
+    render => -> @h { sparkline-str(@h) },
 );
 
 # Tasks: a ListView of "[x] title" strings (keeping the demo varied)
