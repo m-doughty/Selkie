@@ -231,6 +231,16 @@ method !render-divider() {
     }
 }
 
+#|( Expose the panes as `children` so that Container-level cascade
+    helpers (notably `!unsubscribe-tree`) reach them. Split stores its
+    panes in `$!first` / `$!second` rather than the inherited
+    `@!children` array, so without this override the cascade walks
+    an empty list and leaks subscriptions / bookkeeping for anything
+    inside a pane. )
+method children(--> List) {
+    ($!first, $!second).grep(*.defined).List;
+}
+
 method focusable-descendants(--> Seq) {
     gather {
         if $!first {

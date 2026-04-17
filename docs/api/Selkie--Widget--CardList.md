@@ -94,3 +94,11 @@ method park() returns Mu
 
 Park self plus every card root. CardList stores its items in `@!items` rather than `self.children`, so the standard Container.park doesn't reach them; we recurse explicitly here. Without this override, when a CardList scrolls or its host screen is swapped out, sprixels carried by Image widgets inside cards keep painting on the terminal at their last screen position.
 
+### method children
+
+```raku
+method children() returns List
+```
+
+Expose each card's root (and its border, if any) as `children` so Container-level cascade helpers (notably `!unsubscribe-tree`) reach them. CardList stores its cards in `@!items` rather than the inherited `@!children` array, so without this override the cascade walks an empty list and leaks subscriptions anchored inside cards.
+

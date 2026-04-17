@@ -122,3 +122,11 @@ method set-second(
 
 Install a widget in the second pane. The previous occupant is destroyed. Returns the new widget for chaining.
 
+### method children
+
+```raku
+method children() returns List
+```
+
+Expose the panes as `children` so that Container-level cascade helpers (notably `!unsubscribe-tree`) reach them. Split stores its panes in `$!first` / `$!second` rather than the inherited `@!children` array, so without this override the cascade walks an empty list and leaks subscriptions / bookkeeping for anything inside a pane.
+

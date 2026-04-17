@@ -52,7 +52,7 @@ C<ListView>, and so on).
 
 =item A notcurses plane to render into, created and destroyed for you
 =item Theme inheritance from the widget tree
-=item Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on C<init-plane>, C<set-theme>, and every C<apply-style> call
+=item Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on C<init-plane>, C<set-store>, and C<set-theme>
 =item Keybind registration and event bubbling
 =item Dirty tracking so your C<render> method only runs when needed
 =item Per-widget subscription to the reactive store
@@ -473,6 +473,10 @@ method set-store($store) {
         my $c = self.content;
         $c.set-store($store) if $c.defined;
     }
+    # Once the store (and with it the ancestral theme chain) is attached,
+    # re-paint the plane base so themes that only became resolvable at
+    # this point take effect. Runs once per set-store, not per render.
+    self!sync-plane-base;
     self.on-store-attached($store) if self.can('on-store-attached');
 }
 
@@ -583,11 +587,6 @@ method clear-dirty() {
     those attributes. Handles the three distinct notcurses calls
     (styles, fg, bg) in one shot. )
 method apply-style(Selkie::Style $style) {
-    # Every render pass re-syncs the plane base from the theme —
-    # cheap, and it catches cases where the theme only became
-    # resolvable after init-plane ran (e.g. set-store hadn't
-    # propagated the store + theme context yet).
-    self!sync-plane-base;
     ncplane_set_styles($!plane, $style.styles);
     ncplane_set_fg_rgb($!plane, $style.fg) if $style.fg.defined;
     ncplane_set_bg_rgb($!plane, $style.bg) if $style.bg.defined;

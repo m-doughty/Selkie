@@ -46,7 +46,7 @@ What you get for free
 
   * Theme inheritance from the widget tree
 
-  * Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on `init-plane`, `set-theme`, and every `apply-style` call
+  * Themed plane-base painting so erase / unwritten cells show the theme background rather than the terminal default — applied on `init-plane`, `set-store`, and `set-theme`
 
   * Keybind registration and event bubbling
 

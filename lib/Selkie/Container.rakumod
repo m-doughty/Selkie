@@ -172,6 +172,15 @@ method !unsubscribe-tree(Selkie::Widget $widget) {
             self!unsubscribe-tree($child);
         }
     }
+    # Border / Modal hold their child under `.content`, not `.children`.
+    # Skipping them here used to leak subscriptions onto widgets whose
+    # planes were already freed by the destroy cascade — the next store
+    # tick would then re-dispatch into a dead widget's render / apply-
+    # style path (ncplane_* on a freed plane = SIGBUS).
+    if $widget.can('content') {
+        my $c = $widget.content;
+        self!unsubscribe-tree($c) if $c.defined;
+    }
 }
 
 #|( Render each child, cascading dirty to the whole subtree if the

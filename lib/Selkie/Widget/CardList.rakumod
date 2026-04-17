@@ -144,6 +144,20 @@ method selected-item() {
     @!items[$!selected]<widget>;
 }
 
+#|( Expose each card's root (and its border, if any) as `children` so
+    Container-level cascade helpers (notably `!unsubscribe-tree`) reach
+    them. CardList stores its cards in `@!items` rather than the
+    inherited `@!children` array, so without this override the cascade
+    walks an empty list and leaks subscriptions anchored inside cards. )
+method children(--> List) {
+    gather {
+        for @!items -> %item {
+            take %item<border> if %item<border>.defined;
+            take %item<root>   if %item<root>.defined;
+        }
+    }.List;
+}
+
 # --- Item management ---
 
 method add-item($widget, :$root!, :$height!, :$border) {

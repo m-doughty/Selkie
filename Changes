@@ -2,6 +2,36 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.2  2026-04-17T01:48:20+01:00
+    - Fix SIGBUS on fast container rebuilds under themed apps (macOS).
+      Two overlapping cleanup gaps conspired to leave widgets holding
+      stale notcurses plane handles after their host container was
+      torn down, so the next store tick re-rendered into freed
+      memory:
+      * `Container.!unsubscribe-tree` only recursed through
+        `.children`, missing the widgets that Border / Modal hold
+        under `.content`.
+      * `Split` and `CardList` stash their kids in private slots
+        (`$!first` / `$!second`, `@!items`) rather than `@!children`,
+        so `.children` returned an empty list and the cascade
+        skipped their subtrees entirely.
+      Border and Modal now get walked via their `.content` accessor;
+      `Split.children` exposes the two panes; `CardList.children`
+      exposes each card's root + border. `container.clear` /
+      `container.remove` now reliably unsubscribe every descendant
+      before destroying, regardless of which container pattern they
+      live under. Visible as bus errors during tab-switching in
+      Border-wrapped, Split-hosted task lists.
+    - Move themed plane-base painting off the hot render path. The
+      per-widget `!sync-plane-base` call added in 0.4.1 ran from
+      `apply-style`, i.e. every frame on every widget — a reliable
+      UAF trigger when a widget whose plane had already been
+      destroyed by a cascade was still reachable via a leaked
+      subscription (see above). The sync now runs at
+      `init-plane` / `set-store` / `set-theme` — the one-shot
+      attach points — instead. Theme-background full-coverage is
+      unchanged; the per-frame cost is now zero.
+
 0.4.1  2026-04-17T00:56:00+01:00
     - Themed terminal background. `Selkie::App` now paints the notcurses
       standard plane's base cell from `$theme.base` when a theme is
