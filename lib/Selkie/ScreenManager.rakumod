@@ -118,6 +118,12 @@ method active-root(--> Selkie::Container) {
 #| Sorted list of registered screen names.
 method screen-names(--> List) { %!screens.keys.sort.List }
 
+#|( Look up a registered screen's root widget by name. Returns the
+    Container type object if no screen with that name exists. )
+method screen(Str:D $name --> Selkie::Container) {
+    %!screens{$name} // Selkie::Container;
+}
+
 #| True if a screen with the given name is registered.
 method has-screen(Str:D $name --> Bool) { %!screens{$name}:exists }
 

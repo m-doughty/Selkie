@@ -71,3 +71,11 @@ method resize-screen(
 
 Back-compat alias. Deprecated — prefer handle-resize.
 
+### method tick
+
+```raku
+method tick() returns Bool
+```
+
+Advance the toast's lifetime clock. Called once per frame by `Selkie::App`. When the duration has elapsed, the toast flips to invisible and its plane is destroyed. Returns `True` when visibility *just transitioned* from visible to invisible this tick — the caller (`Selkie::App`) treats that as a signal to force one more composite render so the toast is actually erased from the terminal. Returns `False` otherwise (toast is still visible, or was never visible this tick).
+

@@ -2,6 +2,89 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.3  2026-04-19T18:08:02+01:00
+    - Idle CPU reduction. A completely idle Selkie app was waking
+      the CPU ~60 times per second and doing real work on every
+      wake — compositor render, subscription walk, syscalls.
+      Three changes collapse idle work to near-zero without
+      changing the loop's responsiveness when anything's actually
+      happening:
+      * `Selkie::App.!render-frame` now gates its
+        `notcurses_render` call on whether any widget actually
+        rendered this frame. A static screen produces zero
+        compositor, diff, and pty-write work per tick.
+      * `Selkie::Store.tick` skips `!check-subscriptions` when
+        the event queue was empty and every subscription has
+        been primed. The compute closures no longer run 60 Hz
+        on idle; they run when events could plausibly have
+        changed state. A new `$!subs-primed` flag is flipped on
+        first check and invalidated whenever a subscription is
+        registered, so late-added subscriptions still initialise
+        correctly.
+      * `Selkie::App.!check-terminal-resize` is now throttled to
+        ~12 Hz via a new `!maybe-check-terminal-resize` wrapper.
+        Polling is still required (notcurses absorbs SIGWINCH on
+        macOS without queuing), but 83ms resize latency is
+        imperceptible and the syscall stops being a measurable
+        idle cost. Real `ResizeEvent`-driven checks remain
+        immediate.
+    - `Selkie::Widget::Toast.tick` now returns `Bool`. It returns
+      `True` only on the tick where visibility flips from visible
+      to invisible — the `!render-frame` gate uses this signal
+      to force one more composite render so the already-painted
+      toast is erased from the terminal. Existing callers that
+      ignored the return value are unaffected.
+    - Focus invariant. `Selkie::App` now maintains the rule that
+      `$!focused` is always attached to the active input surface
+      (modal or screen) whenever focusable widgets exist there.
+      "Focus: nothing" is only a valid state when the surface
+      genuinely has zero focusables. Apps don't need to manage
+      focus across transitions themselves — the framework keeps
+      it in a sensible place:
+      * `switch-screen` saves the outgoing screen's focus in a
+        new per-screen focus memory and restores the incoming
+        screen's last-focused widget (or first focusable if the
+        screen has never been visited, or its saved reference
+        has gone stale). Switching back to a previously-visited
+        screen now lands you where you were rather than nowhere.
+      * `add-screen` discards any stashed focus for the name
+        being re-registered — common pattern with overlay
+        screens rebuilt each time they open.
+      * `focus(undefined)` coerces to the first focusable on the
+        active surface. Only a surface with zero focusables
+        leaves focus undefined.
+      * `close-modal` validates `$!pre-modal-focus` against the
+        live tree before restoring. If the modal's action
+        destroyed that widget, focus falls through to the first
+        focusable on the active screen instead of dangling.
+      * New `check-focus-invariant` method runs at the top of
+        every event-loop iteration. If focus got detached
+        between ticks (Container::remove, screen destruction,
+        subscription tearing down a focus holder), it
+        re-acquires before the next event dispatches into a
+        stale reference.
+      * New public `widget-attached(Widget, Root)` — walks
+        `$w`'s parent chain; returns True iff it reaches
+        `$root`. Type-object callable (no App instance needed)
+        so tests can exercise the guard logic directly.
+    - `Selkie::App.set-theme(Selkie::Theme:D $theme)` — swap the
+      active theme at runtime. Updates the app's theme attribute,
+      repaints the stdplane base cell, cascades `set-theme` to
+      every registered screen's root widget (which in turn walks
+      their subtrees), and marks every screen dirty. Note that
+      consumers holding cached `Selkie::Style` values derived
+      from a theme's slots still need to rebuild those manually —
+      `set-theme` can't reach closures that copied style values
+      at construction. The guarantee is "every plane's base cell
+      and every widget's inherited theme updates"; cached styles
+      at the consumer layer stay the consumer's responsibility.
+    - `Selkie::ScreenManager.screen(Str:D $name)` — look up a
+      registered screen's root widget by name. Returns the
+      Container type object if no screen with that name exists.
+      Companion to the existing `active-root` / `has-screen` /
+      `screen-names` accessors; needed for `set-theme` to walk
+      every screen regardless of which one is currently active.
+
 0.4.2  2026-04-17T01:48:20+01:00
     - Fix SIGBUS on fast container rebuilds under themed apps (macOS).
       Two overlapping cleanup gaps conspired to leave widgets holding

@@ -1,0 +1,80 @@
+use Test;
+use lib 'lib';
+
+use Selkie::App;
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Widget::Button;
+use Selkie::Widget::Text;
+use Selkie::Layout::VBox;
+use Selkie::Sizing;
+
+# Selkie::App's focus-invariant machinery. These tests exercise
+# widget-attached() as a class method — Selkie::App.widget-attached(...)
+# works against the type object so we don't need to construct an
+# instance (which would require notcurses_init + a real terminal).
+#
+# The App-instance-level flows (switch-screen focus save/restore,
+# add-screen staleness, close-modal fallback, the run-loop guard) are
+# covered by manual verification in Cairn and Cantina — see the plan
+# at /Users/invisietch/.claude/plans/let-s-make-a-detailed-precious-tiger.md.
+# Building an in-process App test harness is tracked as future work
+# (TODO.md "two-layer test harness" entry).
+
+# Tiny container stub that lets us wire parent/child relationships
+# without depending on a specific Layout implementation's init
+# semantics.
+class TestContainer does Selkie::Container {
+    method render() { self!render-children; self.clear-dirty }
+}
+
+plan 5;
+
+subtest "widget-attached: unattached widget returns False" => {
+    plan 2;
+    my $w = Selkie::Widget::Button.new(label => 'x');
+    my $root = TestContainer.new;
+    nok Selkie::App.widget-attached($w, $root),
+        "bare widget with no parent is not attached to any root";
+    nok Selkie::App.widget-attached(Selkie::Widget, $root),
+        "type object (undefined widget) is not attached";
+};
+
+subtest "widget-attached: attached widget returns True" => {
+    plan 1;
+    my $root = TestContainer.new;
+    my $btn = Selkie::Widget::Button.new(label => 'x');
+    $root.add($btn);
+    ok Selkie::App.widget-attached($btn, $root),
+        "child widget is attached to its parent root";
+};
+
+subtest "widget-attached: deeply-nested widget returns True" => {
+    plan 1;
+    my $root = TestContainer.new;
+    my $mid  = TestContainer.new;
+    my $leaf = Selkie::Widget::Button.new(label => 'x');
+    $root.add($mid);
+    $mid.add($leaf);
+    ok Selkie::App.widget-attached($leaf, $root),
+        "grandchild is attached via parent chain walk";
+};
+
+subtest "widget-attached: detached subtree returns False" => {
+    plan 2;
+    my $root-a = TestContainer.new;
+    my $root-b = TestContainer.new;
+    my $btn = Selkie::Widget::Button.new(label => 'x');
+    $root-a.add($btn);
+    ok Selkie::App.widget-attached($btn, $root-a),
+        "preconditions: btn is attached to root-a";
+    nok Selkie::App.widget-attached($btn, $root-b),
+        "btn is not attached to unrelated root-b";
+};
+
+subtest "widget-attached: undefined root returns False" => {
+    plan 1;
+    my $btn = Selkie::Widget::Button.new(label => 'x');
+    nok Selkie::App.widget-attached($btn, Selkie::Container),
+        "undefined root short-circuits to False";
+};

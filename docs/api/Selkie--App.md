@@ -46,7 +46,7 @@ Your app code:
 
   * Starts the loop with `run`
 
-The loop runs at ~60fps: it polls for input with a 16ms timeout, dispatches events (to the focused widget, then up the parent chain, then to global keybinds), runs registered frame callbacks, ticks the store, processes any queued focus cycling, ticks the toast, and re-renders any dirty widgets.
+The loop wakes on a 16ms input timeout (up to 60 Hz). Each wake it polls for input, dispatches events (to the focused widget, then up the parent chain, then to global keybinds), runs registered frame callbacks, ticks the store, processes any queued focus cycling, ticks the toast, and renders dirty widgets. Idle work is minimized: when nothing changed, the store's subscription walk and the composite render to the terminal are both skipped.
 
 `run` only returns when `quit` is called or an unhandled exception reaches the top of the loop. In either case the terminal is restored before the program exits.
 
@@ -235,6 +235,16 @@ method root() returns Selkie::Container
 
 Convenience accessor for the active screen's root container. Equivalent to `$app.screen-manager.active-root`. Returns `Nil` if no screen is active.
 
+### method set-theme
+
+```raku
+method set-theme(
+    Selkie::Theme:D $theme
+) returns Mu
+```
+
+Swap the active theme at runtime. Updates the app's theme attribute, repaints the stdplane base cell, cascades `set-theme` to every registered screen's root widget (which in turn walks their subtrees), and marks every screen dirty so the next frame re-renders with the new palette. App consumers that hold their own cached Style objects derived from a theme's slots still need to rebuild those — set-theme can't reach closures that copied style values at construction time. The primary guarantee here is "every plane's base cell and every widget's inherited theme updates"; cached styles at the consumer layer are the consumer's responsibility.
+
 ### method add-screen
 
 ```raku
@@ -244,7 +254,7 @@ method add-screen(
 ) returns Mu
 ```
 
-Register a screen under a name. The screen's root container is attached to the theme, the store, and the notcurses stdplane, then parked either at origin (if it's the first screen added) or off-screen (for subsequent screens — `switch-screen` will move it to origin when activated).
+Register a screen under a name. The screen's root container is attached to the theme, the store, and the notcurses stdplane, then parked either at origin (if it's the first screen added) or off-screen (for subsequent screens — `switch-screen` will move it to origin when activated). Re-registering a name (common pattern: an overlay screen rebuilt each time it opens) discards any stashed per-screen focus from the previous incarnation — that widget is about to be destroyed.
 
 ### method switch-screen
 
@@ -254,7 +264,7 @@ method switch-screen(
 ) returns Mu
 ```
 
-Activate a registered screen by name. The previously-active screen is parked off-screen; the new one is moved to the origin, resized to full terminal dimensions, and marked dirty so its entire subtree renders fresh on the next frame.
+Activate a registered screen by name. The previously-active screen is parked off-screen; the new one is moved to the origin, resized to full terminal dimensions, and marked dirty so its entire subtree renders fresh on the next frame. Focus follows the user: before switching, the outgoing screen's focused widget is stashed in per-screen focus memory (if it's still attached to that screen's tree). On arrival, the incoming screen's last-focused widget is restored — or, if the screen has never been visited (or the saved reference went stale), focus lands on the first focusable widget in the new tree. Apps don't need to manage focus across screen transitions themselves.
 
 ### method set-title
 
@@ -304,7 +314,7 @@ Show a modal dialog. The currently-focused widget is remembered and restored whe
 method close-modal() returns Mu
 ```
 
-Close the active modal, restore the pre-modal focus target, and mark the entire active screen dirty so every widget re-renders over the area that was covered. No-op if no modal is open.
+Close the active modal, restore the pre-modal focus target, and mark the entire active screen dirty so every widget re-renders over the area that was covered. No-op if no modal is open. The pre-modal focus target is validated against the live tree before restoration — if the widget was destroyed while the modal was open (e.g. the modal's action removed the previously-focused row from a list), focus falls through to the first focusable on the active screen instead of dangling.
 
 ### method has-modal
 
@@ -344,7 +354,26 @@ method focus(
 ) returns Mu
 ```
 
-Move focus to a specific widget. The previously-focused widget's `set-focused(False)` is called (if it has one); the new widget's `set-focused(True)` is called. A `ui/focus` event is dispatched to the store so subscribers (e.g. `Selkie::Widget::Border`) can update their appearance.
+Move focus to a specific widget. The previously-focused widget's `set-focused(False)` is called (if it has one); the new widget's `set-focused(True)` is called. A `ui/focus` event is dispatched to the store so subscribers (e.g. `Selkie::Widget::Border`) can update their appearance. Passing an undefined widget is treated as "focus the first focusable on the active surface" — Selkie maintains the invariant that `$!focused` is attached whenever focusable widgets exist. The only legitimate "focus: nothing" state is a surface with zero focusables, in which case `$!focused` stays undefined.
+
+### method widget-attached
+
+```raku
+method widget-attached(
+    Selkie::Widget $w,
+    $root
+) returns Bool
+```
+
+True iff walking up `$w`'s parent chain reaches `$root`. Used internally to validate that a saved focus reference (in `%!screen-focus` or `$!pre-modal-focus`) is still attached to the live tree before we try to restore it. O(tree depth); cheap. Public (rather than private with a leading bang) so tests can exercise the logic via the type object — `Selkie::App.widget-attached(...)` works without constructing an App instance (which would require `notcurses_init`). Apps rarely need to call this directly.
+
+### method check-focus-invariant
+
+```raku
+method check-focus-invariant() returns Mu
+```
+
+Verify that `$!focused` is still attached to the input-owning surface (the active modal, or the active screen). If it's dangling — its container was removed, its screen was destroyed, etc. — re-focus the first focusable on the surface. No-op when focus is already valid, or when nothing was focused to begin with. Called automatically at the top of every event-loop iteration. Exposed as a public method mainly so tests can drive the guard directly without spinning `run` — apps don't normally need to call it.
 
 ### method focus-next
 
@@ -376,7 +405,7 @@ Signal the event loop to exit. `run` returns after the current frame completes; 
 method run() returns Mu
 ```
 
-Start the event loop. Blocks until `quit` is called or an unhandled exception bubbles up. The loop runs at approximately 60fps and handles: input polling, event dispatch, frame callbacks, store tick, focus action processing, toast tick, and rendering. The loop body is wrapped in a `CATCH` block: any thrown exception triggers an orderly shutdown, prints a backtrace to STDERR, and exits the process with status 1.
+Start the event loop. Blocks until `quit` is called or an unhandled exception bubbles up. The loop wakes on a 16ms input timeout (up to 60 Hz) and handles: input polling, event dispatch, frame callbacks, store tick, focus action processing, toast tick, and rendering. Idle work is minimized on each dimension: resize polling is throttled to ~12 Hz, the store tick only walks subscriptions when events were processed, and the renderer only composites to the terminal when a widget actually rendered (or the toast just auto-dismissed). A static screen produces near-zero CPU. The loop body is wrapped in a `CATCH` block: any thrown exception triggers an orderly shutdown, prints a backtrace to STDERR, and exits the process with status 1.
 
 ### method check-terminal-resize
 
@@ -384,7 +413,25 @@ Start the event loop. Blocks until `quit` is called or an unhandled exception bu
 method check-terminal-resize() returns Mu
 ```
 
-Check whether the terminal has been resized and, if so, propagate new dimensions through the widget tree and force a full terminal re-sync. Called every frame (from `run`) because notcurses doesn't reliably emit `NCKEY_RESIZE` through the input queue on every platform — macOS in particular. No-op when dims haven't changed; cheap.
+Check whether the terminal has been resized and, if so, propagate new dimensions through the widget tree and force a full terminal re-sync. Called every ~83ms from the main loop (via `!maybe-check-terminal-resize`) because notcurses doesn't reliably emit `NCKEY_RESIZE` through the input queue on every platform — macOS in particular. Also called synchronously by `!dispatch-event` when a real `ResizeEvent` arrives, which should not be rate-limited. No-op when dims haven't changed; cheap.
+
+### method maybe-check-terminal-resize
+
+```raku
+method maybe-check-terminal-resize() returns Mu
+```
+
+Rate-limit wrapper around `!check-terminal-resize`. Called from the main loop every frame, but only lets the underlying check run at most once per ~83ms (~12 Hz). See `!check-terminal-resize` for why we poll at all.
+
+### method render-frame
+
+```raku
+method render-frame(
+    Bool :$force = Bool::False
+) returns Mu
+```
+
+Render any dirty parts of the widget tree and, if anything actually rendered, composite the frame to the terminal via `notcurses_render`. The composite is **gated on whether any widget rendered this frame**. On a static screen — no dirty widgets, no visible toast — the frame is a no-op: we skip the compositor, the terminal diff, and the pty writes that would otherwise run ~60 Hz while idle. The `:force` flag overrides the gate. It's set by the main loop when `Toast.tick` reports that visibility just flipped off: the previous composite still shows the toast, so we need one more render to erase it even though no widget is dirty.
 
 ### method shutdown
 

@@ -111,12 +111,23 @@ method show(Str:D $message, Num :$duration = 2e0,
 
 method is-visible(--> Bool) { $!visible }
 
-method tick() {
-    return unless $!visible;
+#|( Advance the toast's lifetime clock. Called once per frame by
+    C<Selkie::App>. When the duration has elapsed, the toast flips to
+    invisible and its plane is destroyed.
+
+    Returns C<True> when visibility I<just transitioned> from visible
+    to invisible this tick — the caller (C<Selkie::App>) treats that
+    as a signal to force one more composite render so the toast is
+    actually erased from the terminal. Returns C<False> otherwise
+    (toast is still visible, or was never visible this tick). )
+method tick(--> Bool) {
+    return False unless $!visible;
     if now - $!show-time >= $!duration {
         $!visible = False;
         self!destroy-toast-plane;
+        return True;
     }
+    False;
 }
 
 method render() {

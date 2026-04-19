@@ -239,6 +239,7 @@ has @!event-queue;
 has %!handlers;          # event-name → Array[&handler]
 has %!fx-handlers;       # fx-name → &handler
 has %!subscriptions;     # sub-id → Hash{ path|compute, last-value, widget }
+has Bool $!subs-primed = False;
 
 has IO::Handle $!debug-log;
 has Bool $!debug-dispatches    = False;
@@ -394,6 +395,7 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
         last-value => $UNSET,
         widget     => $widget,
     };
+    $!subs-primed = False;
 }
 
 #|( Subscribe a widget to a computed value. C<&compute> receives the
@@ -407,6 +409,7 @@ method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget) {
         last-value => $UNSET,
         widget     => $widget,
     };
+    $!subs-primed = False;
 }
 
 #|( Like C<subscribe-computed>, but also invokes C<&callback> with the
@@ -421,6 +424,7 @@ method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $w
         last-value => $UNSET,
         widget     => $widget,
     };
+    $!subs-primed = False;
 }
 
 #| Remove a subscription by its id. No-op if the id isn't registered.
@@ -444,15 +448,27 @@ method unsubscribe-widget(Selkie::Widget $widget) {
     subscription and compares its current value against the previous
     one.
 
+    The subscription walk is skipped on ticks where the event queue was
+    empty I<and> every subscription has already been primed with its
+    initial value. With nothing new in the store, no subscription value
+    can have changed — walking them would be wasted work. Registering
+    a new subscription flips the prime flag so the next tick initializes
+    it regardless of event activity.
+
     Called automatically by C<Selkie::App.run> each frame. Call
     explicitly only when you need to force state resolution outside
     the main loop (e.g. bootstrapping state before C<run> starts). )
 method tick() {
-    self!process-queue;
-    self!check-subscriptions;
+    my $had-events = self!process-queue;
+    if $had-events || !$!subs-primed {
+        self!check-subscriptions;
+        $!subs-primed = True;
+    }
 }
 
-method !process-queue() {
+method !process-queue(--> Bool) {
+    return False unless @!event-queue;
+
     my $max-iterations = 100;
     my $iteration = 0;
 
@@ -481,6 +497,8 @@ method !process-queue() {
             }
         }
     }
+
+    True;
 }
 
 method !apply-effects(@effects, Str :$event) {

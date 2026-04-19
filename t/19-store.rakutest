@@ -9,7 +9,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 21;
+plan 24;
 
 subtest "empty store" => {
     plan 2;
@@ -323,4 +323,63 @@ subtest "infinite dispatch loop protection" => {
     $s.dispatch('loop');
     $s.tick;
     ok $count <= 100, "loop capped at 100 iterations (ran $count)";
+};
+
+subtest "idle tick skips subscription compute" => {
+    plan 3;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    my $compute-count = 0;
+    $s.subscribe-computed('counter', -> $store {
+        $compute-count++;
+        $store.get-in('x') // 0;
+    }, $w);
+
+    $s.tick;  # primes — compute runs once
+    is $compute-count, 1, "compute runs on priming tick";
+
+    $s.tick;  # no events queued — compute should NOT run again
+    is $compute-count, 1, "compute does NOT run on idle tick";
+
+    $s.register-handler('set-x', -> $store, %ev {
+        (db => { x => 42 },);
+    });
+    $s.dispatch('set-x');
+    $s.tick;
+    is $compute-count, 2, "compute runs again when an event was processed";
+};
+
+subtest "late-registered subscription primes on next tick" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('count', value => 7);
+    $s.tick;  # initial prime with no subs
+
+    my $w = TestWidget.new;
+    my $seen;
+    $s.subscribe-with-callback('late', -> $store {
+        $store.get-in('count') // 0;
+    }, -> $v { $seen = $v }, $w);
+    $w.clear-dirty;
+
+    # No dispatches, but the new subscription should still be primed.
+    $s.tick;
+    is $seen, 7, "callback fired with initial value on first tick after registration";
+    ok $w.is-dirty, "widget marked dirty on priming tick";
+};
+
+subtest "multiple idle ticks do not re-fire primed subscription" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    my $fire-count = 0;
+    $s.subscribe-with-callback('steady', -> $store {
+        $store.get-in('x') // 0;
+    }, -> $v { $fire-count++ }, $w);
+
+    $s.tick;  # primes, callback fires once with 0
+    $s.tick;  # idle
+    $s.tick;  # idle
+    $s.tick;  # idle
+    is $fire-count, 1, "callback fires exactly once across idle ticks";
 };

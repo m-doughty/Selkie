@@ -4,7 +4,7 @@ use lib 'lib';
 use Selkie::Widget::Toast;
 use Selkie::Style;
 
-plan 8;
+plan 11;
 
 subtest "initially not visible" => {
     plan 2;
@@ -69,4 +69,26 @@ subtest "show marks dirty" => {
     $t.clear-dirty;
     $t.show('Dirty');
     ok $t.is-dirty, "marked dirty after show";
+};
+
+subtest "tick returns False when not visible" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    is $t.tick, False, "tick on hidden toast returns False";
+};
+
+subtest "tick returns False while still visible" => {
+    plan 1;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('Still here', duration => 10e0);
+    is $t.tick, False, "tick on still-visible toast returns False";
+};
+
+subtest "tick returns True on visibility transition" => {
+    plan 2;
+    my $t = Selkie::Widget::Toast.new;
+    $t.show('Brief', duration => 0.01e0);
+    sleep 0.02;
+    is $t.tick, True, "tick returns True when duration just expired";
+    is $t.tick, False, "subsequent tick returns False — already invisible";
 };

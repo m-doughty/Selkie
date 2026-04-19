@@ -112,6 +112,16 @@ method screen-names() returns List
 
 Sorted list of registered screen names.
 
+### method screen
+
+```raku
+method screen(
+    Str:D $name
+) returns Selkie::Container
+```
+
+Look up a registered screen's root widget by name. Returns the Container type object if no screen with that name exists.
+
 ### method has-screen
 
 ```raku
