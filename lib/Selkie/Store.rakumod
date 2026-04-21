@@ -458,12 +458,17 @@ method unsubscribe-widget(Selkie::Widget $widget) {
     Called automatically by C<Selkie::App.run> each frame. Call
     explicitly only when you need to force state resolution outside
     the main loop (e.g. bootstrapping state before C<run> starts). )
-method tick() {
+method tick(--> Bool) {
     my $had-events = self!process-queue;
     if $had-events || !$!subs-primed {
         self!check-subscriptions;
         $!subs-primed = True;
     }
+    # Signal "activity happened this tick" back to the event loop so
+    # it can keep the tick rate hot instead of falling to the idle
+    # ladder. Ignore the prime flag — priming is internal and doesn't
+    # count as real activity.
+    $had-events.Bool;
 }
 
 method !process-queue(--> Bool) {

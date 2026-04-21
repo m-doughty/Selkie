@@ -275,6 +275,20 @@ has UInt $!cols = 0;
 has Instant $!last-resize-check = Instant.from-posix(0);
 has Supplier $!event-supplier = Supplier.new;
 
+#|( Hot-rate frame budget in Hz. The main loop caps itself at this
+    rate while anything is happening; the idle ladder then steps
+    down (to 30 / 12 / 4 Hz) after periods of inactivity. Defaults
+    to 60 Hz — enough for smooth typing and scrolling without
+    burning battery on passive sits. Apps doing terminal video
+    playback, high-refresh animations, or live plot rendering can
+    bump this higher — notcurses itself supports video, so 120 Hz+
+    is a legitimate use case for that flavour of app.
+
+    This is a CEILING, not a floor: the loop sleeps at least
+    C<1 / $hot-hz> seconds between frames, but may sleep longer
+    when the idle ladder has ramped down. )
+has Num $.hot-hz = 60e0;
+
 #| The screen manager. Useful for C<.active-screen> and C<.screen-names>
 #| — you don't typically need to manipulate it directly, since the
 #| C<add-screen> and C<switch-screen> methods on C<Selkie::App> are
@@ -772,7 +786,51 @@ method run() {
     $!running = True;
     self!render-frame;
 
-    my $timeout = Timespec.new(tv_sec => 0, tv_nsec => 16_000_000);
+    # Scale the notcurses_get timespec to match the hot frame budget
+    # so platforms where it DOES block (Linux) still cap at the right
+    # rate. On macOS it returns immediately regardless; the sleep
+    # fallback below is what actually caps the cadence there.
+    my Int $hot-ns = (1_000_000_000 / $!hot-hz).Int;
+    my $timeout = Timespec.new(tv_sec => 0, tv_nsec => $hot-ns);
+
+    # --- Idle ladder ---------------------------------------------------
+    # Stay at the hot rate while anything's happening; ramp down the
+    # tick rate when idle so a backgrounded TUI stops burning battery
+    # as if it were still in-focus.
+    #
+    # Thresholds (seconds since last "activity"):
+    #   0-30  s : hot rate (default 60 Hz, configurable via $!hot-hz)
+    #   30-60 s : 30 Hz
+    #   60-120s : 12 Hz
+    #   120s +  : 4 Hz
+    #
+    # "Activity" = input event, resize, store event processed by any
+    # registered handler, or toast visibility change. Passive store
+    # reads don't count.
+    #
+    # The ladder caps at 4 Hz / 250 ms so snap-back from deep idle
+    # still feels near-instant on the first keystroke: worst-case
+    # input latency after 2+ minutes of idle is one 250 ms sleep.
+    my Num $hot-budget  = (1e0 / $!hot-hz.Num);  # e.g. 16.67 ms at 60 Hz
+    my constant IDLE-HALF     = 1e0 / 30e0;      # 30 Hz = ~33 ms
+    my constant IDLE-QUARTER  = 1e0 / 12e0;      # 12 Hz = ~83 ms
+    my constant IDLE-DEEP     = 1e0 /  4e0;      #  4 Hz = 250 ms
+    my Instant $last-activity = now;
+    # The ladder may only SLOW the tick rate, never speed it up. Apps
+    # that set a slow hot-hz (say 10 Hz for a low-motion tool on a
+    # battery-constrained device) would otherwise paradoxically
+    # accelerate at idle because the idle tiers are faster than the
+    # hot rate. C<max($hot, $idle)> clamps each tier to at-least-hot.
+    sub pick-budget(Instant $last-act, Num $hot --> Num) {
+        my Num $since = (now - $last-act).Num;
+        my Num $ideal = do given $since {
+            when * <  30e0 { $hot         }
+            when * <  60e0 { IDLE-HALF    }
+            when * < 120e0 { IDLE-QUARTER }
+            default        { IDLE-DEEP    }
+        };
+        max($ideal, $hot);
+    }
     while $!running {
         # Belt-and-braces: if the focused widget got detached between
         # ticks (Container::remove, a screen destroyed while parked,
@@ -780,12 +838,41 @@ method run() {
         # focus before we try to dispatch input into a dangling ref.
         self.check-focus-invariant;
 
+        # notcurses_get(...) with a timespec SHOULD block for up to
+        # 16 ms. On macOS (measured 2026-04-21) it returns almost
+        # immediately — ~378k calls per second — turning this loop
+        # into a hot spin that pegs a CPU core. We can't rely on
+        # notcurses for the frame cadence. Instead: measure how long
+        # the call actually took; if it was short-circuit-fast, sleep
+        # the remainder of the frame budget so we truly idle at 60 Hz.
+        my Instant $frame-start = now;
+        my Bool $activity = False;
+
         my $ni = Ncinput.new;
         my $id = notcurses_get($!nc, $timeout, $ni);
         if $id > 0 {
+            $activity = True;
             my $ev = Selkie::Event.from-ncinput($ni);
             $!event-supplier.emit($ev);
             self!dispatch-event($ev);
+
+            # Drain any further pending input with the non-blocking
+            # variant — handles paste / burst typing / held-key
+            # autorepeat that queues characters faster than a single
+            # 16 ms frame can dispatch one-per-tick. Without this, a
+            # 1 000-char paste would take ~17 s to catch up at 60 Hz.
+            # Bound the drain so a runaway input source can't starve
+            # the render + sleep phase; 256 events/frame is generous.
+            my Int $drained = 0;
+            loop {
+                last if $drained++ >= 256;
+                my $ni2 = Ncinput.new;
+                my $id2 = notcurses_get_nblock($!nc, $ni2);
+                last if $id2 == 0 || $id2 == -1;
+                my $ev2 = Selkie::Event.from-ncinput($ni2);
+                $!event-supplier.emit($ev2);
+                self!dispatch-event($ev2);
+            }
         }
         # Poll stdplane dimensions at ~12 Hz. notcurses doesn't
         # reliably emit NCKEY_RESIZE through the input queue on all
@@ -796,17 +883,35 @@ method run() {
         # path delivered a ResizeEvent. 12 Hz (83 ms) is fast enough
         # that the UI reflow feels instant and slow enough that the
         # syscall stops being a measurable idle-CPU cost.
-        self!maybe-check-terminal-resize;
+        $activity = True if self!maybe-check-terminal-resize;
 
         .() for @!frame-callbacks;
-        $!store.tick;
+        $activity = True if $!store.tick;
         self!process-focus-actions;
         # Toast.tick returns True when visibility just flipped to False
         # this tick (the duration expired). The composited frame still
         # has the toast painted, so we need a fresh composite render to
         # erase it — force it through even if no widget is dirty.
         my Bool $toast-hid = $!toast ?? $!toast.tick !! False;
+        $activity = True if $toast-hid;
         self!render-frame(:force($toast-hid));
+
+        # Bump the activity timestamp so the idle ladder stays hot.
+        # Any of: input event, resize detected, store event dispatched
+        # to a handler, toast visibility flip. Passive store reads
+        # don't count.
+        $last-activity = now if $activity;
+
+        # Idle-remainder sleep, budget chosen from the ladder above.
+        # When idle > 10 s we drop to 4 Hz (250 ms sleeps) — low enough
+        # battery cost to barely register; high enough that snap-back
+        # latency on the first keystroke feels near-instant. Everything
+        # below ~1 s idle stays at 60 Hz.
+        my Num $budget  = pick-budget($last-activity, $hot-budget);
+        my Num $elapsed = (now - $frame-start).Num;
+        if $elapsed < $budget {
+            sleep $budget - $elapsed;
+        }
     }
 
     self.shutdown;
@@ -894,11 +999,11 @@ method !mark-all-dirty(Selkie::Widget $w) {
     when a real C<ResizeEvent> arrives, which should not be rate-limited.
 
     No-op when dims haven't changed; cheap. )
-method !check-terminal-resize() {
+method !check-terminal-resize(--> Bool) {
     my uint32 $r = 0;
     my uint32 $c = 0;
     notcurses_stddim_yx($!nc, $r, $c);
-    return if $r == $!rows && $c == $!cols;
+    return False if $r == $!rows && $c == $!cols;
 
     $!rows = $r;
     $!cols = $c;
@@ -933,14 +1038,17 @@ method !check-terminal-resize() {
     my uint32 $rr = 0;
     my uint32 $cc = 0;
     notcurses_refresh($!nc, $rr, $cc);
+    True;
 }
 
 #|( Rate-limit wrapper around C<!check-terminal-resize>. Called from
     the main loop every frame, but only lets the underlying check run
     at most once per ~83ms (~12 Hz). See C<!check-terminal-resize> for
-    why we poll at all. )
-method !maybe-check-terminal-resize() {
-    return if now - $!last-resize-check < 1/12;
+    why we poll at all. Returns True when a dim change was actually
+    detected and the UI re-flowed; False otherwise. Used by the idle
+    ladder to treat a resize as activity. )
+method !maybe-check-terminal-resize(--> Bool) {
+    return False if now - $!last-resize-check < 1/12;
     $!last-resize-check = now;
     self!check-terminal-resize;
 }

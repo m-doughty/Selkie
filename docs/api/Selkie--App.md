@@ -203,6 +203,10 @@ The theme installed on every screen's root. Defaults to `Selkie::Theme.default` 
 
 The reactive store owned by this app. Constructed automatically on `.new`; every screen added to the app gets this store propagated into its widget tree. Subscribe to state paths from widgets via `self.subscribe(...)`.
 
+### has Num $.hot-hz
+
+Hot-rate frame budget in Hz. The main loop caps itself at this rate while anything is happening; the idle ladder then steps down (to 30 / 12 / 4 Hz) after periods of inactivity. Defaults to 60 Hz — enough for smooth typing and scrolling without burning battery on passive sits. Apps doing terminal video playback, high-refresh animations, or live plot rendering can bump this higher — notcurses itself supports video, so 120 Hz+ is a legitimate use case for that flavour of app. This is a CEILING, not a floor: the loop sleeps at least `1 / $hot-hz` seconds between frames, but may sleep longer when the idle ladder has ramped down.
+
 ### method screen-manager
 
 ```raku
@@ -410,7 +414,7 @@ Start the event loop. Blocks until `quit` is called or an unhandled exception bu
 ### method check-terminal-resize
 
 ```raku
-method check-terminal-resize() returns Mu
+method check-terminal-resize() returns Bool
 ```
 
 Check whether the terminal has been resized and, if so, propagate new dimensions through the widget tree and force a full terminal re-sync. Called every ~83ms from the main loop (via `!maybe-check-terminal-resize`) because notcurses doesn't reliably emit `NCKEY_RESIZE` through the input queue on every platform — macOS in particular. Also called synchronously by `!dispatch-event` when a real `ResizeEvent` arrives, which should not be rate-limited. No-op when dims haven't changed; cheap.
@@ -418,10 +422,10 @@ Check whether the terminal has been resized and, if so, propagate new dimensions
 ### method maybe-check-terminal-resize
 
 ```raku
-method maybe-check-terminal-resize() returns Mu
+method maybe-check-terminal-resize() returns Bool
 ```
 
-Rate-limit wrapper around `!check-terminal-resize`. Called from the main loop every frame, but only lets the underlying check run at most once per ~83ms (~12 Hz). See `!check-terminal-resize` for why we poll at all.
+Rate-limit wrapper around `!check-terminal-resize`. Called from the main loop every frame, but only lets the underlying check run at most once per ~83ms (~12 Hz). See `!check-terminal-resize` for why we poll at all. Returns True when a dim change was actually detected and the UI re-flowed; False otherwise. Used by the idle ladder to treat a resize as activity.
 
 ### method render-frame
 

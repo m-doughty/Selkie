@@ -2,6 +2,73 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.4  2026-04-21T01:51:38+01:00
+    - Fixed idle CPU pinning on macOS. `notcurses_get` with a
+      16 ms timespec does not block on this platform — it returns
+      in microseconds rather than sleeping for the requested
+      duration. The main loop in `Selkie::App.run` treated it as
+      a blocking wait, so it spun ~378 000 times per second
+      instead of ~60, pinning a CPU core at ~100%. Measured on
+      Cairn: `powermetrics` decayed power score dropped from
+      ~29 327 (above WindowServer, ~164× Cubase 14) to ~58 — a
+      ~500× reduction — after wiring an elapsed-based sleep
+      fallback into the loop. The loop now computes the actual
+      time spent in `notcurses_get` + dispatch + render and
+      sleeps the remainder of its frame budget, so it genuinely
+      runs at the target rate on every platform regardless of
+      whether notcurses's timespec is honoured.
+    - Input drain per frame. After the first `notcurses_get`
+      returns an event, the loop now drains any remaining
+      pending input via `notcurses_get_nblock` (bounded at 256
+      events per frame) before rendering. Without this, a
+      single-event-per-frame cadence at 60 Hz would turn a
+      1 000-char paste into a ~17 s catch-up — fast typing
+      would look laggy and bulk input would queue up visibly.
+      The bound prevents a runaway input source from starving
+      render + sleep; 256 events/frame is generous enough that
+      realistic pastes and autorepeat drain in a single frame.
+    - Activity-aware idle ladder. The main loop now ramps down
+      its tick rate during extended idle so a backgrounded
+      Selkie app doesn't burn battery as if it were in-focus:
+      * 0-30 s since last activity: the hot rate (default 60 Hz).
+      * 30-60 s: 30 Hz.
+      * 60-120 s: 12 Hz.
+      * 120 s+: 4 Hz.
+      Snap-back from deep idle still feels near-instant because
+      the deepest tier is 250 ms — the first keystroke after two
+      minutes of silence lands within a quarter-second and the
+      very next frame restores the hot rate. "Activity" is any
+      input event, any resize detected by the terminal poll,
+      any `Store.tick` that processed queued events (so
+      registered subscriptions / handlers firing counts), or a
+      toast visibility flip. Passive store reads don't bump the
+      activity timestamp.
+    - Configurable hot rate via `$.hot-hz` on `Selkie::App`.
+      Defaults to 60 Hz. Apps doing terminal video (notcurses
+      supports it), high-refresh animations, or live plot
+      rendering can bump this higher — 120 Hz, 144 Hz, etc. —
+      at construction: `Selkie::App.new(:hot-hz(120))`. The
+      notcurses_get timespec and the active-tier frame budget
+      both scale with this value.
+    - Idle ladder is monotonically non-speeding. A `max($ideal,
+      $hot)` clamp on each tier ensures that setting a slow
+      hot-hz (e.g. 10 Hz for a low-motion tool on a battery-
+      constrained device) doesn't paradoxically speed the app
+      UP when it goes idle. The ladder can only decrease the
+      tick rate from the hot rate, never increase it.
+    - `Selkie::Store.tick` now returns `Bool`. Returns `True`
+      when the event queue had events to process this tick
+      (which may have fired subscription callbacks / registered
+      handlers), `False` when idle. Existing callers that
+      ignored the return value are unaffected; the new signal
+      is used by the idle ladder to distinguish "store did real
+      work" from "store was a no-op".
+    - `Selkie::App.!check-terminal-resize` and
+      `!maybe-check-terminal-resize` now return `Bool` — `True`
+      when a dim change was detected and the UI re-flowed,
+      `False` otherwise. Used by the idle ladder to treat a
+      resize as an activity event.
+
 0.4.3  2026-04-19T18:08:02+01:00
     - Idle CPU reduction. A completely idle Selkie app was waking
       the CPU ~60 times per second and doing real work on every
