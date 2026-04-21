@@ -2,6 +2,50 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.5  2026-04-21T02:34:52+01:00
+    - Push-based path subscriptions. `Selkie::Store.subscribe(@path,
+      $widget)` no longer walks every tick doing `get-in(|@path)`
+      and comparing to a cached last-value. Instead, every write
+      to the store (`assoc-in` or the deep-merge that backs the
+      `db` effect) records the affected path in an internal dirty
+      set; at the top of `tick`, the set is drained and only
+      subscribers whose bound path overlaps with a written path
+      are fired. "Overlap" means one path is a prefix of the other,
+      covering three cases:
+      * Exact match: write `foo.bar`, sub on `foo.bar` → fire.
+      * Ancestor: write `foo.bar.baz`, sub on `foo` or `foo.bar`
+        → fire (something in my subtree changed).
+      * Descendant: write `foo` (replacing the subtree), sub on
+        `foo.bar.baz` → fire (my state was written over).
+      Unrelated subs pay zero cost. Idle ticks with no writes do
+      zero subscription work at all. Value-change gating is kept:
+      a push fire still runs `!values-equal` against the sub's
+      last known value, so a no-op write (writing the same value
+      back) doesn't spuriously fire the callback / dirty the
+      widget — only real changes propagate.
+    - `Selkie::Store.subscribe-path-callback($id, @path, &callback,
+      $widget)`. Path-based subscription with a callback, no compute
+      closure required — the path IS the watched expression. Fires
+      `&callback($new-value)` on any real change (using the same
+      exact / ancestor / descendant rule as `subscribe`) plus marks
+      the owning widget dirty. Equivalent to `subscribe-with-callback`
+      with a trivial `-> $s { $s.get-in(|@path) }` compute, but
+      push-based — no per-tick closure cost. Use when a widget
+      needs reconfiguration on change (`set-items`, `set-text`,
+      etc.) rather than just re-rendering.
+    - Multiple writes to the same path within one tick coalesce to
+      one subscription fire — reducers that write a path multiple
+      times during event processing produce one callback invocation,
+      not many. Dedup happens at flush time against a per-tick
+      "subs to fire" set keyed by subscription id.
+    - `subscribe-computed` and `subscribe-with-callback` remain
+      pull-based (per-tick walk + compute compare). They can depend
+      on arbitrary computed values of the store, which the push
+      index can't cheaply track without full reactive dependency
+      tracking (Vue 3 / MobX-style). The pull walk is skipped on
+      idle ticks where no events fired (existing 0.4.3 behaviour),
+      so the overall idle cost is still near-zero.
+
 0.4.4  2026-04-21T01:51:38+01:00
     - Fixed idle CPU pinning on macOS. `notcurses_get` with a
       16 ms timespec does not block on this platform — it returns

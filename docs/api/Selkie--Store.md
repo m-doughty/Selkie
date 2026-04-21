@@ -294,6 +294,16 @@ method register-fx(
 
 Register a custom effect handler. The handler receives the store and a Hash of params, and performs side effects. See EFFECTS above for the built-in ones and an example of registering your own.
 
+### sub path-key
+
+```raku
+sub path-key(
+    @path
+) returns Str
+```
+
+Canonical string encoding of a path for use as a Hash key in the push-subscription reverse index. We join segments with `\0` (NUL) because it's guaranteed never to appear in realistic path keys — all our keys are user-chosen Str. The decode helper is the inverse. Empty path encodes to the empty string.
+
 ### method subscribe
 
 ```raku
@@ -304,7 +314,20 @@ method subscribe(
 ) returns Mu
 ```
 
-Subscribe a widget to a state path. When the value at the path changes, the widget is marked dirty on the next tick. The `$id` identifies the subscription for later `unsubscribe` — use a unique name per subscription.
+Subscribe a widget to a state path. When the value at the path changes, the widget is marked dirty on the next tick. The `$id` identifies the subscription for later `unsubscribe` — use a unique name per subscription. Push-based: the store pushes a notification to this subscription only when a write touches the path (exact, ancestor, or descendant — see the push-sub dispatch block at the top of the file). Idle ticks with no writes do zero work per subscription. Initial prime (marking the widget dirty so its first render happens) runs synchronously here.
+
+### method subscribe-path-callback
+
+```raku
+method subscribe-path-callback(
+    Str:D $id,
+    @path,
+    &callback,
+    Selkie::Widget $widget
+) returns Mu
+```
+
+Subscribe to a state path with a callback — fires `&callback($new-value)` on any real change to the path (exact, ancestor write, or descendant write that replaced the subtree). No compute function needed: the path IS the watched expression. Also marks the owning widget dirty so it re-renders after the callback configures it. Use when your widget needs reconfiguration on change (e.g. `set-items` on a list, `set-text` on a label) rather than just re-rendering the same computed output. Equivalent to `subscribe-with-callback` with a trivial compute closure, but without the per-tick closure invocation cost — push-based like `subscribe`.
 
 ### method subscribe-computed
 
@@ -358,4 +381,12 @@ method tick() returns Bool
 ```
 
 Process one tick of the store. Drains the event queue (invoking handlers, applying effects, possibly enqueuing more events — capped at 100 iterations to prevent infinite loops), then walks every subscription and compares its current value against the previous one. The subscription walk is skipped on ticks where the event queue was empty *and* every subscription has already been primed with its initial value. With nothing new in the store, no subscription value can have changed — walking them would be wasted work. Registering a new subscription flips the prime flag so the next tick initializes it regardless of event activity. Called automatically by `Selkie::App.run` each frame. Call explicitly only when you need to force state resolution outside the main loop (e.g. bootstrapping state before `run` starts).
+
+### method flush-push-subs
+
+```raku
+method flush-push-subs() returns Mu
+```
+
+Drain `@!dirty-paths` and fire every push subscription whose bound path overlaps with any written path — where "overlaps" means either path is a prefix of the other (ancestor / descendant / exact). Dedupe: a sub only fires once per flush even if multiple writes match it. After dispatching, the dirty-path set is cleared. Firing still respects value-change semantics: `!values-equal` gates whether `&callback` / `mark-dirty` actually runs, so no-op writes don't produce spurious fires.
 

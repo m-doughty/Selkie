@@ -1,0 +1,168 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+use Selkie::Widget;
+
+# Push-based path subscription semantics. Covers the match rule
+# (ancestor / descendant / exact / no-match), idle-skip (no walk
+# when the store wasn't written), coalescing (multiple writes to
+# the same path fire the sub once), and value-change gating
+# (a no-op write doesn't spuriously fire).
+#
+# Backwards-compat with pre-push callers: `subscribe(@path, $w)`
+# still marks the widget dirty on change; the change path went
+# from per-tick compute-and-compare to write-triggered dispatch.
+
+class TestWidget does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+plan 9;
+
+subtest "exact match — write to @path fires sub on @path" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('exact', <foo bar>, $w);
+    # Subscribe primes the widget dirty — clear it so we observe
+    # the post-write fire specifically.
+    $w.render;
+    nok $w.is-dirty, "clean after prime";
+
+    $s.assoc-in('foo', 'bar', value => 42);
+    $s.tick;
+    ok $w.is-dirty, "exact-path write fired the sub";
+};
+
+subtest "ancestor fire — write to deep path fires shallow sub" => {
+    plan 3;
+    my $s = Selkie::Store.new;
+    my $w-foo = TestWidget.new;
+    my $w-bar = TestWidget.new;
+    $s.subscribe('on-foo',     ['foo'],          $w-foo);
+    $s.subscribe('on-foo-bar', <foo bar>,        $w-bar);
+    $w-foo.render; $w-bar.render;
+
+    # Write to foo.bar.baz. foo and foo.bar should BOTH fire.
+    $s.assoc-in('foo', 'bar', 'baz', value => 'hello');
+    $s.tick;
+    ok $w-foo.is-dirty, "sub on ['foo'] fires for write to foo.bar.baz";
+    ok $w-bar.is-dirty, "sub on ['foo','bar'] fires for write to foo.bar.baz";
+    # Exact-path sub doesn't exist here; ancestor-only.
+    pass "ancestor notification works";
+};
+
+subtest "descendant fire — write to shallow path fires deep sub" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    # Pre-populate so foo.bar has a value to compare against.
+    $s.assoc-in('foo', 'bar', value => 1);
+    my $w = TestWidget.new;
+    $s.subscribe('deep', <foo bar>, $w);
+    $w.render;
+
+    # Replace the whole `foo` subtree — the value at foo.bar
+    # is now different.
+    $s.assoc-in('foo', value => { bar => 99, qux => 'new' });
+    $s.tick;
+    ok $w.is-dirty, "sub on ['foo','bar'] fires for write replacing 'foo'";
+    is $s.get-in('foo', 'bar'), 99, "new value readable";
+};
+
+subtest "no match — sibling path writes don't fire" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('on-bar', <foo bar>, $w);
+    $w.render;
+
+    $s.assoc-in('foo', 'qux', value => 'somewhere-else');
+    $s.tick;
+    nok $w.is-dirty, "sub on ['foo','bar'] doesn't fire for write to foo.qux";
+};
+
+subtest "no match — unrelated-root writes don't fire" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.subscribe('on-alpha', <alpha beta>, $w);
+    $w.render;
+
+    $s.assoc-in('gamma', 'delta', value => 'x');
+    $s.tick;
+    nok $w.is-dirty, "unrelated-root write doesn't trip a watcher";
+};
+
+subtest "coalesce — multiple writes to same path fire sub once per tick" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    my Int $fires = 0;
+    $s.subscribe-path-callback('counter', ['n'], -> $v { $fires++ }, $w);
+    # Callback prime — it fired once with UNSET/undef initial value.
+    is $fires, 1, "callback primed once on subscribe";
+    $fires = 0;
+
+    # Three writes + one tick = one fire, not three.
+    $s.assoc-in('n', value => 1);
+    $s.assoc-in('n', value => 2);
+    $s.assoc-in('n', value => 3);
+    $s.tick;
+    is $fires, 1, "three writes coalesced to one callback fire per tick";
+};
+
+subtest "value-change gating — no-op write doesn't fire" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('x', value => 'same');
+    my $w = TestWidget.new;
+    my Int $fires = 0;
+    $s.subscribe-path-callback('x-cb', ['x'], -> $v { $fires++ }, $w);
+    $fires = 0;   # reset after prime
+
+    # Write the same value — assoc-in still fires the push path,
+    # but !values-equal gates the callback.
+    $s.assoc-in('x', value => 'same');
+    $s.tick;
+    is $fires, 0, "identical-value write did not fire the callback";
+};
+
+subtest "idle skip — no writes means zero subscription work" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    my Int $fires = 0;
+    $s.subscribe-path-callback('idle-cb', ['x'], -> $v { $fires++ }, $w);
+    # Prime callback fired once with initial Nil.
+    $fires = 0;
+
+    # Tick N times with no writes — callback must not fire again.
+    $s.tick for ^10;
+    is $fires, 0, "10 idle ticks fired the callback zero times";
+    # And `tick` reports False on idle (no events, no writes).
+    nok $s.tick, "tick returns False when nothing happened";
+};
+
+subtest "subscribe-path-callback — runs callback with value + marks widget" => {
+    plan 4;
+    my $s = Selkie::Store.new;
+    $s.assoc-in('greeting', value => 'hi');
+    my $w = TestWidget.new;
+    my @received;
+    $s.subscribe-path-callback(
+        'greet-cb', ['greeting'],
+        -> $v { @received.push: $v },
+        $w,
+    );
+    # Prime: callback got the initial value, widget marked dirty.
+    is @received, ['hi'], "callback primed with current value";
+    ok $w.is-dirty, "widget marked dirty on prime";
+    $w.render;
+
+    $s.assoc-in('greeting', value => 'hello');
+    $s.tick;
+    is @received, <hi hello>, "callback fired again with the new value";
+    ok $w.is-dirty, "widget marked dirty on change";
+};
+

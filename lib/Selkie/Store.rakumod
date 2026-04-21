@@ -241,6 +241,31 @@ has %!fx-handlers;       # fx-name → &handler
 has %!subscriptions;     # sub-id → Hash{ path|compute, last-value, widget }
 has Bool $!subs-primed = False;
 
+# --- Push-based path subscription infrastructure -------------------
+#
+# Path subscriptions (`subscribe` + `subscribe-path-callback`) don't
+# get walked every tick. Instead, every mutation to the store (via
+# `assoc-in` or a `db` effect's deep-merge) records the affected
+# paths in `@!dirty-paths`. On tick, `!flush-push-subs` drains that
+# set and fires the matching subscribers — those whose path is a
+# prefix of a written path (ancestor notification: "something in my
+# subtree changed") OR whose path has a written path as a prefix
+# (descendant notification: "my subtree was replaced / written
+# over"). Exact-match is the prefix-equal edge of either direction.
+#
+# After firing, each matched subscriber's current value is compared
+# to its last-known value; the callback + widget-dirty only actually
+# fire when the value differs — matching the pull-based `eqv` /
+# identity semantics so a no-op write doesn't spuriously fire subs.
+#
+# `computed` and `callback` subscriptions still pay the per-tick
+# walk because their compute closures can depend on arbitrary state
+# we can't cheaply index. The set of push-participating types is
+# fixed: 'path', 'path-callback'. See `!check-subscriptions` for
+# the pull split.
+has @!dirty-paths;        # List of path Lists written since last flush
+has %!push-subs-by-key;   # path-key → Array[sub-id]
+
 has IO::Handle $!debug-log;
 has Bool $!debug-dispatches    = False;
 has Bool $!debug-effects       = False;
@@ -349,6 +374,7 @@ method assoc-in(*@path, :$value!) {
         $target = $target{$key};
     }
     $target{@path[*-1]} = $value;
+    self!mark-path-dirty(@path.List);
 }
 
 # --- Events ---
@@ -384,10 +410,30 @@ method register-fx(Str:D $fx-name, &handler) {
 
 my constant $UNSET = class { method WHICH() { 'UNSET' } }.new;
 
+#|( Canonical string encoding of a path for use as a Hash key in the
+    push-subscription reverse index. We join segments with C<\0>
+    (NUL) because it's guaranteed never to appear in realistic path
+    keys — all our keys are user-chosen Str. The decode helper is
+    the inverse. Empty path encodes to the empty string. )
+our sub path-key(@path --> Str) {
+    @path.map(*.Str).join("\0");
+}
+our sub key-path(Str $key --> List) {
+    return ().List unless $key.chars;
+    $key.split("\0").List;
+}
+
 #|( Subscribe a widget to a state path. When the value at the path
     changes, the widget is marked dirty on the next tick. The C<$id>
     identifies the subscription for later C<unsubscribe> — use a unique
-    name per subscription. )
+    name per subscription.
+
+    Push-based: the store pushes a notification to this subscription
+    only when a write touches the path (exact, ancestor, or descendant —
+    see the push-sub dispatch block at the top of the file). Idle
+    ticks with no writes do zero work per subscription. Initial prime
+    (marking the widget dirty so its first render happens) runs
+    synchronously here. )
 method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
     %!subscriptions{$id} = {
         type       => 'path',
@@ -395,7 +441,56 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
         last-value => $UNSET,
         widget     => $widget,
     };
-    $!subs-primed = False;
+    self!index-push-sub($id, @path);
+    # Prime synchronously: mark the widget dirty so it renders with
+    # its initial bound value without needing a synthetic event.
+    $widget.mark-dirty if $widget.defined;
+    # Record the initial value so the first actual write only fires
+    # if it represents a real change.
+    %!subscriptions{$id}<last-value> = self.get-in(|@path);
+}
+
+#|( Subscribe to a state path with a callback — fires C<&callback($new-value)>
+    on any real change to the path (exact, ancestor write, or descendant
+    write that replaced the subtree). No compute function needed: the
+    path IS the watched expression. Also marks the owning widget dirty
+    so it re-renders after the callback configures it.
+
+    Use when your widget needs reconfiguration on change (e.g. C<set-items>
+    on a list, C<set-text> on a label) rather than just re-rendering the
+    same computed output. Equivalent to C<subscribe-with-callback> with
+    a trivial compute closure, but without the per-tick closure
+    invocation cost — push-based like C<subscribe>. )
+method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widget) {
+    %!subscriptions{$id} = {
+        type       => 'path-callback',
+        path       => @path.List,
+        callback   => &callback,
+        last-value => $UNSET,
+        widget     => $widget,
+    };
+    self!index-push-sub($id, @path);
+    # Prime: fire the callback with the current value so the widget
+    # gets configured immediately. Mark dirty too — callback may or
+    # may not trigger a render indirectly, but the prime render is
+    # always desired.
+    my $current = self.get-in(|@path);
+    %!subscriptions{$id}<last-value> = $current;
+    $widget.mark-dirty if $widget.defined;
+    &callback($current);
+}
+
+method !index-push-sub(Str:D $id, @path) {
+    my $key = path-key(@path);
+    %!push-subs-by-key{$key} = [] unless %!push-subs-by-key{$key}:exists;
+    %!push-subs-by-key{$key}.push: $id;
+}
+
+method !unindex-push-sub(Str:D $id, @path) {
+    my $key = path-key(@path);
+    return unless %!push-subs-by-key{$key}:exists;
+    %!push-subs-by-key{$key} = %!push-subs-by-key{$key}.grep(* ne $id).Array;
+    %!push-subs-by-key{$key}:delete unless %!push-subs-by-key{$key}.elems;
 }
 
 #|( Subscribe a widget to a computed value. C<&compute> receives the
@@ -429,6 +524,10 @@ method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $w
 
 #| Remove a subscription by its id. No-op if the id isn't registered.
 method unsubscribe(Str:D $id) {
+    my %sub = %!subscriptions{$id} // return;
+    if (%sub<type> // '') eq any('path', 'path-callback') {
+        self!unindex-push-sub($id, %sub<path>);
+    }
     %!subscriptions{$id}:delete;
 }
 
@@ -437,7 +536,7 @@ method unsubscribe(Str:D $id) {
     yourself. )
 method unsubscribe-widget(Selkie::Widget $widget) {
     my @to-remove = %!subscriptions.grep(*.value<widget> === $widget).map(*.key);
-    %!subscriptions{$_}:delete for @to-remove;
+    self.unsubscribe($_) for @to-remove;
 }
 
 # --- Frame tick ---
@@ -460,15 +559,75 @@ method unsubscribe-widget(Selkie::Widget $widget) {
     the main loop (e.g. bootstrapping state before C<run> starts). )
 method tick(--> Bool) {
     my $had-events = self!process-queue;
+    # Push-based path subs: fire only subscribers whose paths
+    # overlap with writes that happened during this tick (or any
+    # writes left over from pre-tick bootstrap). Zero cost on idle
+    # ticks where the store wasn't written.
+    my $had-writes = @!dirty-paths.elems > 0;
+    self!flush-push-subs if $had-writes;
+    # Pull-based computed/callback subs: still walked every tick
+    # that had events (or was the first tick after a new sub was
+    # added and hasn't been primed yet).
     if $had-events || !$!subs-primed {
         self!check-subscriptions;
         $!subs-primed = True;
     }
     # Signal "activity happened this tick" back to the event loop so
     # it can keep the tick rate hot instead of falling to the idle
-    # ladder. Ignore the prime flag — priming is internal and doesn't
-    # count as real activity.
-    $had-events.Bool;
+    # ladder. Priming is internal and doesn't count as real activity.
+    ($had-events || $had-writes).Bool;
+}
+
+#|( Drain C<@!dirty-paths> and fire every push subscription whose
+    bound path overlaps with any written path — where "overlaps"
+    means either path is a prefix of the other (ancestor / descendant
+    / exact). Dedupe: a sub only fires once per flush even if
+    multiple writes match it. After dispatching, the dirty-path set
+    is cleared. Firing still respects value-change semantics:
+    C<!values-equal> gates whether C<&callback> / C<mark-dirty>
+    actually runs, so no-op writes don't produce spurious fires. )
+method !flush-push-subs() {
+    my @writes = @!dirty-paths;
+    @!dirty-paths = ();
+
+    my %to-fire;   # sub-id → True (dedupe within a flush)
+
+    for @writes -> @write {
+        # Ancestor side: walk every prefix of @write and look up
+        # exact-path subscribers at that prefix depth. Includes the
+        # empty prefix (watch-everything root sub).
+        for 0 .. @write.elems -> $len {
+            my $prefix-key = path-key(@write[^$len]);
+            next unless %!push-subs-by-key{$prefix-key}:exists;
+            %to-fire{$_} = True for %!push-subs-by-key{$prefix-key}.list;
+        }
+        # Descendant side: any sub whose bound path has @write as
+        # a prefix (and is strictly longer, so we don't double-count
+        # the exact match captured by the ancestor loop above).
+        my $write-prefix = path-key(@write);
+        for %!push-subs-by-key.kv -> $key, @sub-ids {
+            next if $key eq $write-prefix;  # exact covered by ancestor loop
+            next unless $key.starts-with(
+                $write-prefix eq '' ?? '' !! $write-prefix ~ "\0"
+            );
+            %to-fire{$_} = True for @sub-ids.list;
+        }
+    }
+
+    for %to-fire.keys -> $sub-id {
+        next unless %!subscriptions{$sub-id}:exists;
+        my %sub := %!subscriptions{$sub-id};
+        my $current = self.get-in(|%sub<path>);
+        next if self!values-equal($current, %sub<last-value>);
+        if $!debug-subscriptions {
+            self!log-line("  push-sub[$sub-id] fired: " ~ self!fmt-value($current));
+        }
+        %sub<last-value> = $current;
+        %sub<widget>.mark-dirty if %sub<widget>.defined;
+        if (%sub<type> // '') eq 'path-callback' && %sub<callback>.defined {
+            %sub<callback>($current);
+        }
+    }
 }
 
 method !process-queue(--> Bool) {
@@ -534,8 +693,11 @@ method !run-effect(Str:D $fx-name, $fx-params, Str :$event) {
 
 method !check-subscriptions() {
     for %!subscriptions.kv -> $id, %sub {
+        # Push-handled types bypass the per-tick walk entirely —
+        # they fire from C<!flush-push-subs> on actual writes.
+        next if (%sub<type> // '') eq any('path', 'path-callback');
+
         my $current = do given %sub<type> {
-            when 'path'     { self.get-in(|%sub<path>) }
             when 'computed' | 'callback' { %sub<compute>(self) }
         };
 
@@ -561,15 +723,25 @@ method !values-equal($a, $b --> Bool) {
 }
 
 method !deep-merge(%updates) {
-    self!merge-into(%!db, %updates);
+    self!merge-into(%!db, %updates, ());
 }
 
-method !merge-into(%target, %source) {
+method !merge-into(%target, %source, @path-so-far) {
     for %source.kv -> $key, $value {
+        my @here = (|@path-so-far, $key);
         if $value ~~ Associative && %target{$key} ~~ Associative {
-            self!merge-into(%target{$key}, $value);
+            self!merge-into(%target{$key}, $value, @here);
         } else {
             %target{$key} = $value;
+            # Mark this exact leaf path as dirty. The push-sub flush
+            # will also notify any subscriber whose path is a prefix
+            # (ancestor) via its prefix walk, so marking every
+            # intermediate level would produce duplicate fires.
+            self!mark-path-dirty(@here.List);
         }
     }
+}
+
+method !mark-path-dirty(@path) {
+    @!dirty-paths.push: @path.List;
 }
