@@ -84,7 +84,7 @@ method handle-resize(
 ) returns Mu
 ```
 
-Resize cascade: own plane + propagate to each card's root. Card items are held in `@!items` rather than `self.children`, so the standard container cascade doesn't reach them; we walk them explicitly here. Each card's new width is the CardList's new width; height stays whatever was recorded at `add-item` time (the consumer owns card heights via `set-item-height`). This is what you want for chat-like use cases where height depends on external state like wrapped message length, which recalculates via a separate subscription path.
+Resize own plane only. Cards are sized / positioned / parked in `render` based on the current viewport — a single authoritative pass per frame. Cascading handle-resize here with each card's stored logical height had produced the "two-state plane" bug where cards briefly had logical-height planes that extended past CardList's new bounds, bleeding into whatever widget sits below.
 
 ### method park
 

@@ -9,7 +9,7 @@ use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 
-plan 30;
+plan 31;
 
 subtest "construction defaults" => {
     plan 5;
@@ -36,6 +36,44 @@ subtest "set-text marks dirty" => {
     $mli.clear-dirty;
     $mli.set-text("hi");
     ok $mli.is-dirty, "dirty after set-text";
+};
+
+subtest "sizing change propagates dirty up to root" => {
+    plan 2;
+    # Contract: when a MultiLineInput's desired-height changes
+    # (bulk set-text, line wrap, newline), it marks its parent dirty
+    # so the next render runs the parent's layout-children — which
+    # re-allocates rows to every sibling and cascades dirty back
+    # down through render-children. We only assert the up-propagation
+    # here; the cascade-down happens at render time (via
+    # Container.!render-children), not at mark-dirty time.
+    use Selkie::Container;
+    use Selkie::Layout::VBox;
+    class TextStub does Selkie::Widget {
+        method render() { self.clear-dirty }
+    }
+
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.flex);
+    my $mli = Selkie::Widget::MultiLineInput.new(
+        sizing    => Sizing.fixed(1),
+        max-lines => 6,
+    );
+    my $sibling = TextStub.new;
+    $root.add($mli);
+    $root.add($sibling);
+
+    $root.clear-dirty;
+    $mli.clear-dirty;
+    $sibling.clear-dirty;
+
+    # Enough content to push desired-height past 1 (capped at
+    # max-lines via the wrap calc). set-text → update-sizing →
+    # parent.mark-dirty → propagates to root.
+    $mli.set-text("a" x 50 ~ "\n" ~ "b" x 50);
+
+    ok $mli.is-dirty, "input itself dirty after bulk set-text";
+    ok $root.is-dirty,
+        "root dirty — parent chain reached by mark-dirty propagation";
 };
 
 subtest "clear empties text" => {

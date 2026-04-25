@@ -13,7 +13,7 @@ class TestContainer does Selkie::Container {
     method render() { self!render-children; self.clear-dirty }
 }
 
-plan 12;
+plan 14;
 
 subtest "construction defaults" => {
     plan 3;
@@ -66,6 +66,44 @@ subtest "set-has-focus" => {
     $b.clear-dirty;
     $b.set-has-focus(True);
     nok $b.is-dirty, "no-op when same value";
+};
+
+subtest "focus-from-store defaults to True" => {
+    plan 1;
+    my $b = Selkie::Widget::Border.new;
+    ok $b.focus-from-store,
+        "store-driven focus is the default";
+};
+
+subtest "focus-from-store=False makes Border ignore store focus changes" => {
+    plan 2;
+    # The failure mode we're guarding against: a parent container with
+    # richer selection semantics (e.g. CardList) calls set-has-focus on
+    # a child Border, then a store focus change arrives and Border's
+    # subscription / render override wipes the explicit value.
+    #
+    # With focus-from-store=False, the Border must not react to store
+    # focus changes at all — set-has-focus is the only writer.
+    use Selkie::Store;
+    my $store = Selkie::Store.new;
+
+    my $b = Selkie::Widget::Border.new;
+    $b.focus-from-store = False;
+    $b.set-store($store);
+    $b.set-has-focus(True);
+    $b.clear-dirty;
+
+    # A focused-widget change in the store normally marks every Border
+    # in the tree dirty via its subscription. With the opt-out, $b
+    # should be unaffected.
+    my $other = TestWidget.new;
+    $store.assoc-in('ui', 'focused-widget', value => $other);
+    $store.tick;
+
+    nok $b.is-dirty,
+        "store focus change did not mark the opted-out Border dirty";
+    ok $b.has-focus,
+        "set-has-focus value survives the store change";
 };
 
 subtest "focusable-descendants - no content" => {

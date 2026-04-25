@@ -27,7 +27,7 @@ sub add-stub($cl, Int :$height = 5) {
     $widget;
 }
 
-plan 17;
+plan 18;
 
 subtest "construction defaults" => {
     plan 3;
@@ -35,6 +35,24 @@ subtest "construction defaults" => {
     is $cl.count, 0, "no items initially";
     is $cl.selected, 0, "selected at 0";
     ok $cl.focusable, "focusable by default";
+};
+
+subtest "add-item disables focus-from-store on the provided border" => {
+    plan 2;
+    # CardList owns "selected" as its own concept, which does not map to
+    # "some descendant is focused". If the card Border stayed in the
+    # default store-driven focus mode, any focus change elsewhere in
+    # the app (or a re-render cascade from a sibling container) would
+    # wipe CardList's per-card set-has-focus. Opt out on add-item.
+    use Selkie::Widget::Border;
+    my $cl = Selkie::Widget::CardList.new;
+    my $border = Selkie::Widget::Border.new;
+    ok $border.focus-from-store, "border defaults to store-driven";
+    my $widget = StubWidget.new;
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.fixed(3));
+    $cl.add-item($widget, :$root, :height(3), :$border);
+    nok $border.focus-from-store,
+        "CardList.add-item flips focus-from-store off for card borders";
 };
 
 subtest "add-item increases count" => {

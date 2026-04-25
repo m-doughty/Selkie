@@ -207,6 +207,10 @@ The reactive store owned by this app. Constructed automatically on `.new`; every
 
 Hot-rate frame budget in Hz. The main loop caps itself at this rate while anything is happening; the idle ladder then steps down (to 30 / 12 / 4 Hz) after periods of inactivity. Defaults to 60 Hz — enough for smooth typing and scrolling without burning battery on passive sits. Apps doing terminal video playback, high-refresh animations, or live plot rendering can bump this higher — notcurses itself supports video, so 120 Hz+ is a legitimate use case for that flavour of app. This is a CEILING, not a floor: the loop sleeps at least `1 / $hot-hz` seconds between frames, but may sleep longer when the idle ladder has ramped down.
 
+### has Str $.error-log
+
+Path to a file that receives everything that would normally hit stderr while the app is running — Raku warnings (`Use of uninitialized value …`), runtime failures logged via `note`, C-level libraries writing to stderr, notcurses internal diagnostics, etc. Without this, warnings splat into the TUI compositor's cell grid and produce visible garbage that stays on screen until the next full repaint — a TUI can't share stderr with its own drawing surface. When set, `Selkie::App` uses `dup2(2)` on construction to point file descriptor 2 at this file (append mode); the saved copy of the original stderr is restored on `shutdown`. Parent directory is auto-created. A new "=== session …" banner is written at the top of each run so long-lived log files stay navigable. Leave as `Str` (the type object) to disable the redirect — then stderr goes where it would normally.
+
 ### method screen-manager
 
 ```raku
@@ -444,4 +448,14 @@ method shutdown() returns Mu
 ```
 
 Shut down notcurses and destroy the active modal and screen manager. Idempotent — safe to call multiple times. Usually you don't call this directly; the event loop's CATCH, the END phaser, or `DESTROY` takes care of it.
+
+### method set-error-log
+
+```raku
+method set-error-log(
+    Str $path
+) returns Mu
+```
+
+Swap the active error-log file at runtime. Tears down the current redirection (restoring fd 2 to the original stderr), updates the path, and reinstalls the redirect pointing at the new file. Passing `Str` (the type object) or an empty string disables redirection — fd 2 goes back to wherever it pointed before the first `install-error-log`. Useful for apps whose log location only becomes known after some runtime event. App::Cantina is the canonical consumer: the path is `{cantina-home}/{db-name}/error.log`, and `db-name` is only known after the user selects / creates a profile on the login screen. The app boots with `error-log` unset, then calls `set-error-log` from its post-login handler. A new session banner is written to the new log file on each invocation so interleaved runs stay navigable. No-op (save for the banner) when called with the same path it already has.
 

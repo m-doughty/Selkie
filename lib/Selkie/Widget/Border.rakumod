@@ -29,6 +29,16 @@ pattern).
 Requires at least 3x3 dimensions. Redraws its edges after content renders
 to cover pixel bleed from image blits — useful when wrapping an Image.
 
+=head2 Opting out of store-driven focus
+
+Set C<focus-from-store = False> to disable both the store subscription
+and the render-time override. In that mode C<set-has-focus> is the only
+writer and its value persists across renders. Intended for Borders
+managed by a parent container with richer selection semantics than
+"focused descendant" — C<CardList>, for example, which wants its
+I<selected> card's Border highlighted regardless of whether keyboard
+focus has moved elsewhere.
+
 =head2 Swapping content
 
 By default, C<set-content> destroys the outgoing widget. Pass
@@ -99,6 +109,20 @@ has Bool $!has-focus = False;
 has Bool $.hide-top-border is rw = False;
 has Bool $.hide-bottom-border is rw = False;
 
+#|( When True (default), the Border subscribes to C<ui.focused-widget>
+    and its C<render> re-derives C<$!has-focus> from the store on every
+    frame — the normal "highlight when any descendant is focused"
+    pattern.
+
+    When False, the Border treats C<set-has-focus> as the single source
+    of truth: no subscription, no render-time override. This is the
+    right mode for Borders whose focus state is managed by a parent
+    container that has richer selection semantics than "focused
+    descendant" — C<CardList> being the canonical case, where the
+    I<selected> card's border should stay highlighted regardless of
+    whether keyboard focus has moved out to another widget. )
+has Bool $.focus-from-store is rw = True;
+
 method content(--> Selkie::Widget) { $!content }
 
 method set-content(Selkie::Widget $w, Bool :$destroy = True) {
@@ -142,8 +166,10 @@ method has-focus(--> Bool) { $!has-focus }
 
 # Auto-subscribe to focus state when store becomes available. `once-*`
 # variants are idempotent — reparenting and repeated set-store calls
-# won't create duplicate subscriptions.
+# won't create duplicate subscriptions. Skipped entirely when
+# C<focus-from-store> is False (see attribute docs).
 method on-store-attached($store) {
+    return unless $!focus-from-store;
     my $border = self;
     self.once-subscribe-computed("border-focus-{self.WHICH}", -> $s {
         my $focused = $s.get-in('ui', 'focused-widget');
@@ -162,26 +188,26 @@ method !is-descendant(Selkie::Widget $widget --> Bool) {
     False;
 }
 
+#| Resize own plane. Content is sized inside C<render> (after the
+#| inner-top / inner-rows / inner-cols computation that accounts for
+#| hide-top/bottom-border). No cascade here — one layout pass per
+#| frame, top-down via render.
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
     self.resize($rows, $cols);
     self!on-resize;
-    # Cascade to wrapped content so its subtree also re-sizes now.
-    # Inner dims exclude the border frame.
-    if $!content {
-        my $inner-rows = ($rows - 2) max 0;
-        my $inner-cols = ($cols - 2) max 0;
-        $!content.handle-resize($inner-rows.UInt, $inner-cols.UInt);
-    }
 }
 
 method render() {
     return without self.plane;
 
-    # Update focus state directly from the store on each render. Cheap and
-    # avoids stale state if the subscription-driven update hasn't landed yet.
-    if self.store {
+    # Update focus state directly from the store on each render. Cheap
+    # and avoids stale state if the subscription-driven update hasn't
+    # landed yet. Skipped when C<focus-from-store> is False — in that
+    # mode a parent (e.g. CardList) owns the authoritative has-focus
+    # state and set-has-focus is the single writer.
+    if self.store && $!focus-from-store {
         my $focused = self.store.get-in('ui', 'focused-widget');
         $!has-focus = $focused.defined && self!is-descendant($focused);
     }

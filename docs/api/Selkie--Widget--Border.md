@@ -24,6 +24,11 @@ Draws a box around a single child widget. Auto-highlights when any descendant ha
 
 Requires at least 3x3 dimensions. Redraws its edges after content renders to cover pixel bleed from image blits — useful when wrapping an Image.
 
+Opting out of store-driven focus
+--------------------------------
+
+Set `focus-from-store = False` to disable both the store subscription and the render-time override. In that mode `set-has-focus` is the only writer and its value persists across renders. Intended for Borders managed by a parent container with richer selection semantics than "focused descendant" — `CardList`, for example, which wants its *selected* card's Border highlighted regardless of whether keyboard focus has moved elsewhere.
+
 Swapping content
 ----------------
 
@@ -71,4 +76,19 @@ SEE ALSO
   * [Selkie::Widget::Modal](Selkie--Widget--Modal.md) — centered overlay; also has `set-content(:!destroy)`
 
   * [Selkie::Theme](Selkie--Theme.md) — `border` / `border-focused` slots control appearance
+
+### has Bool $.focus-from-store
+
+When True (default), the Border subscribes to `ui.focused-widget` and its `render` re-derives `$!has-focus` from the store on every frame — the normal "highlight when any descendant is focused" pattern. When False, the Border treats `set-has-focus` as the single source of truth: no subscription, no render-time override. This is the right mode for Borders whose focus state is managed by a parent container that has richer selection semantics than "focused descendant" — `CardList` being the canonical case, where the *selected* card's border should stay highlighted regardless of whether keyboard focus has moved out to another widget.
+
+### method handle-resize
+
+```raku
+method handle-resize(
+    Int $rows where { ... },
+    Int $cols where { ... }
+) returns Mu
+```
+
+Resize own plane. Content is sized inside `render` (after the inner-top / inner-rows / inner-cols computation that accounts for hide-top/bottom-border). No cascade here — one layout pass per frame, top-down via render.
 

@@ -289,6 +289,29 @@ has Supplier $!event-supplier = Supplier.new;
     when the idle ladder has ramped down. )
 has Num $.hot-hz = 60e0;
 
+#|( Path to a file that receives everything that would normally hit
+    stderr while the app is running — Raku warnings
+    (C<Use of uninitialized value …>), runtime failures logged via
+    C<note>, C-level libraries writing to stderr, notcurses internal
+    diagnostics, etc.
+
+    Without this, warnings splat into the TUI compositor's cell grid
+    and produce visible garbage that stays on screen until the next
+    full repaint — a TUI can't share stderr with its own drawing
+    surface.
+
+    When set, C<Selkie::App> uses C<dup2(2)> on construction to point
+    file descriptor 2 at this file (append mode); the saved copy of
+    the original stderr is restored on C<shutdown>. Parent directory
+    is auto-created. A new "=== session …" banner is written at the
+    top of each run so long-lived log files stay navigable.
+
+    Leave as C<Str> (the type object) to disable the redirect — then
+    stderr goes where it would normally. )
+has Str $.error-log;
+has Int $!saved-stderr-fd;
+has IO::Handle $!error-log-handle;
+
 #| The screen manager. Useful for C<.active-screen> and C<.screen-names>
 #| — you don't typically need to manipulate it directly, since the
 #| C<add-screen> and C<switch-screen> methods on C<Selkie::App> are
@@ -310,6 +333,14 @@ method root(--> Selkie::Container) { $!screen-manager.active-root }
 
 submethod TWEAK() {
     $!theme //= Selkie::Theme.default;
+
+    # Redirect stderr to the log file BEFORE notcurses_init so any
+    # banner text or terminal-capability probe output notcurses emits
+    # during startup lands in the log instead of fighting with the
+    # splash screen. C<NCOPTION_SUPPRESS_BANNERS> below covers the
+    # intentional banner, but notcurses still writes diagnostics on
+    # some terminals at init.
+    self!install-error-log if $!error-log.defined && $!error-log.chars > 0;
 
     my $opts = NotcursesOptions.new(
         flags => NCOPTION_SUPPRESS_BANNERS,
@@ -1095,8 +1126,106 @@ method shutdown() {
         notcurses_stop($!nc);
         $!nc = NotcursesHandle;
     }
+    # Stderr goes last so any diagnostics notcurses_stop emits still
+    # land in the log file rather than the cleared terminal.
+    self!uninstall-error-log;
 }
 
 method DESTROY() {
     self.shutdown if $!nc;
+}
+
+# --- Error-log redirection ------------------------------------------------
+
+# POSIX fd shims for stderr redirection. dup(2) lets us save the
+# original stderr fd before dup2'ing our log file onto fd 2; close(2)
+# reaps the saved copy on shutdown. Declared here rather than at file
+# scope so they stay private to the App's implementation.
+sub c-dup(int32)           returns int32 is native is symbol('dup')   { * }
+sub c-dup2(int32, int32)   returns int32 is native is symbol('dup2')  { * }
+sub c-close(int32)         returns int32 is native is symbol('close') { * }
+
+#|( Swap the active error-log file at runtime. Tears down the current
+    redirection (restoring fd 2 to the original stderr), updates the
+    path, and reinstalls the redirect pointing at the new file. Passing
+    C<Str> (the type object) or an empty string disables redirection
+    — fd 2 goes back to wherever it pointed before
+    the first C<install-error-log>.
+
+    Useful for apps whose log location only becomes known after some
+    runtime event. App::Cantina is the canonical consumer: the path is
+    C<{cantina-home}/{db-name}/error.log>, and C<db-name> is only
+    known after the user selects / creates a profile on the login
+    screen. The app boots with C<error-log> unset, then calls
+    C<set-error-log> from its post-login handler.
+
+    A new session banner is written to the new log file on each
+    invocation so interleaved runs stay navigable. No-op (save for the
+    banner) when called with the same path it already has. )
+method set-error-log(Str $path) {
+    self!uninstall-error-log;
+    $!error-log = $path;
+    self!install-error-log if $path.defined && $path.trim.chars > 0;
+}
+
+method !install-error-log() {
+    # Defensive: if the caller passed whitespace-only, treat as unset.
+    return unless $!error-log.defined && $!error-log.trim.chars > 0;
+
+    # Auto-create the containing directory so the caller can pass
+    # e.g. `~/.cairn/logs/error.log` without having to mkdir first.
+    my $parent = $!error-log.IO.parent;
+    try $parent.mkdir unless $parent.e;
+
+    my $handle = try open $!error-log, :a;
+    return unless $handle;
+    $!error-log-handle = $handle;
+
+    # Banner at the top of each session so the log file is navigable
+    # across multiple runs. Uses native-descriptor so we don't rely on
+    # Raku-level buffering interleaving correctly with the incoming
+    # stderr stream post-dup2.
+    my $banner = "=== session {DateTime.now.truncated-to('second')} ===\n";
+    try $handle.print($banner);
+    try $handle.flush;
+
+    # Duplicate fd 2 so we can restore it on shutdown, then re-point
+    # fd 2 at our log. After dup2, EVERY write to fd 2 (Raku $*ERR,
+    # C library fprintf(stderr), notcurses diagnostics, panicking
+    # runtime messages) lands in the log file.
+    my $log-fd = $handle.native-descriptor;
+    return unless $log-fd.defined && $log-fd >= 0;
+
+    my $saved = c-dup(2);
+    if $saved < 0 {
+        $handle.close;
+        $!error-log-handle = Nil;
+        return;
+    }
+    $!saved-stderr-fd = $saved;
+
+    my $rc = c-dup2($log-fd, 2);
+    if $rc < 0 {
+        # dup2 failed — undo the save and fall back to untouched stderr.
+        c-close($saved);
+        $!saved-stderr-fd = Int;
+        $handle.close;
+        $!error-log-handle = Nil;
+    }
+}
+
+method !uninstall-error-log() {
+    # Order matters: restore fd 2 first so any closing output during
+    # the rest of shutdown still hits the log (which, at this point,
+    # IS the fd 2 stream — writes to it just go to the original
+    # stderr once restored).
+    if $!saved-stderr-fd.defined && $!saved-stderr-fd >= 0 {
+        c-dup2($!saved-stderr-fd, 2);
+        c-close($!saved-stderr-fd);
+        $!saved-stderr-fd = Int;
+    }
+    if $!error-log-handle {
+        try $!error-log-handle.close;
+        $!error-log-handle = Nil;
+    }
 }

@@ -388,7 +388,7 @@ method set-viewport(
 ) returns Mu
 ```
 
-Called by parent layouts during layout. Propagates absolute screen position and visible bounds to this widget. You don't call this yourself unless you're implementing a layout container.
+Called by parent layouts during layout. Propagates absolute screen position and visible bounds to this widget. You don't call this yourself unless you're implementing a layout container. Marks the widget dirty when its absolute position changes. Most widgets render position-independent cells, so this is redundant for them — but Image needs it: notcurses sprixels don't follow plane moves, and Image's blit-plane teardown only happens inside its `render`. If a parent shifts a card around (CardList scroll, screen layout reflow) without independently dirtying the subtree, the Image's render won't fire and the sprixel ghosts at the old screen coordinates. Marking dirty here ensures the next pass re-runs every affected widget; Image's cache check then short-circuits the re-blit when its own state didn't change.
 
 ### method theme
 
@@ -532,6 +532,22 @@ method mark-dirty() returns Mu
 ```
 
 Mark this widget dirty so it re-renders on the next frame. Also propagates dirty upwards to the parent chain so the render walk reaches it. Cheap — short-circuits if already dirty. Call this whenever your widget's visual state changes.
+
+### method mark-dirty-tree
+
+```raku
+method mark-dirty-tree() returns Mu
+```
+
+Recursively mark this widget and every descendant dirty. Use when a state change has layout implications that the default up-propagating `mark-dirty` can't fully express — for example, a widget resizing itself causes every sibling's allocation to shift, and you want every descendant (not just the ancestors) to re-render fresh on the next frame. Pairs with mark-screen-dirty for the common "start from the root of the attached tree" case.
+
+### method mark-screen-dirty
+
+```raku
+method mark-screen-dirty() returns Mu
+```
+
+Walk up to the root of the attached tree and flag the whole screen for a full render pass (via `mark-dirty-tree`). Use when a local state change should invalidate every widget's layout — typically a dynamically-sized widget whose height or width just changed in a way that shifts its siblings' allocations. Cheap for rare events (rare meaning: not per-keystroke). For high-frequency triggers, prefer the default `mark-dirty` propagation and let each render walk figure out what actually needs redrawing.
 
 ### method clear-dirty
 

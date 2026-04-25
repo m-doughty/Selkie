@@ -13,7 +13,7 @@ class TestContainer does Selkie::Container {
     method render() { self!render-children; self.clear-dirty }
 }
 
-plan 5;
+plan 6;
 
 subtest "widget viewport defaults to zero" => {
     plan 4;
@@ -71,4 +71,33 @@ subtest "widget-id on containers" => {
     plan 1;
     my $c = TestContainer.new;
     ok $c.widget-id > 0, "container has ID";
+};
+
+subtest "set-viewport marks dirty on absolute-position change" => {
+    plan 5;
+    # Image sprixels don't follow notcurses plane moves — when a
+    # parent layout shifts a card, the host Image's render has to
+    # fire so its blit-plane teardown / re-blit logic can run.
+    # Marking dirty on a viewport reposition guarantees that.
+    my $w = TestWidget.new;
+
+    $w.set-viewport(abs-y => 5, abs-x => 5, rows => 10, cols => 10);
+    ok $w.is-dirty, "abs change from default (0,0) to (5,5) marks dirty";
+
+    $w.clear-dirty;
+    $w.set-viewport(abs-y => 5, abs-x => 5, rows => 10, cols => 10);
+    nok $w.is-dirty, "no-op set-viewport leaves the widget clean";
+
+    $w.clear-dirty;
+    $w.set-viewport(abs-y => 7, abs-x => 5, rows => 10, cols => 10);
+    ok $w.is-dirty, "abs-y change marks dirty";
+
+    $w.clear-dirty;
+    $w.set-viewport(abs-y => 7, abs-x => 9, rows => 10, cols => 10);
+    ok $w.is-dirty, "abs-x change marks dirty";
+
+    $w.clear-dirty;
+    $w.set-viewport(abs-y => 7, abs-x => 9, rows => 20, cols => 30);
+    nok $w.is-dirty,
+        "rows/cols change without abs change does not dirty (handle-resize covers that path)";
 };

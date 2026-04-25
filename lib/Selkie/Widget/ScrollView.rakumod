@@ -136,6 +136,18 @@ method render() {
                     y => $screen-y.UInt, x => 0, rows => $visible-rows, cols => $content-w);
             }
 
+            # Propagate absolute viewport. reposition + resize don't
+            # refresh abs-y / abs-x, so without this any descendant
+            # that reads Widget.abs-y (focus detection, overlay
+            # positioning, etc.) would see stale screen coordinates
+            # after a scroll.
+            $child.set-viewport(
+                abs-y => self.abs-y + $screen-y.UInt,
+                abs-x => self.abs-x,
+                rows  => $visible-rows,
+                cols  => $content-w,
+            );
+
             if $child.can('render-region') {
                 $child.render-region(offset => $visible-start, height => $visible-rows);
             } else {

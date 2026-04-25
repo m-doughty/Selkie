@@ -65,3 +65,14 @@ method render() returns Mu
 
 Perform layout and render each child. Called automatically by the render cycle. Columns are allocated using the same three-pass strategy as `VBox`, applied to the width axis.
 
+### method handle-resize
+
+```raku
+method handle-resize(
+    Int $rows where { ... },
+    Int $cols where { ... }
+) returns Mu
+```
+
+Resize this container's own plane. Children are re-laid-out in `render`, not here. See VBox for the rationale.
+

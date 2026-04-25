@@ -13,7 +13,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 14;
+plan 16;
 
 subtest "construction defaults" => {
     plan 7;
@@ -168,4 +168,63 @@ subtest "keybind - non-matching event not consumed" => {
     my $consumed = $w.handle-event($ev);
     nok $called, "handler not invoked";
     nok $consumed, "event not consumed";
+};
+
+# --- mark-dirty-tree / mark-screen-dirty ---
+
+use Selkie::Container;
+class TestContainer does Selkie::Container {
+    method render() { self!render-children; self.clear-dirty }
+}
+
+subtest "mark-dirty-tree cascades to children + content" => {
+    plan 4;
+    my $parent = TestContainer.new;
+    my $child-a = TestWidget.new;
+    my $child-b = TestWidget.new;
+    $parent.add($child-a);
+    $parent.add($child-b);
+
+    # Start from a clean tree so we can prove the cascade did the work
+    $parent.clear-dirty;
+    $child-a.clear-dirty;
+    $child-b.clear-dirty;
+
+    $parent.mark-dirty-tree;
+
+    ok $parent.is-dirty, "container itself marked dirty";
+    ok $child-a.is-dirty, "first child marked dirty";
+    ok $child-b.is-dirty, "second child marked dirty";
+
+    # Idempotent
+    lives-ok { $parent.mark-dirty-tree },
+        "calling mark-dirty-tree again is safe";
+};
+
+subtest "mark-screen-dirty walks up to root then cascades" => {
+    plan 4;
+    # root → mid → leaf. mark-screen-dirty from `leaf` should flag
+    # root, mid, and leaf — even though the default mark-dirty
+    # already propagates up, mark-dirty-tree adds the downward
+    # cascade that default mark-dirty doesn't provide.
+    my $root = TestContainer.new;
+    my $mid = TestContainer.new;
+    my $sibling-of-mid = TestWidget.new;
+    my $leaf = TestWidget.new;
+    $root.add($mid);
+    $root.add($sibling-of-mid);
+    $mid.add($leaf);
+
+    $root.clear-dirty;
+    $mid.clear-dirty;
+    $sibling-of-mid.clear-dirty;
+    $leaf.clear-dirty;
+
+    $leaf.mark-screen-dirty;
+
+    ok $leaf.is-dirty, "caller is dirty";
+    ok $mid.is-dirty, "direct ancestor is dirty";
+    ok $root.is-dirty, "root is dirty";
+    ok $sibling-of-mid.is-dirty,
+        "sibling branch reached via downward cascade from root";
 };

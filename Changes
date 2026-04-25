@@ -2,6 +2,188 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.4.6  2026-04-25T12:52:41+01:00
+    - `Widget.set-viewport` now marks the widget dirty when its
+      absolute position (abs-y / abs-x) changes. Most widgets
+      render position-independent cells and absorb the extra render
+      with no visible effect, but Image specifically depends on it:
+      notcurses sprixels don't follow plane moves, and the teardown
+      / re-blit logic that disposes of the stale sprixel only runs
+      inside `Image.render`. Before this change, a parent layout
+      that shifted a card's screen position without independently
+      dirtying the subtree (e.g. CardList rebalancing visible cards
+      after a resize, or a screen-level VBox sliding panes around
+      when a sibling's fixed sizing changed) could leave the Image
+      clean — `render` never fired, the blit-plane was never
+      destroyed, and the sprixel ghosted at the old terminal
+      coordinates while the Image's plane sat at the new ones.
+      Surfaced in App::Cantina as a band of stale avatar pixels
+      directly below the most recent message after sending /
+      regenerating.
+
+      The Image cache check that compares incoming abs-y / abs-x
+      against the last-rendered values still does the actual
+      gating — set-viewport only ensures the check gets to run.
+      Locked in by `t/22-viewport.rakutest`'s new "set-viewport
+      marks dirty on absolute-position change" subtest.
+
+    - `Image.handle-resize` eagerly destroys the blit-plane on a
+      real resize. The blit-plane is a child of `self.plane` sized
+      to the scaled image dimensions; when the parent shrinks
+      (e.g. the host card is bottom-clipped by CardList), notcurses
+      doesn't auto-clip or auto-destroy the child, so a stale
+      blit-plane could extend past the Image's new bounds and paint
+      a sprixel into whatever sits below. The next `render` would
+      catch the size mismatch in its cache check and tear the
+      blit-plane down, but doing it inside handle-resize makes the
+      cleanup atomic with the resize itself — no window in which
+      an oversized blit-plane is reachable from the render pass.
+
+    - Border learned `focus-from-store` (rw, default True). When
+      False, the Border no longer registers the
+      `border-focus-{WHICH}` subscription and its `render` no
+      longer re-derives `has-focus` from `ui.focused-widget` —
+      `set-has-focus` becomes the single source of truth, and its
+      value survives arbitrary numbers of re-renders.
+
+      Intended for Borders managed by a parent container whose
+      selection semantics don't map onto "some descendant is
+      focused". `CardList` is the driving case: a card's Border
+      should stay highlighted for the *selected* card even when
+      keyboard focus has moved elsewhere, and should not be wiped
+      out when a sibling container triggers a cascade re-render.
+
+      `CardList.add-item` now flips this flag off on the card's
+      Border automatically, so existing CardList callers get the
+      fix for free. Other containers that pass pre-built Borders
+      through `:border` to add-item inherit it too.
+
+    - App gained `set-error-log(Str $path)` for swapping the
+      redirect destination after construction. Tears down the
+      current fd-2 redirect, updates `$.error-log`, and reinstalls
+      against the new path; passing `Str` (undefined) or an empty
+      string disables redirection altogether.
+
+      Motivated by apps whose log location is only known after
+      some runtime event — e.g. App::Cantina doesn't know the
+      selected profile until the login screen reports one, so the
+      per-profile `{home}/{db}/error.log` path can't be provided
+      to `Selkie::App.new`.
+
+    - Image.render now caches its last-rendered (rows, cols,
+      abs-y, abs-x, file) tuple and skips the destroy + re-blit
+      fast path when nothing has changed since the previous
+      frame. Ancestors cascading dirty through the tree (e.g. a
+      sibling widget's sizing change propagating up a VBox and
+      back down via render-children) previously re-blitted every
+      visible Image per frame; at multi-keystroke-per-second
+      input rates that produced visible sprite drop-outs and
+      flicker as terminals failed to keep up with the remove+add
+      sprixel sequences.
+
+      Position is part of the cache key because notcurses
+      sprixels don't automatically follow their parent plane
+      when it's repositioned — same-dims-new-position would
+      leave a ghost sprixel at the old terminal coordinates.
+      Surfaced in App::Cantina as a discoloured band in the
+      input bar below a message card that had just shrunk during
+      swipe / regenerate.
+
+      The cache is invalidated by set-file, clear-image, park,
+      and !destroy-blit-plane so callers that genuinely want a
+      re-blit still get one.
+
+    - CardList.render now calls `set-viewport` on each visible
+      card's root after the reposition + resize pair. VBox / HBox
+      layout passes cascade abs-y / abs-x through their own
+      set-viewport calls, but CardList manages its items in a
+      separate `@!items` array and previously relied on
+      reposition alone — which only updates the plane's relative
+      y / x, not the widget's abs-y / abs-x. Downstream consumers
+      that read abs-y (Image's blit cache, any future viewport-
+      sensitive widget) otherwise saw stale coordinates after a
+      scroll or height-change cascade. Observable before this fix
+      as ghost sprixels painting the input bar below a shrinking
+      message card during edit / swipe in App::Cantina.
+
+    - Image now reads its blit position from notcurses directly
+      (`ncplane_abs_y` / `ncplane_abs_x`) rather than from
+      `Widget.abs-y` / `Widget.abs-x`. The notcurses calls are
+      single C struct-field reads (O(1)) that reflect the plane's
+      current absolute screen coordinates after any move,
+      including moves caused by a repositioned ancestor plane.
+      Widget.abs-y only updates when a parent layout cascades a
+      set-viewport call, which several containers had historically
+      got wrong (CardList, Modal, ScrollView were all audited);
+      any future container that forgets the cascade would have
+      caused the same class of ghost-sprixel bug. Reading from
+      notcurses makes Image's move detection independent of
+      Selkie-level cascade hygiene: its cache invalidates the
+      moment notcurses reports a different position, regardless
+      of whether Widget.abs-y was ever refreshed. Surfaced in
+      App::Cantina as ghost avatar bands above and below a
+      chat message card while editing non-bottom messages.
+
+    - Modal.render and ScrollView.render now cascade
+      set-viewport to their content / visible children after
+      reposition + resize. Neither had done so previously, which
+      left abs-y / abs-x stale for everything nested inside them.
+      Image no longer depends on this (see the ncplane_abs_yx
+      change above), but other abs-y consumers (focus detection,
+      overlay positioning, future widgets) pick up cleaner
+      coordinates as a result.
+
+    - Image gained two test hooks: `blit-cache-valid` (public Bool
+      accessor) and `populate-blit-cache-for-test` (test-only
+      seeder). These make cache-invalidation semantics testable
+      without a live notcurses plane; see
+      `t/58-image-blit-cache.rakutest`.
+
+    - Layout cascade simplified: `handle-resize` is now strictly a
+      self-resize on VBox / HBox / Border / CardList. It no longer
+      triggers `layout-children` or recurses into descendants.
+      Layout / re-allocation / set-viewport propagation happens
+      exactly once per frame — top-down through `render` →
+      `layout-children` → `render-children`. Previously a parent
+      container would run `layout-children` twice per frame (once
+      via `handle-resize` from the parent's own Pass 3, then again
+      via its own `render`), and CardList specifically would
+      cascade `handle-resize(item-height, cols)` to every card —
+      with the card's *full logical height*, even when the card
+      was about to be clipped by `CardList.render`. That left a
+      window where card planes were oversized relative to
+      CardList's bounds, visible as cards bleeding past the list
+      into adjacent widgets (the input bar in App::Cantina being
+      the most reliable repro).
+
+      Net behavioural change: one layout per container per frame,
+      with allocations always reflecting the *display* dimensions
+      the parent intended.
+
+    - Widget gained two helpers for forcing a full-screen render
+      pass: `mark-dirty-tree` (recursively marks this widget + all
+      descendants dirty) and `mark-screen-dirty` (walks up to the
+      root of the attached tree and calls mark-dirty-tree from
+      there). Use when a state change has layout implications the
+      default up-propagating mark-dirty can't express — for
+      example, a widget resizing itself shifts every sibling's
+      allocation and a partial cascade can leave planes at stale
+      positions or sizes.
+
+    - MultiLineInput.!update-sizing now calls `mark-screen-dirty`
+      on a size transition instead of the previous `parent.mark-
+      dirty`. A multi-line input growing / shrinking shifts every
+      visible widget's allocation, and relying on the default
+      cascade-down-in-render-children semantics had been producing
+      persistent visual glitches (cards bleeding out of a
+      shrinking CardList into an adjacent input, for one). The
+      full-screen flag gives every widget a clean re-layout on the
+      same frame with no cascade-correctness assumptions. Also
+      unifies the edit and type code paths in App::Cantina
+      (`set-text` for a bulk-load edit and `insert-char` for a
+      keystroke both route through update-sizing, so both trigger
+      the same redraw).
+
 0.4.5  2026-04-21T02:34:52+01:00
     - Push-based path subscriptions. `Selkie::Store.subscribe(@path,
       $widget)` no longer walks every tick doing `get-in(|@path)`

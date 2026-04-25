@@ -78,12 +78,13 @@ method render() {
     self.clear-dirty;
 }
 
+#| Resize this container's own plane. Children are re-laid-out in
+#| C<render>, not here. See VBox for the rationale.
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
     self.resize($rows, $cols);
     self!on-resize;
-    self!layout-children if self.plane;
 }
 
 method !layout-children() {

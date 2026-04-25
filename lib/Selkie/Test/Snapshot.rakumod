@@ -278,6 +278,7 @@ my Str $saved-tty-state;
 sub ensure-nc() {
     return if $nc-shared;
 
+
     # fd 1/2 are already redirected to /dev/null from module load
     # (see top-level block above). Anything notcurses writes via C
     # (including stop's "signals weren't registered" warnings) lands

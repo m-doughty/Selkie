@@ -431,6 +431,14 @@ method !update-sizing() {
     my $h = self.desired-height;
     if self.sizing.mode ~~ SizeFixed && self.sizing.value != $h {
         self!set-sizing(Sizing.fixed($h));
+        # Mark parent dirty so the next render re-runs its
+        # layout-children with our new sizing. mark-dirty propagates
+        # up to the root; render-children cascades back down so
+        # every sibling gets a fresh layout pass. One top-down
+        # traversal per frame is all we need — Selkie's handle-resize
+        # doesn't recurse on its own (as of the layout-cascade
+        # simplification), so there's no longer any "stale sizes
+        # between handle-resize and render" window to worry about.
         self.parent.mark-dirty if self.parent.defined;
     }
 }

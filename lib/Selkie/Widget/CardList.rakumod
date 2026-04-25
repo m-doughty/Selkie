@@ -103,26 +103,18 @@ method on-select(--> Supply) { $!select-supplier.Supply }
 method selected(--> Int) { $!selected }
 method count(--> Int) { @!items.elems }
 
-#|( Resize cascade: own plane + propagate to each card's root. Card
-    items are held in C<@!items> rather than C<self.children>, so
-    the standard container cascade doesn't reach them; we walk them
-    explicitly here.
-
-    Each card's new width is the CardList's new width; height stays
-    whatever was recorded at C<add-item> time (the consumer owns
-    card heights via C<set-item-height>). This is what you want for
-    chat-like use cases where height depends on external state like
-    wrapped message length, which recalculates via a separate
-    subscription path. )
+#|( Resize own plane only. Cards are sized / positioned / parked in
+    C<render> based on the current viewport — a single authoritative
+    pass per frame. Cascading handle-resize here with each card's
+    stored logical height had produced the "two-state plane" bug
+    where cards briefly had logical-height planes that extended
+    past CardList's new bounds, bleeding into whatever widget sits
+    below. )
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
     self.resize($rows, $cols);
     self!on-resize;
-    for @!items -> %item {
-        next unless %item<root>.plane;
-        %item<root>.handle-resize(%item<height>.UInt, $cols);
-    }
 }
 
 #|( Park self plus every card root. CardList stores its items in
@@ -161,6 +153,12 @@ method children(--> List) {
 # --- Item management ---
 
 method add-item($widget, :$root!, :$height!, :$border) {
+    # Selection is a CardList concern, not a "focused descendant"
+    # question: the selected card stays highlighted even when keyboard
+    # focus moves out of the list. Disable the Border's store-driven
+    # focus derivation so set-has-focus (called per-render below) is
+    # the single source of truth.
+    $border.focus-from-store = False if $border;
     @!items.push({ :$widget, :$root, :$height, :$border });
     self.mark-dirty;
 }
@@ -271,6 +269,18 @@ method render() {
             $root.init-plane(self.plane, y => $visible-top, x => 0,
                 rows => $display-h, cols => $vw);
         }
+        # Propagate absolute viewport to the card. reposition + resize
+        # alone don't refresh abs-y/abs-x, and downstream consumers
+        # (Selkie::Widget::Image uses abs position to decide when to
+        # re-blit a sprixel) otherwise see stale coordinates when the
+        # card moves. The card's own VBox.render will cascade this to
+        # grandchildren via its layout-children pass.
+        $root.set-viewport(
+            abs-y => self.abs-y + $visible-top,
+            abs-x => self.abs-x,
+            rows  => $display-h,
+            cols  => $vw,
+        );
         $root.mark-dirty;
         $root.render;
 

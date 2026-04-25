@@ -94,19 +94,11 @@ method render() {
     self.clear-dirty;
 }
 
-#|( Resize cascade: own plane + re-layout children so allocations
-    propagate synchronously through the subtree, without waiting for
-    the next render pass. Layout-children calls handle-resize on each
-    child so the recursion continues. )
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
     self.resize($rows, $cols);
     self!on-resize;
-    # layout-children can't run meaningfully without a plane (it would
-    # try to init-plane children against a null parent). When called on
-    # an unmounted subtree, just update our own dims; the first render
-    # after mount handles the layout.
     self!layout-children if self.plane;
 }
 

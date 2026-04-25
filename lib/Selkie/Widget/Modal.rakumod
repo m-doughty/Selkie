@@ -169,6 +169,17 @@ method render() {
                 y => $modal-y, x => $modal-x,
                 rows => $modal-rows, cols => $modal-cols);
         }
+        # Propagate absolute viewport. Neither reposition nor
+        # handle-resize updates abs-y / abs-x, and the content's
+        # internal layout-children cascade uses self.abs-y as the
+        # origin for its children — without this call, every
+        # descendant's abs-y stays frozen at its pre-modal value.
+        $!content.set-viewport(
+            abs-y => self.abs-y + $modal-y,
+            abs-x => self.abs-x + $modal-x,
+            rows  => $modal-rows,
+            cols  => $modal-cols,
+        );
         $!content.mark-dirty unless $!content.is-dirty;
         $!content.render;
     }

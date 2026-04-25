@@ -388,12 +388,25 @@ method viewport-cols(--> UInt) { $!viewport-cols }
 
 #|( Called by parent layouts during layout. Propagates absolute screen
     position and visible bounds to this widget. You don't call this
-    yourself unless you're implementing a layout container. )
+    yourself unless you're implementing a layout container.
+
+    Marks the widget dirty when its absolute position changes. Most
+    widgets render position-independent cells, so this is redundant for
+    them — but Image needs it: notcurses sprixels don't follow plane
+    moves, and Image's blit-plane teardown only happens inside its
+    C<render>. If a parent shifts a card around (CardList scroll, screen
+    layout reflow) without independently dirtying the subtree, the
+    Image's render won't fire and the sprixel ghosts at the old screen
+    coordinates. Marking dirty here ensures the next pass re-runs every
+    affected widget; Image's cache check then short-circuits the
+    re-blit when its own state didn't change. )
 method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
+    my $moved = $abs-y != $!abs-y || $abs-x != $!abs-x;
     $!abs-y = $abs-y;
     $!abs-x = $abs-x;
     $!viewport-rows = $rows;
     $!viewport-cols = $cols;
+    self.mark-dirty if $moved;
 }
 
 #|( The effective theme for this widget. Walks up the parent chain until
@@ -573,6 +586,51 @@ method mark-dirty() {
     return if $!dirty;
     $!dirty = True;
     $!parent.mark-dirty if $!parent.defined;
+}
+
+#|( Recursively mark this widget and every descendant dirty. Use
+    when a state change has layout implications that the default
+    up-propagating C<mark-dirty> can't fully express — for example,
+    a widget resizing itself causes every sibling's allocation to
+    shift, and you want every descendant (not just the ancestors)
+    to re-render fresh on the next frame.
+
+    Pairs with L<mark-screen-dirty> for the common "start from the
+    root of the attached tree" case. )
+method mark-dirty-tree() {
+    self.mark-dirty;
+    # Use duck-typing instead of a type-check against Selkie::Container
+    # — Container `does Selkie::Widget`, so a `use` here would be a
+    # circular dependency. `can('children')` is the same condition
+    # Selkie::App uses internally for its mark-all-dirty helper.
+    if self.can('children') {
+        for self.children -> $child {
+            $child.mark-dirty-tree;
+        }
+    }
+    if self.can('content') {
+        my $c = self.content;
+        $c.mark-dirty-tree if $c.defined;
+    }
+}
+
+#|( Walk up to the root of the attached tree and flag the whole
+    screen for a full render pass (via C<mark-dirty-tree>). Use
+    when a local state change should invalidate every widget's
+    layout — typically a dynamically-sized widget whose height or
+    width just changed in a way that shifts its siblings'
+    allocations.
+
+    Cheap for rare events (rare meaning: not per-keystroke). For
+    high-frequency triggers, prefer the default C<mark-dirty>
+    propagation and let each render walk figure out what actually
+    needs redrawing. )
+method mark-screen-dirty() {
+    my $root = self;
+    while $root.parent.defined {
+        $root = $root.parent;
+    }
+    $root.mark-dirty-tree;
 }
 
 #|( Clear the dirty flag. Call this as the last line of your C<render>
