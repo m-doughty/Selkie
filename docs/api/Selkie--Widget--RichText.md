@@ -57,6 +57,18 @@ my $preview = Selkie::Widget::RichText.new(
 # Content longer than 3 lines shows the first 2 lines + '…'
 ```
 
+Pre-rendering line count
+------------------------
+
+```raku
+# Static wrap — lets variable-height container layouts size their
+# slot to the exact rendered line count BEFORE the widget is
+# attached to a plane. The same algorithm the live renderer uses,
+# so card height matches render height to the row.
+my @lines = Selkie::Widget::RichText.wrap-spans(@spans, 60);
+say @lines.elems;   # exact wrapped-line count at width 60
+```
+
 SEE ALSO
 ========
 
@@ -99,4 +111,15 @@ method logical-height() returns UInt
 ```
 
 Number of wrapped lines at the current width. Used by ScrollView.
+
+### method wrap-spans
+
+```raku
+method wrap-spans(
+    @spans,
+    Int $width where { ... }
+) returns Array
+```
+
+Pure word-wrap: take a list of Spans and a target width, return the wrapped-line array (each element is an Array[Span]). Same algorithm the live renderer uses via `!rewrap`, exposed as a class method so consumers that need the exact line count without attaching a plane (e.g. variable-height card layouts) can size themselves accurately. Always returns at least one (possibly empty) line.
 

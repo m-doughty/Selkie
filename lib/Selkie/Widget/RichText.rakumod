@@ -64,6 +64,19 @@ my $preview = Selkie::Widget::RichText.new(
 
 =end code
 
+=head2 Pre-rendering line count
+
+=begin code :lang<raku>
+
+# Static wrap — lets variable-height container layouts size their
+# slot to the exact rendered line count BEFORE the widget is
+# attached to a plane. The same algorithm the live renderer uses,
+# so card height matches render height to the row.
+my @lines = Selkie::Widget::RichText.wrap-spans(@spans, 60);
+say @lines.elems;   # exact wrapped-line count at width 60
+
+=end code
+
 =head1 SEE ALSO
 
 =item L<Selkie::Widget::RichText::Span> — the fragment value class
@@ -173,24 +186,45 @@ method !render-line(UInt $row, @line-spans, Selkie::Style $default-style) {
 }
 
 method !rewrap() {
-    my UInt $width = self.cols max 1;
-    @!wrapped-lines = ();
-
-    # Flatten all spans into a single stream, splitting on newlines
-    my @logical-lines = self!split-spans-by-newline;
-
-    for @logical-lines -> @line-spans {
-        self!wrap-line(@line-spans, $width);
-    }
-
-    @!wrapped-lines.push([Selkie::Widget::RichText::Span.new(text => '')]) unless @!wrapped-lines;
+    @!wrapped-lines = self.wrap-spans(@!spans, self.cols max 1);
 }
 
-method !split-spans-by-newline(--> Array) {
+#|( Pure word-wrap: take a list of Spans and a target width, return
+    the wrapped-line array (each element is an Array[Span]). Same
+    algorithm the live renderer uses via C<!rewrap>, exposed as a
+    class method so consumers that need the exact line count without
+    attaching a plane (e.g. variable-height card layouts) can size
+    themselves accurately. Always returns at least one (possibly
+    empty) line. )
+method wrap-spans(@spans, UInt $width --> Array) {
+    my UInt $w = $width max 1;
+    my @wrapped;
+
+    # Flatten spans into per-newline logical lines, then word-wrap each
+    # to $w. Two passes so embedded "\n" produces a hard break that
+    # word-wrap never undoes.
+    my @logical-lines = split-spans-by-newline(@spans);
+    for @logical-lines -> @line-spans {
+        wrap-line-into(@line-spans, $w, @wrapped);
+    }
+
+    @wrapped.push([Selkie::Widget::RichText::Span.new(text => '')]) unless @wrapped;
+    @wrapped;
+}
+
+# --- Wrap helpers (file-scoped subs) ---
+#
+# Kept as module-private subs rather than methods so wrap-spans can
+# call them without Mu-binding self. Behavior is identical to the
+# previous instance-method versions; the only change is that they
+# take @target / @spans by parameter instead of touching @!spans /
+# @!wrapped-lines directly.
+
+sub split-spans-by-newline(@spans --> Array) {
     my @result;
     my @current-line;
 
-    for @!spans -> $span {
+    for @spans -> $span {
         # Split on any newline (handles \n, \r\n, \r)
         # :v preserves separators as Match objects between parts
         my @parts = $span.text.split(/\n/, :v);
@@ -209,7 +243,7 @@ method !split-spans-by-newline(--> Array) {
     @result;
 }
 
-method !wrap-line(@line-spans, UInt $width) {
+sub wrap-line-into(@line-spans, UInt $width, @target) {
     my @current-row;
     my UInt $col = 0;
 
@@ -227,14 +261,14 @@ method !wrap-line(@line-spans, UInt $width) {
             if $col + $token-len > $width && $col > 0 {
                 # If it's whitespace at a line break, skip it
                 if $token ~~ /^ \s+ $/ {
-                    @!wrapped-lines.push(@current-row.clone);
+                    @target.push(@current-row.clone);
                     @current-row = ();
                     $col = 0;
                     next;
                 }
 
                 # Wrap: start a new line
-                @!wrapped-lines.push(@current-row.clone);
+                @target.push(@current-row.clone);
                 @current-row = ();
                 $col = 0;
             }
@@ -250,7 +284,7 @@ method !wrap-line(@line-spans, UInt $width) {
                     $col += $chunk-len;
                     $pos += $chunk-len;
                     if $col >= $width && $pos < $token-len {
-                        @!wrapped-lines.push(@current-row.clone);
+                        @target.push(@current-row.clone);
                         @current-row = ();
                         $col = 0;
                     }
@@ -265,7 +299,7 @@ method !wrap-line(@line-spans, UInt $width) {
     }
 
     # Push the final row (even if empty — preserves blank lines)
-    @!wrapped-lines.push(@current-row);
+    @target.push(@current-row);
 }
 
 method !on-resize() {

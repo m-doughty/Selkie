@@ -41,6 +41,25 @@ Use this when your items are structured: chat messages with avatars,
 tasks with metadata, email threads, etc. Use C<ListView> if items are
 just strings.
 
+=head2 Keybindings
+
+=item C<Up> / C<Down> / mouse wheel — move the selection between cards.
+=item C<Home> / C<End> — jump to first / last card.
+=item C<PageUp> / C<PageDown> — scroll I<within> the selected card.
+      CardList prefers C<scroll-content-page-by(Int $direction)> on the
+      card widget if it's available — passing C<+1> for PgDown and C<-1>
+      for PgUp lets the card decide what one page means relative to its
+      OWN viewport (chat messages have body viewports much smaller than
+      the chat pane itself, and over-scrolling by the chat pane's row
+      count would jump straight past most of the body). Falls back to
+      C<scroll-content-by(±self.rows)> for legacy widgets. Cards
+      without either method simply absorb the keypress (no
+      cross-card movement on PgUp/PgDown — Up/Down is the only
+      cross-card movement, by design, so a long scrollable card never
+      surprises the user by jumping to a neighbour). Use it for chat
+      messages, code blocks, log entries — anywhere a single card
+      can outgrow its slot.
+
 =head2 Item shape
 
 Each item is registered with:
@@ -93,6 +112,19 @@ has @!items;        # Array of hashes: { widget, root, height, border? }
 has Int $!selected = 0;
 has Int $!scroll-top = 0;
 has Supplier $!select-supplier = Supplier.new;
+
+#|( When True and the rendered cards (from C<scroll-top> through the
+    last item) sum to less than the viewport height, render shifts
+    every visible card down so the LAST item ends at the bottom of
+    the viewport rather than leaving empty space below it. Designed
+    for chat-style consumers where new content arrives at the
+    bottom and the user expects the latest message to be anchored
+    there even when the whole conversation fits on screen.
+
+    Default False — classic top-aligned list rendering for inventory
+    / file-browser / pickers (e.g. AvatarList) where empty space
+    below the last item is the right behaviour. )
+has Bool $.bottom-anchor = False;
 
 method new(*%args) {
     %args<focusable> //= True;
@@ -225,8 +257,23 @@ method render() {
     }
     my $top-clip = ($total-to-selected - $vh) max 0;
 
+    # Bottom anchor: when the visible items (scroll-top through end)
+    # don't fill the viewport, push them down so the last item lands
+    # at the bottom edge instead of leaving empty space below. The
+    # only legal scroll-top here is one where the whole tail fits;
+    # if it didn't, recalc-scroll would have advanced scroll-top
+    # already and total-from-scroll would equal the viewport.
+    my $bottom-shift = 0;
+    if $!bottom-anchor {
+        my $total-from-scroll = 0;
+        for $!scroll-top ..^ @!items.elems -> $i {
+            $total-from-scroll += @!items[$i]<height>;
+        }
+        $bottom-shift = ($vh - $total-from-scroll) max 0;
+    }
+
     # Render items
-    my Int $y = 0 - $top-clip;
+    my Int $y = $bottom-shift - $top-clip;
     my Int $first = $!scroll-top;
     my Int $last = $!scroll-top - 1;
 
@@ -309,10 +356,12 @@ method handle-event(Selkie::Event $ev --> Bool) {
 
     if $ev.event-type ~~ KeyEvent {
         given $ev.id {
-            when NCKEY_UP   { self!select-prev; return True }
-            when NCKEY_DOWN { self!select-next; return True }
-            when NCKEY_HOME { self.select-first; return True }
-            when NCKEY_END  { self.select-last; return True }
+            when NCKEY_UP     { self!select-prev; return True }
+            when NCKEY_DOWN   { self!select-next; return True }
+            when NCKEY_HOME   { self.select-first; return True }
+            when NCKEY_END    { self.select-last; return True }
+            when NCKEY_PGUP   { return self!scroll-selected-page(-1); }
+            when NCKEY_PGDOWN { return self!scroll-selected-page( 1); }
         }
     }
 
@@ -324,6 +373,31 @@ method handle-event(Selkie::Event $ev --> Bool) {
     }
 
     False;
+}
+
+#|( Delegate a one-page scroll to the selected card. Tries
+    C<scroll-content-page-by(±1)> first so the card can use its OWN
+    viewport size (a chat message's body is far smaller than the
+    chat pane); falls back to C<scroll-content-by(±self.rows)> for
+    legacy cards that only expose the absolute-delta API. Returns
+    True (event handled) whenever a card is selected, even when the
+    card doesn't support either method — the alternative would be
+    falling through to cross-card navigation, which surprises users
+    who expect PgDown to walk further into the current message.
+    Always returning True keeps PgUp/PgDown's contract simple:
+    "scroll inside if you can, otherwise nothing happens". )
+method !scroll-selected-page(Int $direction --> Bool) {
+    return False unless @!items;
+    my $widget = @!items[$!selected]<widget>;
+    return True unless $widget.defined;
+    if $widget.^can('scroll-content-page-by') {
+        $widget.scroll-content-page-by($direction);
+        self.mark-dirty;
+    } elsif $widget.^can('scroll-content-by') {
+        $widget.scroll-content-by($direction * self.rows.Int);
+        self.mark-dirty;
+    }
+    True;
 }
 
 method !select-next() {

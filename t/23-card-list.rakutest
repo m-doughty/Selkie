@@ -18,6 +18,15 @@ class StubWidget does Selkie::Widget {
     }
 }
 
+# Variant that records every scroll delegation. CardList's PgUp/PgDown
+# duck-types via .^can('scroll-content-by'); this stub exposes that
+# method so we can assert the right delta lands here.
+class ScrollableStub does Selkie::Widget {
+    has @.scroll-deltas;
+    method render() { self.clear-dirty }
+    method scroll-content-by(Int $delta) { @!scroll-deltas.push($delta) }
+}
+
 use Selkie::Test::Keys;
 
 sub add-stub($cl, Int :$height = 5) {
@@ -27,7 +36,7 @@ sub add-stub($cl, Int :$height = 5) {
     $widget;
 }
 
-plan 18;
+plan 23;
 
 subtest "construction defaults" => {
     plan 3;
@@ -212,4 +221,82 @@ subtest "multiple on-select taps accumulate" => {
     $cl.select-index(1);
     is $a, 1, "first tap got index";
     is $b, 1, "second tap got index";
+};
+
+subtest "PgDown delegates to selected card's scroll-content-by" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    # Need to fake a viewport-rows count for the delta calculation.
+    # CardList!scroll-selected-by uses self.rows for the page step;
+    # without a plane that's 0. resize() bypasses init-plane and gives
+    # us a deterministic non-zero number to assert against.
+    $cl.resize(7, 40);
+    my $w = ScrollableStub.new;
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.fixed(20));
+    $cl.add-item($w, :$root, :height(20));
+    my $handled = $cl.handle-event(key-event(id => NCKEY_PGDOWN));
+    ok $handled,                  "PgDown is reported handled";
+    is $w.scroll-deltas.elems, 1, "scroll-content-by called once";
+    is $w.scroll-deltas[0],    7, "delta = +viewport rows";
+};
+
+subtest "PgUp delegates with a negative delta" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    $cl.resize(5, 40);
+    my $w = ScrollableStub.new;
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.fixed(20));
+    $cl.add-item($w, :$root, :height(20));
+    my $handled = $cl.handle-event(key-event(id => NCKEY_PGUP));
+    ok $handled,                  "PgUp is reported handled";
+    is $w.scroll-deltas.elems, 1, "scroll-content-by called once";
+    is $w.scroll-deltas[0],   -5, "delta = -viewport rows";
+};
+
+subtest "PgUp/PgDown on a non-scrollable widget is consumed but no-op" => {
+    plan 3;
+    # Cards that don't expose scroll-content-by (plain stubs, legacy
+    # widgets) should still see the event reported handled — falling
+    # through to cross-card navigation would surprise the user mid-
+    # message — but should NOT trigger any state change.
+    my $cl = Selkie::Widget::CardList.new;
+    $cl.resize(7, 40);
+    add-stub($cl, height => 5);
+    my $before = $cl.selected;
+    ok $cl.handle-event(key-event(id => NCKEY_PGDOWN)),
+        "PgDown reported handled even without scroll-content-by";
+    ok $cl.handle-event(key-event(id => NCKEY_PGUP)),
+        "PgUp reported handled even without scroll-content-by";
+    is $cl.selected, $before,
+        "selection unchanged — PgUp/PgDown never traverses cards";
+};
+
+subtest "PgUp/PgDown on an empty list is not handled" => {
+    plan 2;
+    # No items → return False so the parent container can route the
+    # key elsewhere (e.g. a global PgUp/PgDown for a different pane).
+    my $cl = Selkie::Widget::CardList.new;
+    $cl.resize(5, 40);
+    nok $cl.handle-event(key-event(id => NCKEY_PGDOWN)),
+        "PgDown on empty CardList falls through";
+    nok $cl.handle-event(key-event(id => NCKEY_PGUP)),
+        "PgUp on empty CardList falls through";
+};
+
+subtest "bottom-anchor flag" => {
+    plan 3;
+    my $default = Selkie::Widget::CardList.new;
+    nok $default.bottom-anchor, "off by default";
+
+    my $anchored = Selkie::Widget::CardList.new(bottom-anchor => True);
+    ok $anchored.bottom-anchor, "settable via constructor";
+
+    # Behavioural smoke test: with bottom-anchor on, select-last on a
+    # short list (total height < viewport) should still leave the
+    # last card index selected — render alignment differs but the
+    # selection contract is unchanged. Regression guard.
+    add-stub($anchored, height => 5) for ^3;
+    $anchored.resize(50, 40);
+    $anchored.select-last;
+    is $anchored.selected, 2, "selection still tracks last item under bottom-anchor";
 };

@@ -406,7 +406,7 @@ method set-theme(
 ) returns Mu
 ```
 
-Override the theme for this widget and its subtree. The new theme is used on the next render. Useful for scoping a different look to a specific panel (e.g. a modal with its own palette).
+Override the theme for this widget and its subtree. Repaints this widget's plane base, marks it dirty, then recurses into `.children` and `.content` so every descendant's plane base is repainted too. The recursion matters: `ncplane_erase` on a child plane fills with that child's base cell, which was set the first time `set-theme` or `set-store` ran on it. Without the cascade here, only the root on which the caller invoked `set-theme` would repaint, and any cell a descendant didn't explicitly write would keep showing the OLD theme background — the visible symptom is "I changed theme and the tab bar / hint footer kept the old colour". Equivalent shape to `set-store` just below — same `self.can` detection so containers (children) and decorators (content) are both reached without coupling `Widget` to either role.
 
 ### method sync-plane-base
 
@@ -415,6 +415,16 @@ method sync-plane-base() returns Mu
 ```
 
 Paint this widget's plane base cell using the active theme's `base` style so `ncplane_erase` and any cell the widget doesn't explicitly write will carry the theme's background / foreground rather than notcurses's default-empty state (which renders as the terminal's own default). Safe to call repeatedly and before the plane or theme are ready — no-op in those cases.
+
+### method set-sizing
+
+```raku
+method set-sizing(
+    Selkie::Sizing::Sizing $s
+) returns Mu
+```
+
+Replace the widget's sizing constraint after construction. The parent layout picks up the new value on its next reflow. Useful for conditional UI — a form field that should disappear under one mode can be set to `Sizing.fixed(0)` to collapse out of the flow without removing it from the widget tree. Subclasses with height-driven content (e.g. `MultiLineInput` growing as the user types) call this from inside their own re-measure logic.
 
 ### method store
 

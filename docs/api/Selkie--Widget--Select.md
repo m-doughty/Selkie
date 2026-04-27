@@ -60,3 +60,13 @@ SEE ALSO
 
   * [Selkie::Widget::ListView](Selkie--Widget--ListView.md) — full-height scrollable list
 
+### method select-by-value
+
+```raku
+method select-by-value(
+    Str:D $value
+) returns Mu
+```
+
+Programmatically select the entry matching `$value` (string equality on the items list). No-op when the value isn't present or when it's already selected, so callers don't have to guard against absent items themselves. Fires `on-change` only when the selection actually moves.
+

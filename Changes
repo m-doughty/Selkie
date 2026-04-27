@@ -2,6 +2,124 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.5.0  2026-04-27T22:51:02+01:00
+    - `Widget::TextInput` and `Widget::MultiLineInput` now treat
+      Shift+Left / Shift+Right as word-jump and Shift+Backspace as
+      delete-previous-word. Word boundaries are the standard
+      `\w` / non-`\w` transition (Unicode-aware via Raku's regex).
+      Shared helpers `next-word-pos` / `prev-word-pos` are exported
+      from `TextInput` under the `:words` tag — `MultiLineInput`
+      imports them and adds 2D handling: shift-left at column 0
+      crosses to the end of the previous line; shift-right at end-
+      of-line crosses to column 0 of the next; shift-backspace at
+      column 0 falls through to ordinary line-join backspace.
+
+    - `App.run` paste drain rewritten to batch consecutive printable-
+      char events into a single `insert-text(Str)` call on the
+      focused widget. The previous per-event dispatch path triggered
+      an O(n) buffer rebuild for every character (substr + concat +
+      concat), making a paste of n chars cost O(n²) total — fine
+      for small bursts but pathological for the >5K-char range
+      (10 000 words = ~60 KB pastes truncated halfway through a word
+      because the drain ran out of wall-clock budget before
+      processing the queue). The new path collects paste-eligible
+      events (printable, no Ctrl / Alt / Super) into a List, joins
+      once, and applies via the widget's batch insert — single
+      buffer rebuild per paste, O(n) total. Wall-clock cap raised to
+      200 ms to give the drain comfortable headroom on huge pastes
+      while still bounding pathological infinite-input sources.
+
+    - `Widget::TextInput.insert-text(Str)` and
+      `Widget::MultiLineInput.insert-text(Str)` are the public batch-
+      insert API the App's drain loop calls. TextInput strips control
+      chars and newlines (single-line semantics); MultiLineInput
+      splits on `\n` and lays the pasted content across multiple
+      buffer lines with the cursor landing at the end of the last
+      pasted segment. Application code can call them directly to
+      programmatically populate an input.
+
+    - `Widget::Image.render`: defensively cap the blit-plane footprint
+      at the Image's own cell dimensions. Under `NCSCALE_SCALE` the
+      geometry returned by `ncvisual_geom` should already fit the
+      plane, but on certain combinations of blitter, terminal cell-
+      pixel size, and image aspect ratio it can report `rcelly` /
+      `rcellx` one cell over the plane. The blit-plane below was
+      then created larger than its parent — notcurses doesn't clip
+      child planes — and the sprixel painted onto the next widget's
+      cells. App::Cantina users observed this as the avatar of one
+      message ghosting through the bottom border of its card and
+      onto the message below. The cap is a one-line guard:
+      `($geom.rcelly min self.rows) max 1`.
+
+    - `Widget::ScrollView` rendering rewritten for consistency. Three
+      bugs fixed:
+
+      1. Out-of-view children were `reposition`ed to `(viewport-h, 0)`
+         — i.e. the BOTTOM EDGE of the ScrollView. The plane's rows
+         then extended BELOW that point, painting ghost cells onto
+         whatever widget rendered next in the parent layout. The
+         visible symptom was an item below the ScrollView going
+         blank (its cells overwritten) after a scroll. Now uses
+         `Widget.park` (move to 10_000, 0) just like Image does.
+
+      2. Children's wrap-width flipped between `self.cols` and
+         `self.cols - 1` based on whether the scrollbar was needed,
+         re-wrapping the body and producing one extra line that
+         then DID need a scrollbar — feedback loop that clipped the
+         bottom row under the scrollbar. Now reserves the scrollbar
+         column unconditionally when `show-scrollbar` is True; the
+         scrollbar itself is still drawn only on overflow but the
+         content-width never changes mid-render.
+
+      3. `scroll-by` was the only public scroll mutator that took a
+         row-count, leaving callers like CardList computing pages
+         themselves with their OWN row count (the chat pane's
+         height) — way too big for the inner body's smaller
+         viewport. Added `scroll-page-by(Int $direction)` that
+         scrolls by the SCROLLVIEW'S OWN viewport-height in
+         `+1` / `-1` page increments. CardList's PgUp/PgDown
+         now delegates via the duck-typed
+         `scroll-content-page-by(±1)` (with a fallback to the
+         legacy `scroll-content-by(±self.rows)` for older cards).
+
+    - `Widget::ScrollView.follow-bottom`: new opt-in Bool attribute
+      (default False). When True, each render captures whether the
+      scroll offset was at `max-offset` BEFORE content-height
+      updates, and if so snaps the new offset to the new max so
+      streamed content stays visible. Any user scroll-up disables
+      the auto-pin naturally (the captured "at end" check fails
+      next frame); scrolling back to the bottom re-enables it.
+      Designed for log views and chat-message bodies where the
+      newest content matters most. Silent passthrough when the
+      flag is off.
+
+    - SIGWINCH-driven resize wake. The main loop now installs its own
+      SIGWINCH tap via Raku's `signal()` Supply and disables notcurses's
+      built-in handler with `NCOPTION_NO_WINCH_SIGHANDLER`. The handler
+      sets an atomic flag; the idle sleep is split into ~16ms chunks so
+      a resize wakes the loop within roughly one frame instead of
+      waiting for the full 250ms deep-idle budget. `!check-terminal-
+      resize` now leads with `notcurses_refresh` to force a TIOCGWINSZ
+      re-query (necessary because we own the signal handler now and
+      notcurses no longer updates stdplane dims on its own). Closes
+      the macOS-specific symptom where a terminal resize during idle
+      wasn't picked up until the user pressed a key — most visible in
+      App::Cantina, where stale avatar sprixels stayed painted at the
+      old position. Cairn and any future Image-using consumer benefits
+      too.
+
+    - `Widget::CardList.bottom-anchor`: new opt-in Bool attribute
+      (default False, preserving existing behaviour). When True and
+      the visible cards (scroll-top through the last item) sum to
+      less than the viewport height, render shifts every visible
+      card down so the LAST item ends at the bottom of the viewport
+      rather than leaving empty space below it. Designed for chat-
+      style consumers (App::Cantina's ChatView) where new content
+      arrives at the bottom and the user expects the latest message
+      to be anchored there even when the whole conversation fits on
+      screen. Pickers / file browsers / inventory lists keep the
+      default top-aligned rendering.
+
 0.4.6  2026-04-25T12:52:41+01:00
     - `Widget.set-viewport` now marks the widget dirty when its
       absolute position (abs-y / abs-x) changes. Most widgets

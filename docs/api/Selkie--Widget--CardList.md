@@ -34,6 +34,15 @@ Like [Selkie::Widget::ListView](Selkie--Widget--ListView.md), but each item is a
 
 Use this when your items are structured: chat messages with avatars, tasks with metadata, email threads, etc. Use `ListView` if items are just strings.
 
+Keybindings
+-----------
+
+  * `Up` / `Down` / mouse wheel — move the selection between cards.
+
+  * `Home` / `End` — jump to first / last card.
+
+  * `PageUp` / `PageDown` — scroll *within* the selected card. CardList prefers `scroll-content-page-by(Int $direction)` on the card widget if it's available — passing `+1` for PgDown and `-1` for PgUp lets the card decide what one page means relative to its OWN viewport (chat messages have body viewports much smaller than the chat pane itself, and over-scrolling by the chat pane's row count would jump straight past most of the body). Falls back to `scroll-content-by(±self.rows)` for legacy widgets. Cards without either method simply absorb the keypress (no cross-card movement on PgUp/PgDown — Up/Down is the only cross-card movement, by design, so a long scrollable card never surprises the user by jumping to a neighbour). Use it for chat messages, code blocks, log entries — anywhere a single card can outgrow its slot.
+
 Item shape
 ----------
 
@@ -75,6 +84,10 @@ SEE ALSO
 
   * [Selkie::Widget::ScrollView](Selkie--Widget--ScrollView.md) — non-interactive virtual scroll
 
+### has Bool $.bottom-anchor
+
+When True and the rendered cards (from `scroll-top` through the last item) sum to less than the viewport height, render shifts every visible card down so the LAST item ends at the bottom of the viewport rather than leaving empty space below it. Designed for chat-style consumers where new content arrives at the bottom and the user expects the latest message to be anchored there even when the whole conversation fits on screen. Default False — classic top-aligned list rendering for inventory / file-browser / pickers (e.g. AvatarList) where empty space below the last item is the right behaviour.
+
 ### method handle-resize
 
 ```raku
@@ -101,4 +114,14 @@ method children() returns List
 ```
 
 Expose each card's root (and its border, if any) as `children` so Container-level cascade helpers (notably `!unsubscribe-tree`) reach them. CardList stores its cards in `@!items` rather than the inherited `@!children` array, so without this override the cascade walks an empty list and leaks subscriptions anchored inside cards.
+
+### method scroll-selected-page
+
+```raku
+method scroll-selected-page(
+    Int $direction
+) returns Bool
+```
+
+Delegate a one-page scroll to the selected card. Tries `scroll-content-page-by(±1)` first so the card can use its OWN viewport size (a chat message's body is far smaller than the chat pane); falls back to `scroll-content-by(±self.rows)` for legacy cards that only expose the absolute-delta API. Returns True (event handled) whenever a card is selected, even when the card doesn't support either method — the alternative would be falling through to cross-card navigation, which surprises users who expect PgDown to walk further into the current message. Always returning True keeps PgUp/PgDown's contract simple: "scroll inside if you can, otherwise nothing happens".
 

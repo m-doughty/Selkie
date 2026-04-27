@@ -258,8 +258,19 @@ method render() {
     $probe.set-plane(self.plane);
     ncvisual_geom($nc, $!visual, $probe, $geom);
 
-    my UInt $img-rows = $geom.rcelly;
-    my UInt $img-cols = $geom.rcellx;
+    # Cap the rendered cell footprint at our own plane size. Under
+    # NCSCALE_SCALE the geometry should already fit, but if any
+    # combination of blitter, terminal cell-pixel size, and image
+    # dimensions makes notcurses report rcelly / rcellx one cell over
+    # the plane, the blit-plane below would extend past us — and
+    # notcurses doesn't clip child planes to their parent. The
+    # sprixel pixels then paint at terminal pixel positions OUTSIDE
+    # this Image's cell area, ghosting onto the next widget down or
+    # to the right. The cap is a defensive guarantee that whatever
+    # notcurses thinks the geometry needs, we never produce a
+    # blit-plane bigger than our own cells.
+    my UInt $img-rows = ($geom.rcelly min self.rows) max 1;
+    my UInt $img-cols = ($geom.rcellx min self.cols) max 1;
     my UInt $offset-y = ($img-rows < self.rows) ?? (self.rows - $img-rows) div 2 !! 0;
     my UInt $offset-x = ($img-cols < self.cols) ?? (self.cols - $img-cols) div 2 !! 0;
 

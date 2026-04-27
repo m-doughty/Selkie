@@ -130,6 +130,17 @@ method select-index(UInt $idx) {
     self.mark-dirty;
 }
 
+#|( Programmatically select the entry matching C<$value> (string
+    equality on the items list). No-op when the value isn't present
+    or when it's already selected, so callers don't have to guard
+    against absent items themselves. Fires C<on-change> only when the
+    selection actually moves. )
+method select-by-value(Str:D $value) {
+    my $idx = @!items.first($value, :k);
+    return without $idx;
+    self.select-index($idx.UInt);
+}
+
 method set-focused(Bool $f) {
     $!focused = $f;
     self!close-dropdown unless $f;

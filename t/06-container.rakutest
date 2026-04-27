@@ -4,6 +4,8 @@ use lib 'lib';
 use Selkie::Widget;
 use Selkie::Container;
 use Selkie::Sizing;
+use Selkie::Theme;
+use Selkie::Style;
 
 # Concrete stubs for testing the Container role
 class TestWidget does Selkie::Widget {
@@ -17,7 +19,40 @@ class TestContainer does Selkie::Container {
     }
 }
 
-plan 12;
+# Decorator-shape stub: holds a single child under .content rather than
+# in .children (mirrors Border / Modal). Used to verify set-theme
+# cascades through the .content branch as well as .children.
+class TestDecorator does Selkie::Widget {
+    has Selkie::Widget $.content is rw;
+    method render() { self.clear-dirty }
+}
+
+# Build a fresh, identity-distinguishable Selkie::Theme. Selkie::Theme
+# has a dozen-plus required slots; here we paint them all with one
+# placeholder Style so the cascade test can compare by `===` rather
+# than per-slot equality. Vary :bg to make two themes that the test
+# can tell apart in case we want overlapping subtests in future.
+sub make-test-theme(UInt :$bg = 0x000000) {
+    my $s = Selkie::Style.new(fg => 0xFFFFFF, bg => $bg);
+    Selkie::Theme.new(
+        base              => $s,
+        border            => $s,
+        border-focused    => $s,
+        text              => $s,
+        text-dim          => $s,
+        text-highlight    => $s,
+        input             => $s,
+        input-focused     => $s,
+        input-placeholder => $s,
+        scrollbar-track   => $s,
+        scrollbar-thumb   => $s,
+        divider           => $s,
+        tab-active        => $s,
+        tab-inactive      => $s,
+    );
+}
+
+plan 14;
 
 subtest "empty container" => {
     plan 2;
@@ -124,4 +159,60 @@ subtest "children list is immutable copy" => {
     $c.add(TestWidget.new);
     my @kids = $c.children;
     is $c.children.elems, 1, "original unaffected by external reference";
+};
+
+subtest "set-theme cascades through nested children" => {
+    plan 4;
+    # Build outer > inner > leaf so we can verify the cascade reaches
+    # both the immediate child AND a grandchild — i.e. each child's
+    # set-theme also recurses into its own children rather than only
+    # the top-level call processing the first ply.
+    #
+    # After cascading, we DETACH the inner / leaf widgets from the
+    # parent chain before checking their theme. Widget.theme falls
+    # back to a parent-walk when its own $!theme is undefined — so a
+    # naive `$leaf.theme === $new` could return $new just from the
+    # walk even if the cascade never touched the leaf. Detaching
+    # forces theme() to read the leaf's own slot, proving the cascade
+    # actually wrote it.
+    my $outer = TestContainer.new;
+    my $inner = TestContainer.new;
+    my $leaf  = TestWidget.new;
+    $outer.add($inner);
+    $inner.add($leaf);
+
+    my $new = make-test-theme(bg => 0x002244);
+    $outer.set-theme($new);
+
+    ok $outer.theme === $new, "outer carries the new theme";
+    $inner.parent = Selkie::Widget;
+    ok $inner.theme === $new, "immediate-child container carries it (own slot)";
+    $leaf.parent = Selkie::Widget;
+    ok $leaf.theme  === $new, "grandchild leaf carries it (own slot)";
+    # mark-dirty should fire all the way down — render-children relies
+    # on per-child dirty state being correct after a theme swap.
+    ok $leaf.is-dirty, "grandchild marked dirty by the cascade";
+};
+
+subtest "set-theme cascades through .content (decorator shape)" => {
+    plan 3;
+    # Mirrors the Border / Modal layout where the single owned widget
+    # lives under .content, not in .children. The Widget.set-theme
+    # cascade should follow that branch via self.can('content').
+    my $deco = TestDecorator.new;
+    my $inner = TestContainer.new;
+    my $leaf = TestWidget.new;
+    $deco.content = $inner;
+    $inner.add($leaf);
+
+    my $new = make-test-theme(bg => 0x110011);
+    $deco.set-theme($new);
+
+    ok $deco.theme === $new, "decorator carries the new theme";
+    # Detach so the assertion checks the cascade wrote the slot
+    # rather than the parent-walk fallback returning the same value.
+    $inner.parent = Selkie::Widget;
+    ok $inner.theme === $new, "decorator's content carries it (own slot)";
+    $leaf.parent = Selkie::Widget;
+    ok $leaf.theme === $new, "leaf under content carries it via .children recursion";
 };

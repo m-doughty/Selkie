@@ -9,7 +9,7 @@ use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 
-plan 31;
+plan 38;
 
 subtest "construction defaults" => {
     plan 5;
@@ -384,4 +384,104 @@ subtest "clear shrinks back to 1" => {
     $mli.set-text("a\nb\nc");
     $mli.clear;
     is $mli.sizing.value, 1, "back to 1 after clear";
+};
+
+# --- Word-jump shift-arrow behaviour ---
+
+subtest "shift+left jumps within a line then crosses to previous" => {
+    plan 4;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 6);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello world\nfoo bar baz");
+    # cursor at end of line 2 ("baz" end). shift+left lands at start of "baz".
+    $mli.handle-event(key-event('shift+left'));
+    is $mli.cursor-row, 1, "still on second line";
+    is $mli.cursor-col, 8, "at start of 'baz'";
+
+    # Walk left twice more — through 'bar' and 'foo' — then once more
+    # crosses the line boundary to end of "world" on line 1.
+    $mli.handle-event(key-event('shift+left'));
+    $mli.handle-event(key-event('shift+left'));
+    $mli.handle-event(key-event('shift+left'));   # at col 0 → cross line
+    is $mli.cursor-row, 0, "crossed back to line 1";
+    is $mli.cursor-col, 6, "at start of 'world' on line 1";
+};
+
+subtest "shift+right jumps across line boundary" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 6);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello\nworld");
+    # cursor starts at end of line 2. Move to end of line 1 first.
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    $mli.handle-event(key-event(id => NCKEY_UP));
+    $mli.handle-event(key-event(id => NCKEY_END));
+    # Now at line 0, col 5 (end of "hello"). shift+right crosses to (1, 0).
+    $mli.handle-event(key-event('shift+right'));
+    is $mli.cursor-row, 1, "moved to next line";
+    is $mli.cursor-col, 0, "at column 0 of next line";
+};
+
+subtest "shift+backspace deletes the previous word" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 6);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello world foo");
+    # cursor at end. shift+backspace eats 'foo'.
+    $mli.handle-event(key-event('shift+backspace'));
+    is $mli.text, 'hello world ', "trailing word deleted";
+};
+
+subtest "shift+backspace at column 0 joins with previous line" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 6);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello\nworld");
+    # cursor at end of line 2. Move to start of line 2.
+    $mli.handle-event(key-event(id => NCKEY_HOME));
+    $mli.handle-event(key-event('shift+backspace'));
+    is $mli.text, 'helloworld', "lines joined as if plain backspace";
+};
+
+# --- insert-text (paste batch path) ---
+
+subtest "insert-text drops a multi-line blob across lines" => {
+    plan 3;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 12);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.insert-text("alpha\nbeta\ngamma");
+    is $mli.text, "alpha\nbeta\ngamma", "three lines after a single insert";
+    is $mli.line-count, 3, "line count matches";
+    is $mli.cursor-row, 2, "cursor lands on the last pasted line";
+};
+
+subtest "insert-text in the middle of an existing line preserves the tail" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 12);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    $mli.set-text('helloworld');
+    # Cursor at end. Move to between 'hello' and 'world'.
+    for ^5 {
+        $mli.handle-event(key-event(id => NCKEY_LEFT));
+    }
+    $mli.insert-text("XX\nYY");
+    is $mli.text, "helloXX\nYYworld", "tail flows onto the new last line";
+    is $mli.line-count, 2, "now spans two lines";
+};
+
+subtest "insert-text scales to thousands of chars" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(2), max-lines => 64);
+    $mli.resize(2, 40);
+    $mli.set-focused(True);
+    my $body = ('lorem ipsum ' x 1_000).chomp;
+    $mli.insert-text($body);
+    is $mli.text.chars, $body.chars, "all chars retained";
+    is $mli.line-count, 1, "no newlines, single line";
 };

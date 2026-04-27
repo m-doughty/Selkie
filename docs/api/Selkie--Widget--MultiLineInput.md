@@ -56,3 +56,37 @@ SEE ALSO
 
   * [Selkie::Widget::TextStream](Selkie--Widget--TextStream.md) — append-only log (no editing)
 
+### method insert-text
+
+```raku
+method insert-text(
+    Str:D $text
+) returns Nil
+```
+
+Insert `$text` at the current cursor position in one operation, splitting on `\n` so multi-line pasted content lays across multiple buffer lines. Equivalent to typing each character in turn but with one buffer rebuild instead of one per char — O(n) total instead of O(n²). Used by the App's paste-batching drain loop.
+
+### method move-word-left
+
+```raku
+method move-word-left() returns Mu
+```
+
+Shift-Left: jump to the start of the current or previous word. When the cursor is at column 0, the jump crosses the line boundary and lands at the start of the last word on the previous line (or column 0 of that line if the previous line is empty).
+
+### method move-word-right
+
+```raku
+method move-word-right() returns Mu
+```
+
+Shift-Right: jump to the start of the next word. When the cursor is at the end of the current line, the jump crosses to column 0 of the next line.
+
+### method do-word-backspace
+
+```raku
+method do-word-backspace() returns Mu
+```
+
+Shift-Backspace: delete from the cursor back to the previous word boundary. At column 0, falls through to the regular backspace semantics so the line above is joined — matches what users expect from "delete previous word" in editors that also support multi-line.
+

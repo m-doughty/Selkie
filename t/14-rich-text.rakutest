@@ -5,7 +5,7 @@ use Selkie::Widget::RichText;
 use Selkie::Widget::RichText::Span;
 use Selkie::Style;
 
-plan 24;
+plan 30;
 
 # Tests use the public API: logical-height, spans, set-content, resize.
 
@@ -240,4 +240,75 @@ subtest "CRLF single line break" => {
     $rt.resize(10, 80);
     $rt.set-content((Selkie::Widget::RichText::Span.new(text => "Line one\r\nLine two"),));
     is $rt.logical-height, 2, "CRLF single newline = 2 lines";
+};
+
+# --- wrap-spans (static API) --------------------------------------------
+#
+# wrap-spans is the public, plane-free wrap. Variable-height container
+# layouts that need to size their slot before attaching the widget call
+# it directly. These tests exercise the static API specifically; the
+# logical-height tests above prove the live renderer still goes through
+# the same algorithm (since !rewrap now delegates to wrap-spans).
+
+subtest "wrap-spans empty input returns one blank line" => {
+    plan 2;
+    my @lines = Selkie::Widget::RichText.wrap-spans((), 80);
+    is @lines.elems, 1,        "exactly one line";
+    is @lines[0].elems, 0,     "the line is empty (no spans)";
+};
+
+subtest "wrap-spans single short span = 1 line" => {
+    plan 1;
+    my @lines = Selkie::Widget::RichText.wrap-spans(
+        (Selkie::Widget::RichText::Span.new(text => "hello"),),
+        80,
+    );
+    is @lines.elems, 1, "fits on one line at width 80";
+};
+
+subtest "wrap-spans hard-wraps token longer than width" => {
+    plan 1;
+    my @lines = Selkie::Widget::RichText.wrap-spans(
+        (Selkie::Widget::RichText::Span.new(text => "a" x 25),),
+        10,
+    );
+    is @lines.elems, 3, "25 chars at width 10 hard-wraps to 3 lines";
+};
+
+subtest "wrap-spans preserves blank line from \\n\\n" => {
+    plan 1;
+    my @lines = Selkie::Widget::RichText.wrap-spans(
+        (Selkie::Widget::RichText::Span.new(text => "para one\n\npara two"),),
+        80,
+    );
+    is @lines.elems, 3, "blank line between paragraphs counts";
+};
+
+subtest "wrap-spans skips leading whitespace on a wrapped line" => {
+    plan 1;
+    # "aaaa bbbb cccc" at width 5: "aaaa", "bbbb", "cccc" — leading
+    # whitespace after each wrap point is dropped, not folded into the
+    # next line.
+    my @lines = Selkie::Widget::RichText.wrap-spans(
+        (Selkie::Widget::RichText::Span.new(text => "aaaa bbbb cccc"),),
+        5,
+    );
+    is @lines.elems, 3, "three words wrap onto three lines";
+};
+
+subtest "wrap-spans static-call matches live logical-height" => {
+    plan 1;
+    # Parity proof: the result of the static API and the live renderer
+    # MUST agree on line count for the same spans + width. Guards
+    # against accidental divergence between !rewrap and wrap-spans.
+    my @spans = (
+        Selkie::Widget::RichText::Span.new(text => "first paragraph wraps at this width.\n"),
+        Selkie::Widget::RichText::Span.new(text => "second paragraph also wraps."),
+    );
+    my $rt = Selkie::Widget::RichText.new;
+    $rt.resize(10, 18);
+    $rt.set-content(@spans);
+    my @static = Selkie::Widget::RichText.wrap-spans(@spans, 18);
+    is @static.elems, $rt.logical-height,
+        "static wrap-spans line count matches instance logical-height";
 };

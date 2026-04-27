@@ -65,3 +65,35 @@ SEE ALSO
 
   * [Selkie::Widget::Button](Selkie--Widget--Button.md) — for commit-only actions
 
+### sub next-word-pos
+
+```raku
+sub next-word-pos(
+    Str:D $s,
+    Int:D $pos
+) returns Int
+```
+
+Find the position of the start of the next word at or after `$pos` in `$s`. Word = run of `\w` chars. Skips through the current char's class (word or non-word), then through any trailing non-word chars, landing at the first word char of the next word — or `$s.chars` if there is no next word. Used by shift-right word-jump and by `MultiLineInput`'s 2D variant.
+
+### sub prev-word-pos
+
+```raku
+sub prev-word-pos(
+    Str:D $s,
+    Int:D $pos
+) returns Int
+```
+
+Find the position of the start of the previous word at or before `$pos` in `$s`. Skips backwards through any non-word chars, then backwards through word chars, landing on the index of the first char of that word — or 0 if we walked off the start. Used by shift-left and shift-backspace.
+
+### method insert-text
+
+```raku
+method insert-text(
+    Str:D $text
+) returns Nil
+```
+
+Insert `$text` at the current cursor position in one operation. Equivalent to typing each character in turn, but does ONE buffer concat instead of one per char — drops paste cost from O(n²) to O(n). Newlines and other control chars in `$text` are stripped (single-line input). Used by the App's paste-batching drain loop; application code can call it directly to programmatically insert text.
+

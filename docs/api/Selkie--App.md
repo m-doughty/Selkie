@@ -174,6 +174,17 @@ $app.on-key('ctrl+n', :screen('notes'), -> $ { create-note });
 $app.on-key('ctrl+q', -> $ { $app.quit });   # unscoped = every screen
 ```
 
+Reacting to terminal resizes
+----------------------------
+
+`on-resize` fires whenever Selkie's polling detects a change in the host terminal's dimensions. Multiple callbacks are supported and run in registration order, after the widget tree has been re-laid-out and the new frame has been composited. Use this for cleanup that has to span the whole tree on a resize — most commonly, parking pixel-blitter sprixels (Kitty / Sixel) so they re-blit at their new positions on the next frame:
+
+```raku
+$app.on-resize: -> UInt $rows, UInt $cols {
+    park-every-image-in($app.screen-manager.active-root);
+};
+```
+
 SEE ALSO
 ========
 
@@ -202,6 +213,14 @@ The theme installed on every screen's root. Defaults to `Selkie::Theme.default` 
 ### has Selkie::Store $.store
 
 The reactive store owned by this app. Constructed automatically on `.new`; every screen added to the app gets this store propagated into its widget tree. Subscribe to state paths from widgets via `self.subscribe(...)`.
+
+### has atomicint $!resize-pending
+
+Set asynchronously by our SIGWINCH handler when the terminal is resized. Consumed by `!maybe-check-terminal-resize`, which clears the flag and bypasses the 12 Hz rate-limit so the new dims propagate on the very next loop iteration. Atomic because the signal callback runs on whatever thread libuv dispatches to, while the main loop reads it from the application thread.
+
+### has Mu $!resize-tap
+
+Tap on Raku's signal(SIGWINCH) Supply. Stored so `shutdown` can close it cleanly — without explicit close, the tap keeps the App object alive past shutdown via the Supply's subscriber list, and SIGWINCH after shutdown would still try to fire the (now invalid) handler.
 
 ### has Num $.hot-hz
 
@@ -354,6 +373,16 @@ method on-frame(
 
 Register a callback that fires once per frame (~60 times per second), regardless of input. Use this for: =item Timer and countdown logic =item Animations and indeterminate progress bars (`$widget.tick`) =item Pulling from external streams that aren't tied to user input Multiple callbacks can be registered; they run in registration order.
 
+### method on-resize
+
+```raku
+method on-resize(
+    &callback
+) returns Mu
+```
+
+Register a callback that fires when the terminal is resized. Receives the new `($rows, $cols)` as positional arguments. Fires after the widget tree has been re-laid-out and the post-resize frame composited, so callbacks can safely walk the live tree and take action against the new dimensions. The primary use case is bitmap (Kitty / Sixel) sprixel cleanup: pixel blitters paint directly to the terminal and don't follow plane reflows, so a sidebar avatar painted in column 3 stays in column 3 after a horizontal resize even if its plane has moved. Parking the `Selkie::Widget::Image` in the resize callback drops the stale sprixel; the next render rebuilds it at the new position.
+
 ### method focus
 
 ```raku
@@ -415,13 +444,33 @@ method run() returns Mu
 
 Start the event loop. Blocks until `quit` is called or an unhandled exception bubbles up. The loop wakes on a 16ms input timeout (up to 60 Hz) and handles: input polling, event dispatch, frame callbacks, store tick, focus action processing, toast tick, and rendering. Idle work is minimized on each dimension: resize polling is throttled to ~12 Hz, the store tick only walks subscriptions when events were processed, and the renderer only composites to the terminal when a widget actually rendered (or the toast just auto-dismissed). A static screen produces near-zero CPU. The loop body is wrapped in a `CATCH` block: any thrown exception triggers an orderly shutdown, prints a backtrace to STDERR, and exits the process with status 1.
 
+### method is-paste-char
+
+```raku
+method is-paste-char(
+    Selkie::Event $ev
+) returns Bool
+```
+
+True when an input event is a "paste-eligible" character — a plain printable key with no Ctrl / Alt / Super modifier. Used by the drain loop to decide what to accumulate into the paste batch. Mod-Shift is allowed because capital letters arrive with it set and must be batched alongside everything else.
+
+### method flush-paste-batch
+
+```raku
+method flush-paste-batch(
+    Str:D $text
+) returns Mu
+```
+
+Apply an accumulated paste batch to the focused widget's `insert-text` method. Caller has already verified that the focused widget supports the method, so this is a single dispatch plus one O(n) buffer rebuild — total cost O(n) for the whole paste, not O(n²) the per-char path would incur.
+
 ### method check-terminal-resize
 
 ```raku
 method check-terminal-resize() returns Bool
 ```
 
-Check whether the terminal has been resized and, if so, propagate new dimensions through the widget tree and force a full terminal re-sync. Called every ~83ms from the main loop (via `!maybe-check-terminal-resize`) because notcurses doesn't reliably emit `NCKEY_RESIZE` through the input queue on every platform — macOS in particular. Also called synchronously by `!dispatch-event` when a real `ResizeEvent` arrives, which should not be rate-limited. No-op when dims haven't changed; cheap.
+Check whether the terminal has been resized and, if so, propagate new dimensions through the widget tree and force a full terminal re-sync. Called from `!maybe-check-terminal-resize` when our SIGWINCH tap (installed in TWEAK) signals a pending resize. Also called synchronously by `!dispatch-event` when a `ResizeEvent` arrives through the input queue (legacy path; with `NCOPTION_NO_WINCH_SIGHANDLER` set, notcurses no longer emits these — but the path is harmless to keep as a defensive backstop). Calls `notcurses_refresh` at the top to force notcurses to re-query terminal dimensions via TIOCGWINSZ. Without this we'd own the SIGWINCH handler but never tell notcurses about the new size — its stdplane stays at the old dim and nothing reflows. The refresh also re-emits every cell at the (possibly new) dimensions; the trailing refresh after render does the same job against the freshly composited frame to nail down terminal state. Two refreshes per resize event is acceptable for a one-time signal-driven flow. Returns True if dims actually changed.
 
 ### method maybe-check-terminal-resize
 
@@ -429,7 +478,7 @@ Check whether the terminal has been resized and, if so, propagate new dimensions
 method maybe-check-terminal-resize() returns Bool
 ```
 
-Rate-limit wrapper around `!check-terminal-resize`. Called from the main loop every frame, but only lets the underlying check run at most once per ~83ms (~12 Hz). See `!check-terminal-resize` for why we poll at all. Returns True when a dim change was actually detected and the UI re-flowed; False otherwise. Used by the idle ladder to treat a resize as activity.
+Flag-gated wrapper around `!check-terminal-resize`. Called from the main loop every frame; runs the underlying check only when our SIGWINCH tap has marked `$!resize-pending`. The CAS clears the flag atomically before the check runs, so if a second SIGWINCH fires mid-check the flag will be set again and re-trigger on the next loop iteration. Returns True when a dim change was actually detected and the UI re-flowed; False otherwise. Used by the idle ladder to treat a resize as activity.
 
 ### method render-frame
 

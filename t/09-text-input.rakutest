@@ -7,7 +7,7 @@ use Notcurses::Native::Types;
 
 use Selkie::Test::Keys;
 
-plan 22;
+plan 30;
 
 subtest "construction defaults" => {
     plan 3;
@@ -239,4 +239,102 @@ subtest "mask-char not set by default" => {
     plan 1;
     my $ti = Selkie::Widget::TextInput.new;
     nok $ti.mask-char.defined, "no mask by default";
+};
+
+# --- Word-jump shift-arrow behaviour ---
+
+sub typed-input(Str:D $text, UInt :$cols = 80) {
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, $cols);
+    $ti.set-focused(True);
+    for $text.comb -> $c {
+        $ti.handle-event(key-event(id => $c.ord, char => $c));
+    }
+    $ti;
+}
+
+subtest "shift+left jumps to start of previous word" => {
+    plan 2;
+    my $ti = typed-input('hello world foo');
+    # cursor is at end (15). shift+left → 'foo' starts at 12.
+    $ti.handle-event(key-event('shift+left'));
+    $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $ti.text, 'hello world Xfoo', "first jump landed at 'foo' start";
+
+    # next shift+left from 'X' goes to 'world' start.
+    $ti.handle-event(key-event(id => NCKEY_BACKSPACE));
+    $ti.handle-event(key-event('shift+left'));
+    $ti.handle-event(key-event(id => 'Y'.ord, char => 'Y'));
+    is $ti.text, 'hello Yworld foo', "second jump landed at 'world' start";
+};
+
+subtest "shift+right jumps to start of next word" => {
+    plan 1;
+    my $ti = typed-input('hello world foo');
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event('shift+right'));   # to 'world' start
+    $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $ti.text, 'hello Xworld foo', "first jump landed at 'world' start";
+};
+
+subtest "shift+left at start of buffer is a no-op" => {
+    plan 1;
+    my $ti = typed-input('hello');
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event('shift+left'));
+    $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $ti.text, 'Xhello', "buffer unchanged in position";
+};
+
+subtest "shift+backspace deletes the previous word" => {
+    plan 2;
+    my $ti = typed-input('hello world foo');
+    $ti.handle-event(key-event('shift+backspace'));
+    is $ti.text, 'hello world ', "trailing word deleted, separator stays";
+
+    $ti.handle-event(key-event('shift+backspace'));
+    # Deletes 'world' AND the trailing space (prev-word-pos walks
+    # past whitespace too).
+    is $ti.text, 'hello ', "second backspace ate the next word";
+};
+
+subtest "shift+backspace at start does nothing destructive" => {
+    plan 1;
+    my $ti = typed-input('hi');
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event('shift+backspace'));
+    is $ti.text, 'hi', "buffer untouched";
+};
+
+# --- insert-text (paste batch path) ---
+
+subtest "insert-text appends a long string at the cursor in one go" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 80);
+    $ti.set-focused(True);
+    my $blob = 'x' x 5_000;
+    $ti.insert-text($blob);
+    is $ti.text.chars, 5_000, "all 5 000 chars landed";
+    is $ti.text.substr(0, 5), 'xxxxx', "buffer matches";
+};
+
+subtest "insert-text inserts at the cursor, not at the end" => {
+    plan 1;
+    my $ti = typed-input('abcdef');
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event(id => NCKEY_RIGHT));
+    $ti.handle-event(key-event(id => NCKEY_RIGHT));
+    $ti.handle-event(key-event(id => NCKEY_RIGHT));
+    $ti.insert-text('XYZ');
+    is $ti.text, 'abcXYZdef', "inserted between 'c' and 'd'";
+};
+
+subtest "insert-text strips control chars and newlines (single-line)" => {
+    plan 1;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 80);
+    $ti.set-focused(True);
+    $ti.insert-text("hello\nworld\ttab\r\nbye");
+    is $ti.text, 'helloworldtabbye', "control chars and newlines dropped";
 };

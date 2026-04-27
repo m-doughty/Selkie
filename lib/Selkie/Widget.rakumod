@@ -401,12 +401,32 @@ method viewport-cols(--> UInt) { $!viewport-cols }
     affected widget; Image's cache check then short-circuits the
     re-blit when its own state didn't change. )
 method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
-    my $moved = $abs-y != $!abs-y || $abs-x != $!abs-x;
+    # The dirty-on-position-change check (added in 0.4.6 for the
+    # Image avatar-ghost fix) is delegated to a free sub rather than
+    # written inline. Inlined boxed-Int `!=` here triggered a MoarVM
+    # spesh mis-specialisation on this hot path — once the render
+    # loop had warmed spesh statistics on this method, a later call
+    # crashed with "P6opaque: get_boxed_ref could not unbox for the
+    # representation 'P6bigint' of type Scalar" pointed at this
+    # method's signature line.
+    #
+    # Routing through a free sub with native-int parameters gives
+    # spesh a fresh, simpler frame to specialise; the boxed-Int
+    # comparison candidate that was being mis-specialised never
+    # appears. Screen coordinates are always well within int64 so
+    # the coercion at the call site is loss-free.
+    my $moved = position-changed($abs-y, $abs-x, $!abs-y, $!abs-x);
     $!abs-y = $abs-y;
     $!abs-x = $abs-x;
     $!viewport-rows = $rows;
     $!viewport-cols = $cols;
     self.mark-dirty if $moved;
+}
+
+# Native-int comparison helper, kept as a free sub so spesh sees a
+# clean specialisation target. See `set-viewport` for the rationale.
+sub position-changed(int $new-y, int $new-x, int $old-y, int $old-x --> Bool) {
+    $new-y != $old-y || $new-x != $old-x;
 }
 
 #|( The effective theme for this widget. Walks up the parent chain until
@@ -417,13 +437,34 @@ method theme(--> Selkie::Theme) {
     $!theme // ($!parent andthen .theme) // Selkie::Theme.default;
 }
 
-#|( Override the theme for this widget and its subtree. The new theme
-    is used on the next render. Useful for scoping a different look to
-    a specific panel (e.g. a modal with its own palette). )
+#|( Override the theme for this widget and its subtree. Repaints this
+    widget's plane base, marks it dirty, then recurses into C<.children>
+    and C<.content> so every descendant's plane base is repainted too.
+
+    The recursion matters: C<ncplane_erase> on a child plane fills with
+    that child's base cell, which was set the first time C<set-theme>
+    or C<set-store> ran on it. Without the cascade here, only the root
+    on which the caller invoked C<set-theme> would repaint, and any
+    cell a descendant didn't explicitly write would keep showing the
+    OLD theme background — the visible symptom is "I changed theme
+    and the tab bar / hint footer kept the old colour".
+
+    Equivalent shape to C<set-store> just below — same C<self.can>
+    detection so containers (children) and decorators (content) are
+    both reached without coupling C<Widget> to either role. )
 method set-theme(Selkie::Theme $t) {
     $!theme = $t;
     self!sync-plane-base;
     self.mark-dirty;
+    if self.can('children') {
+        for self.children -> $child {
+            $child.set-theme($t);
+        }
+    }
+    if self.can('content') {
+        my $c = self.content;
+        $c.set-theme($t) if $c.defined;
+    }
 }
 
 #|( Paint this widget's plane base cell using the active theme's
@@ -459,7 +500,14 @@ method !destroy-plane() {
     $!plane = NcplaneHandle;
 }
 
-method !set-sizing(Sizing $s) {
+#|( Replace the widget's sizing constraint after construction. The
+    parent layout picks up the new value on its next reflow. Useful
+    for conditional UI — a form field that should disappear under
+    one mode can be set to C<Sizing.fixed(0)> to collapse out of the
+    flow without removing it from the widget tree. Subclasses with
+    height-driven content (e.g. C<MultiLineInput> growing as the user
+    types) call this from inside their own re-measure logic. )
+method set-sizing(Sizing $s) {
     $!sizing = $s;
 }
 

@@ -70,6 +70,7 @@ use Selkie::Widget;
 use Selkie::Style;
 use Selkie::Event;
 use Selkie::Sizing;
+use Selkie::Widget::TextInput :words;
 
 unit class Selkie::Widget::MultiLineInput does Selkie::Widget;
 
@@ -283,9 +284,15 @@ method handle-event(Selkie::Event $ev --> Bool) {
         return self!check-keybinds($ev);
     }
 
+    my $shift = $ev.has-modifier(Mod-Shift);
+
     given $ev.id {
         when NCKEY_BACKSPACE {
-            self!do-backspace;
+            if $shift {
+                self!do-word-backspace;
+            } else {
+                self!do-backspace;
+            }
             return True;
         }
         when NCKEY_DEL {
@@ -293,11 +300,19 @@ method handle-event(Selkie::Event $ev --> Bool) {
             return True;
         }
         when NCKEY_LEFT {
-            self!move-left;
+            if $shift {
+                self!move-word-left;
+            } else {
+                self!move-left;
+            }
             return True;
         }
         when NCKEY_RIGHT {
-            self!move-right;
+            if $shift {
+                self!move-word-right;
+            } else {
+                self!move-right;
+            }
             return True;
         }
         when NCKEY_UP {
@@ -338,6 +353,47 @@ method !insert-char(Str $ch) {
     my $line = @!lines[$!cursor-row];
     @!lines[$!cursor-row] = $line.substr(0, $!cursor-col) ~ $ch ~ $line.substr($!cursor-col);
     $!cursor-col++;
+    $!change-supplier.emit(self.text);
+    self!update-sizing;
+    self.mark-dirty;
+}
+
+#|( Insert C<$text> at the current cursor position in one operation,
+    splitting on C<\n> so multi-line pasted content lays across
+    multiple buffer lines. Equivalent to typing each character in
+    turn but with one buffer rebuild instead of one per char —
+    O(n) total instead of O(n²). Used by the App's paste-batching
+    drain loop. )
+method insert-text(Str:D $text --> Nil) {
+    return if $text.chars == 0;
+    # Strip control chars except \n (\r is normalised to \n) and \t.
+    my $norm = $text.subst(/\r\n|\r/, "\n", :g);
+    $norm = $norm.subst(/<[\x[00]..\x[08]\x[0B]..\x[0C]\x[0E]..\x[1F]\x[7F]]>/, '', :g);
+
+    my @parts = $norm.split("\n");
+    my $first = @parts.shift;
+
+    # Insert the first line's worth of text at the cursor.
+    my $line = @!lines[$!cursor-row];
+    @!lines[$!cursor-row] = $line.substr(0, $!cursor-col) ~ $first ~ $line.substr($!cursor-col);
+    $!cursor-col += $first.chars;
+
+    # For each subsequent newline-separated chunk: split the current
+    # line at the cursor, drop the chunk in as the next line, and
+    # carry the tail along. After the loop the cursor lands at the
+    # end of whatever the LAST chunk was.
+    if @parts {
+        my $tail = @!lines[$!cursor-row].substr($!cursor-col);
+        @!lines[$!cursor-row] = @!lines[$!cursor-row].substr(0, $!cursor-col);
+        for @parts.kv -> $i, $part {
+            my $is-last = $i == @parts.end;
+            my $row-text = $is-last ?? ($part ~ $tail) !! $part;
+            @!lines.splice($!cursor-row + 1, 0, $row-text);
+            $!cursor-row++;
+            $!cursor-col = $part.chars;
+        }
+    }
+
     $!change-supplier.emit(self.text);
     self!update-sizing;
     self.mark-dirty;
@@ -427,10 +483,63 @@ method !move-down() {
     self.mark-dirty;
 }
 
+#|( Shift-Left: jump to the start of the current or previous word.
+    When the cursor is at column 0, the jump crosses the line
+    boundary and lands at the start of the last word on the
+    previous line (or column 0 of that line if the previous line
+    is empty). )
+method !move-word-left() {
+    if $!cursor-col == 0 {
+        return unless $!cursor-row > 0;
+        $!cursor-row--;
+        my $line = @!lines[$!cursor-row];
+        $!cursor-col = $line.chars > 0 ?? prev-word-pos($line, $line.chars).UInt !! 0;
+    } else {
+        my $line = @!lines[$!cursor-row];
+        $!cursor-col = prev-word-pos($line, $!cursor-col.Int).UInt;
+    }
+    self.mark-dirty;
+}
+
+#|( Shift-Right: jump to the start of the next word. When the cursor
+    is at the end of the current line, the jump crosses to column 0
+    of the next line. )
+method !move-word-right() {
+    my $line = @!lines[$!cursor-row];
+    if $!cursor-col >= $line.chars {
+        return unless $!cursor-row < @!lines.end;
+        $!cursor-row++;
+        $!cursor-col = 0;
+    } else {
+        $!cursor-col = next-word-pos($line, $!cursor-col.Int).UInt;
+    }
+    self.mark-dirty;
+}
+
+#|( Shift-Backspace: delete from the cursor back to the previous word
+    boundary. At column 0, falls through to the regular backspace
+    semantics so the line above is joined — matches what users
+    expect from "delete previous word" in editors that also support
+    multi-line. )
+method !do-word-backspace() {
+    if $!cursor-col == 0 {
+        self!do-backspace;
+        return;
+    }
+    my $line = @!lines[$!cursor-row];
+    my $start = prev-word-pos($line, $!cursor-col.Int);
+    return unless $start < $!cursor-col;
+    @!lines[$!cursor-row] = $line.substr(0, $start) ~ $line.substr($!cursor-col);
+    $!cursor-col = $start.UInt;
+    $!change-supplier.emit(self.text);
+    self!update-sizing;
+    self.mark-dirty;
+}
+
 method !update-sizing() {
     my $h = self.desired-height;
     if self.sizing.mode ~~ SizeFixed && self.sizing.value != $h {
-        self!set-sizing(Sizing.fixed($h));
+        self.set-sizing(Sizing.fixed($h));
         # Mark parent dirty so the next render re-runs its
         # layout-children with our new sizing. mark-dirty propagates
         # up to the root; render-children cascades back down so

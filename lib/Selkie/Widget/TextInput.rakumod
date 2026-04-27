@@ -80,6 +80,43 @@ use Selkie::Event;
 
 unit class Selkie::Widget::TextInput does Selkie::Widget;
 
+#|( Find the position of the start of the next word at or after C<$pos>
+    in C<$s>. Word = run of C<\w> chars. Skips through the current
+    char's class (word or non-word), then through any trailing
+    non-word chars, landing at the first word char of the next word
+    — or C<$s.chars> if there is no next word. Used by shift-right
+    word-jump and by C<MultiLineInput>'s 2D variant. )
+sub next-word-pos(Str:D $s, Int:D $pos --> Int) is export(:words) {
+    my $len = $s.chars;
+    my $i = $pos max 0;
+    return $len if $i >= $len;
+    my $is-word = $s.substr($i, 1) ~~ /\w/;
+    while $i < $len && (($s.substr($i, 1) ~~ /\w/) ?? True !! False) == ($is-word ?? True !! False) {
+        $i++;
+    }
+    while $i < $len && !($s.substr($i, 1) ~~ /\w/) {
+        $i++;
+    }
+    $i;
+}
+
+#|( Find the position of the start of the previous word at or before
+    C<$pos> in C<$s>. Skips backwards through any non-word chars,
+    then backwards through word chars, landing on the index of the
+    first char of that word — or 0 if we walked off the start. Used
+    by shift-left and shift-backspace. )
+sub prev-word-pos(Str:D $s, Int:D $pos --> Int) is export(:words) {
+    my $i = $pos - 1;
+    return 0 if $i <= 0;
+    while $i > 0 && !($s.substr($i, 1) ~~ /\w/) {
+        $i--;
+    }
+    while $i > 0 && ($s.substr($i - 1, 1) ~~ /\w/) {
+        $i--;
+    }
+    $i;
+}
+
 has Str $!buffer = '';
 has UInt $!cursor = 0;
 has UInt $!scroll-x = 0;    # horizontal scroll for long input
@@ -169,6 +206,22 @@ method !adjust-scroll() {
     }
 }
 
+#|( Insert C<$text> at the current cursor position in one operation.
+    Equivalent to typing each character in turn, but does ONE buffer
+    concat instead of one per char — drops paste cost from O(n²) to
+    O(n). Newlines and other control chars in C<$text> are stripped
+    (single-line input). Used by the App's paste-batching drain loop;
+    application code can call it directly to programmatically
+    insert text. )
+method insert-text(Str:D $text --> Nil) {
+    my $clean = $text.subst(/\n/, '', :g).subst(/<[\x[00]..\x[1F]\x[7F]]>/, '', :g);
+    return if $clean.chars == 0;
+    $!buffer = $!buffer.substr(0, $!cursor) ~ $clean ~ $!buffer.substr($!cursor);
+    $!cursor += $clean.chars;
+    $!change-supplier.emit($!buffer);
+    self.mark-dirty;
+}
+
 method handle-event(Selkie::Event $ev --> Bool) {
     return False unless $!focused;
     return False unless $ev.input-type == NCTYPE_PRESS || $ev.input-type == NCTYPE_REPEAT
@@ -179,13 +232,24 @@ method handle-event(Selkie::Event $ev --> Bool) {
         return self!check-keybinds($ev);
     }
 
+    my $shift = $ev.has-modifier(Mod-Shift);
+
     given $ev.id {
         when NCKEY_ENTER {
             $!submit-supplier.emit($!buffer);
             return True;
         }
         when NCKEY_BACKSPACE {
-            if $!cursor > 0 {
+            if $shift {
+                # Delete from cursor back to the previous word boundary.
+                my $start = prev-word-pos($!buffer, $!cursor.Int);
+                if $start < $!cursor {
+                    $!buffer = $!buffer.substr(0, $start) ~ $!buffer.substr($!cursor);
+                    $!cursor = $start.UInt;
+                    $!change-supplier.emit($!buffer);
+                    self.mark-dirty;
+                }
+            } elsif $!cursor > 0 {
                 $!buffer = $!buffer.substr(0, $!cursor - 1) ~ $!buffer.substr($!cursor);
                 $!cursor--;
                 $!change-supplier.emit($!buffer);
@@ -202,11 +266,29 @@ method handle-event(Selkie::Event $ev --> Bool) {
             return True;
         }
         when NCKEY_LEFT {
-            if $!cursor > 0 { $!cursor--; self.mark-dirty }
+            if $shift {
+                my $new = prev-word-pos($!buffer, $!cursor.Int);
+                if $new != $!cursor {
+                    $!cursor = $new.UInt;
+                    self.mark-dirty;
+                }
+            } elsif $!cursor > 0 {
+                $!cursor--;
+                self.mark-dirty;
+            }
             return True;
         }
         when NCKEY_RIGHT {
-            if $!cursor < $!buffer.chars { $!cursor++; self.mark-dirty }
+            if $shift {
+                my $new = next-word-pos($!buffer, $!cursor.Int);
+                if $new != $!cursor {
+                    $!cursor = $new.UInt;
+                    self.mark-dirty;
+                }
+            } elsif $!cursor < $!buffer.chars {
+                $!cursor++;
+                self.mark-dirty;
+            }
             return True;
         }
         when NCKEY_HOME {
