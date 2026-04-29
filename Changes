@@ -2,6 +2,29 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.5.2  2026-04-30T00:41:27+01:00
+    - `Selkie::App` modals now stack. Calling `show-modal` while a
+      modal is already open pushes the new modal on top instead of
+      replacing the existing one; `close-modal` pops the topmost modal
+      and restores the previous modal as active with all its keybinds
+      intact. The pre-modal focus target is per-stack-frame, so
+      popping the inner modal returns focus to where it was inside
+      the outer modal. Previously, opening a confirm dialog from
+      inside an editor permanently destroyed the editor's keybinds
+      (ESC stopped working) — that's now fixed at the framework level.
+      Render path renders only the topmost modal (modals are opaque
+      overlays); resize cascades dims through every modal in the
+      stack so revealed modals have correct dims when popped.
+    - `Selkie::Event::Keybind.parse`: the literal `+` key is now
+      bindable. Previously `'+'`, `'shift++'`, `'ctrl++'`, etc. all
+      died with `Unknown modifier: ` because the spec splitter used
+      `+` as the modifier separator and pulled an empty key off the
+      end. Detected upfront via a trailing-`++` check (and a plain
+      `'+'` short-circuit) before the split, so the key parser sees
+      a single `'+'` character and emits `'+'.ord` as the keybind id.
+      KEYBIND SYNTAX docs updated; new `t/04-event.rakutest` subtest
+      covers `'+'`, `'shift++'`, `'ctrl++'`, and `'ctrl+shift++'`.
+
 0.5.1  2026-04-29T00:45:16+01:00
     - `Widget::TextInput` and `Widget::MultiLineInput` no longer
       swallow OS-composed alt characters. The "modified keys (except

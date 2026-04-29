@@ -175,6 +175,12 @@ $app.focus($cm.no-button);    # default to the safe button
 
 =end code
 
+Modals stack. Calling C<show-modal> while another modal is already open
+pushes the new modal on top — useful for, say, a confirm dialog opened
+from inside an editor. C<close-modal> pops the topmost modal, and the
+previous modal becomes active again with all its keybinds intact and
+its pre-modal-focus restored. Repeat C<close-modal> to drain the stack.
+
 =head2 A frame callback for animation
 
 C<on-frame> fires on every iteration of the event loop (~60fps), even
@@ -273,10 +279,20 @@ has Selkie::Theme $.theme;
 has Selkie::Store $.store = Selkie::Store.new;
 
 has Selkie::ScreenManager $!screen-manager = Selkie::ScreenManager.new;
-has Selkie::Widget::Modal $!active-modal;
+# Modal stack — each `show-modal` pushes; `close-modal` pops the top.
+# The "active modal" (input-owning, rendered on top) is always
+# `@!modal-stack.tail`. Selkie supports nested modals (e.g. a confirm
+# dialog opened from inside an editor) — popping the inner modal
+# restores the outer one with all its keybinds intact.
+has Selkie::Widget::Modal @!modal-stack;
+# Parallel stack of pre-modal focus targets. `@!pre-modal-focus-stack[i]`
+# is the widget that was focused right before `@!modal-stack[i]` opened;
+# popping the modal restores the matching entry. We do NOT use a single
+# slot because nested modals each have their own "where to return focus"
+# context.
+has Selkie::Widget @!pre-modal-focus-stack;
 has Selkie::Widget::Toast $!toast;
 has Selkie::Widget $!focused;
-has Selkie::Widget $!pre-modal-focus;
 # Per-screen focus memory: screen name → last-focused widget on that
 # screen. Populated lazily on switch-screen when leaving a screen whose
 # focused widget is still attached; consulted on switch-screen arrival
@@ -655,10 +671,16 @@ method toast(Str:D $message, Num :$duration = 2e0) {
 #|( Show a modal dialog. The currently-focused widget is remembered and
     restored when the modal closes. While a modal is open, all events are
     routed through it (focus trap); only C<Tab>, C<Shift-Tab>, and C<Esc>
-    reach the app's global keybinds. )
+    reach the app's global keybinds.
+
+    Modals stack: calling C<show-modal> while another modal is already
+    open pushes the new modal on top. C<close-modal> pops the top, so the
+    previous modal becomes active again with all its keybinds intact.
+    This is how a confirm dialog opened from inside an editor returns
+    focus to the editor when dismissed. )
 method show-modal(Selkie::Widget::Modal $modal) {
-    $!pre-modal-focus = $!focused;
-    $!active-modal = $modal;
+    @!pre-modal-focus-stack.push($!focused);
+    @!modal-stack.push($modal);
     $modal.set-theme($!theme);
     $modal.set-store($!store);
     $modal.init-plane($!stdplane, y => 0, x => 0, rows => $!rows, cols => $!cols);
@@ -668,30 +690,58 @@ method show-modal(Selkie::Widget::Modal $modal) {
     self.focus(@fd[0]) if @fd;
 }
 
-#|( Close the active modal, restore the pre-modal focus target, and mark
-    the entire active screen dirty so every widget re-renders over the
-    area that was covered. No-op if no modal is open.
+#|( Close the topmost modal, restore the matching pre-modal focus
+    target, and mark the now-revealed surface dirty so it re-renders
+    over the area the closing modal covered. No-op if no modal is open.
+
+    With nested modals, popping the top reveals the modal underneath —
+    that becomes the new active modal, and focus is restored to the
+    widget inside it that had focus right before the popped modal
+    opened. When the stack drains to empty, focus restores against the
+    active screen.
 
     The pre-modal focus target is validated against the live tree
     before restoration — if the widget was destroyed while the modal
     was open (e.g. the modal's action removed the previously-focused
     row from a list), focus falls through to the first focusable on
-    the active screen instead of dangling. )
+    the now-active surface instead of dangling. )
 method close-modal() {
-    return without $!active-modal;
-    $!active-modal.destroy;
-    $!active-modal = Selkie::Widget::Modal;
-    if $!pre-modal-focus.defined && self.widget-attached($!pre-modal-focus, self.root) {
-        self.focus($!pre-modal-focus);
+    return without @!modal-stack;
+    my $closed = @!modal-stack.pop;
+    my $restore = @!pre-modal-focus-stack.pop;
+    $closed.destroy;
+
+    # The "input-owning surface" we restore focus against depends on
+    # whether any modal remains: top-of-stack if the stack is non-empty,
+    # the screen root otherwise. !focus-root reads the same source.
+    my $root = self!focus-root;
+    if $restore.defined && self.widget-attached($restore, $root) {
+        self.focus($restore);
     } else {
         self.focus(self!first-focusable);
     }
-    $!pre-modal-focus = Selkie::Widget;
-    self!mark-all-dirty(self.root) if self.root;
+    # Mark the revealed surface dirty so it re-paints over the area
+    # the popped modal covered. Without a stack the screen does this;
+    # with one, the new top modal needs the kick instead (its plane
+    # was below the destroyed one and notcurses won't redraw it
+    # otherwise).
+    if @!modal-stack {
+        self!mark-all-dirty(@!modal-stack.tail);
+    } else {
+        self!mark-all-dirty(self.root) if self.root;
+    }
 }
 
-#| True while a modal is currently being displayed.
-method has-modal(--> Bool) { $!active-modal.defined }
+#| True while at least one modal is currently being displayed.
+method has-modal(--> Bool) { ?@!modal-stack }
+
+# Top-of-stack accessor. Returns the type object when the stack is
+# empty so callers can keep their existing C<if $!active-modal> /
+# C<.defined> idiom; this preserves the pre-stack code paths in
+# event-routing, render, and resize without wholesale rewrites.
+method !active-modal() {
+    @!modal-stack ?? @!modal-stack.tail !! Selkie::Widget::Modal;
+}
 
 # --- Keybinds ---
 
@@ -768,23 +818,25 @@ method focus(Selkie::Widget $w) {
 # (genuinely nothing to focus) — callers treat that as "focus stays
 # undefined."
 method !first-focusable(--> Selkie::Widget) {
-    my @fd = $!active-modal
-        ?? $!active-modal.focusable-descendants.List
+    my $top = self!active-modal;
+    my @fd = $top.defined
+        ?? $top.focusable-descendants.List
         !! $!screen-manager.focusable-descendants.List;
     @fd[0] // Selkie::Widget;
 }
 
-# Return the widget-tree root that owns input right now: the active
+# Return the widget-tree root that owns input right now: the topmost
 # modal if any, otherwise the active screen's root. Used by
 # widget-attached callers to check whether a focus candidate is still
 # in the live tree.
 method !focus-root() {
-    $!active-modal.defined ?? $!active-modal !! $!screen-manager.active-root;
+    my $top = self!active-modal;
+    $top.defined ?? $top !! $!screen-manager.active-root;
 }
 
 #|( True iff walking up C<$w>'s parent chain reaches C<$root>. Used
     internally to validate that a saved focus reference (in
-    C<%!screen-focus> or C<$!pre-modal-focus>) is still attached to
+    C<%!screen-focus> or C<@!pre-modal-focus-stack>) is still attached to
     the live tree before we try to restore it. O(tree depth); cheap.
 
     Public (rather than private with a leading bang) so tests can
@@ -842,8 +894,9 @@ method !process-focus-actions() {
 }
 
 method !do-focus-cycle(Int $direction) {
-    my @focusable = $!active-modal
-        ?? $!active-modal.focusable-descendants.List
+    my $top = self!active-modal;
+    my @focusable = $top.defined
+        ?? $top.focusable-descendants.List
         !! $!screen-manager.focusable-descendants.List;
     return unless @focusable;
 
@@ -1112,17 +1165,18 @@ method !dispatch-event(Selkie::Event $ev) {
         return;
     }
 
-    if $!active-modal {
+    my $top = self!active-modal;
+    if $top.defined {
         if $!focused.defined {
             my $widget = $!focused;
-            while $widget.defined && $widget !=== $!active-modal {
+            while $widget.defined && $widget !=== $top {
                 if $widget.handle-event($ev) {
                     return;
                 }
                 $widget = $widget.parent;
             }
         }
-        return if $!active-modal.handle-event($ev);
+        return if $top.handle-event($ev);
         for @!global-keybinds -> %entry {
             next if %entry<screen>.defined
                  && %entry<screen> ne ($!screen-manager.active-screen // '');
@@ -1199,18 +1253,19 @@ method !check-terminal-resize(--> Bool) {
 
     # Propagate dims synchronously through all screens (including
     # inactive ones — they'd otherwise render at stale dims when
-    # switched to later) and any active modal/toast. handle-resize
-    # cascades through containers so leaf widgets know their new
-    # dims before any render.
+    # switched to later) and through every modal in the stack — even
+    # the ones not currently on top, because they'll need correct dims
+    # when revealed by a close-modal. handle-resize cascades through
+    # containers so leaf widgets know their new dims before any render.
     $!screen-manager.handle-resize($!rows, $!cols);
-    $!active-modal.handle-resize($!rows, $!cols) if $!active-modal;
-    $!toast.handle-resize($!rows, $!cols)       if $!toast;
+    .handle-resize($!rows, $!cols) for @!modal-stack;
+    $!toast.handle-resize($!rows, $!cols) if $!toast;
 
     # Mark-dirty cascade — handle-resize short-circuits on unchanged
     # dims, so we force everyone to re-render even if their
     # allocation happened to match.
-    self!mark-all-dirty(self.root)    if self.root;
-    self!mark-all-dirty($!active-modal) if $!active-modal;
+    self!mark-all-dirty(self.root) if self.root;
+    self!mark-all-dirty($_)        for @!modal-stack;
 
     # Render the new frame to widget planes NOW, synchronously, so
     # the terminal gets updated immediately rather than waiting for
@@ -1270,8 +1325,14 @@ method !render-frame(Bool :$force = False) {
         $root.render;
         $any-rendered = True;
     }
-    if $!active-modal && $!active-modal.is-dirty {
-        $!active-modal.render;
+    # Only the topmost modal renders — modals are opaque overlays so the
+    # ones beneath are fully covered. Subscriptions still dirty hidden
+    # modals (e.g. the editor sitting under a confirm dialog), but those
+    # dirty marks are paid out when close-modal pops the top and calls
+    # mark-all-dirty on the now-revealed modal.
+    my $top = self!active-modal;
+    if $top.defined && $top.is-dirty {
+        $top.render;
         $any-rendered = True;
     }
     if $!toast && $!toast.is-visible {
@@ -1294,8 +1355,14 @@ method shutdown() {
     $!resize-tap.?close;
     $!resize-tap = Nil;
 
-    $!active-modal.destroy if $!active-modal;
-    $!active-modal = Selkie::Widget::Modal;
+    # Tear down every modal in the stack, deepest-on-top first (so each
+    # destroy sees a sane stack). Pop emptied so a re-entrant shutdown
+    # is a no-op rather than a double-destroy.
+    while @!modal-stack {
+        my $m = @!modal-stack.pop;
+        @!pre-modal-focus-stack.pop;
+        $m.destroy if $m.defined;
+    }
     $!screen-manager.destroy;
     if $!nc {
         notcurses_stop($!nc);

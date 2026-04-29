@@ -104,7 +104,7 @@ KEYBIND SYNTAX
 
 `Keybind.parse` and the `on-key` methods accept a string spec:
 
-  * Single character: `'a'`, `'?'`, `'Q'`
+  * Single character: `'a'`, `'?'`, `'Q'`, `'+'`
 
   * Named keys: `'enter'`, `'tab'`, `'esc'` (or `'escape'`), `'space'`, `'backspace'`, `'delete'`, `'insert'`, `'home'`, `'end'`, `'pgup'`, `'pgdown'`, `'up'`, `'down'`, `'left'`, `'right'`
 
@@ -113,6 +113,8 @@ KEYBIND SYNTAX
   * Modifiers: `'ctrl+'`, `'alt+'`, `'shift+'`, `'super+'`, `'hyper+'`, `'meta+'` — combinable, e.g. `'ctrl+shift+a'`
 
 Letter keybinds are case-insensitive — `'a'` matches both `a` and `A` (with Shift held).
+
+The literal `'+'` key is bindable too: write it as `'+'` on its own, or as `'shift++'`, `'ctrl++'`, `'ctrl+shift++'`, etc. The parser recognises a trailing `'+'` as the key when the rest of the spec already supplies one or more modifiers.
 
 SEE ALSO
 ========

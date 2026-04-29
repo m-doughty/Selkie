@@ -4,7 +4,7 @@ use lib 'lib';
 use Selkie::Event;
 use Notcurses::Native::Types;
 
-plan 10;
+plan 11;
 
 subtest "Keybind.parse - simple key" => {
     plan 2;
@@ -97,4 +97,28 @@ subtest "Keybind.matches" => {
         event-type => KeyEvent,
     );
     nok $kb.matches($ev-wrong-mod), "does not match alt+q";
+};
+
+subtest "Keybind.parse - literal '+' key" => {
+    plan 9;
+
+    # Plain '+' — historically this died because '+'.split('+') yields
+    # ('','') and the parser saw an empty modifier. Now special-cased.
+    my $plus = Keybind.parse('+', -> $ { });
+    is $plus.id, '+'.ord, "plain '+' parses as the '+' codepoint";
+    is $plus.modifiers.elems, 0, "no modifiers";
+
+    # Modifier + '+': trailing '++' peels off as the key.
+    my $shift-plus = Keybind.parse('shift++', -> $ { });
+    is $shift-plus.id, '+'.ord, "shift++ id is '+'";
+    ok Mod-Shift ∈ $shift-plus.modifiers, "shift++ has Mod-Shift";
+
+    my $ctrl-plus = Keybind.parse('ctrl++', -> $ { });
+    is $ctrl-plus.id, '+'.ord, "ctrl++ id is '+'";
+    ok Mod-Ctrl ∈ $ctrl-plus.modifiers, "ctrl++ has Mod-Ctrl";
+
+    my $ctrl-shift-plus = Keybind.parse('ctrl+shift++', -> $ { });
+    is $ctrl-shift-plus.id, '+'.ord, "ctrl+shift++ id is '+'";
+    ok Mod-Ctrl  ∈ $ctrl-shift-plus.modifiers, "ctrl+shift++ has Mod-Ctrl";
+    ok Mod-Shift ∈ $ctrl-shift-plus.modifiers, "ctrl+shift++ has Mod-Shift";
 };

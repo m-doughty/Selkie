@@ -19,7 +19,7 @@ jobs:
     name: Linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Notcurses::Native builds notcurses from source during install. It
       # needs cmake, pkg-config, ncurses headers, deflate, unistring, and
@@ -57,7 +57,7 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -89,7 +89,7 @@ jobs:
       run:
         shell: 'msys2 {0}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Rakudo first so msys2 (below) can inherit PATH including raku/zef.
       - uses: Raku/setup-raku@v1

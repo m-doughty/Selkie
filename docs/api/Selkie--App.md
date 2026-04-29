@@ -151,6 +151,8 @@ $app.show-modal($cm.modal);
 $app.focus($cm.no-button);    # default to the safe button
 ```
 
+Modals stack. Calling `show-modal` while another modal is already open pushes the new modal on top — useful for, say, a confirm dialog opened from inside an editor. `close-modal` pops the topmost modal, and the previous modal becomes active again with all its keybinds intact and its pre-modal-focus restored. Repeat `close-modal` to drain the stack.
+
 A frame callback for animation
 ------------------------------
 
@@ -333,7 +335,7 @@ method show-modal(
 ) returns Mu
 ```
 
-Show a modal dialog. The currently-focused widget is remembered and restored when the modal closes. While a modal is open, all events are routed through it (focus trap); only `Tab`, `Shift-Tab`, and `Esc` reach the app's global keybinds.
+Show a modal dialog. The currently-focused widget is remembered and restored when the modal closes. While a modal is open, all events are routed through it (focus trap); only `Tab`, `Shift-Tab`, and `Esc` reach the app's global keybinds. Modals stack: calling `show-modal` while another modal is already open pushes the new modal on top. `close-modal` pops the top, so the previous modal becomes active again with all its keybinds intact. This is how a confirm dialog opened from inside an editor returns focus to the editor when dismissed.
 
 ### method close-modal
 
@@ -341,7 +343,7 @@ Show a modal dialog. The currently-focused widget is remembered and restored whe
 method close-modal() returns Mu
 ```
 
-Close the active modal, restore the pre-modal focus target, and mark the entire active screen dirty so every widget re-renders over the area that was covered. No-op if no modal is open. The pre-modal focus target is validated against the live tree before restoration — if the widget was destroyed while the modal was open (e.g. the modal's action removed the previously-focused row from a list), focus falls through to the first focusable on the active screen instead of dangling.
+Close the topmost modal, restore the matching pre-modal focus target, and mark the now-revealed surface dirty so it re-renders over the area the closing modal covered. No-op if no modal is open. With nested modals, popping the top reveals the modal underneath — that becomes the new active modal, and focus is restored to the widget inside it that had focus right before the popped modal opened. When the stack drains to empty, focus restores against the active screen. The pre-modal focus target is validated against the live tree before restoration — if the widget was destroyed while the modal was open (e.g. the modal's action removed the previously-focused row from a list), focus falls through to the first focusable on the now-active surface instead of dangling.
 
 ### method has-modal
 
@@ -349,7 +351,7 @@ Close the active modal, restore the pre-modal focus target, and mark the entire 
 method has-modal() returns Bool
 ```
 
-True while a modal is currently being displayed.
+True while at least one modal is currently being displayed.
 
 ### method on-key
 
@@ -402,7 +404,7 @@ method widget-attached(
 ) returns Bool
 ```
 
-True iff walking up `$w`'s parent chain reaches `$root`. Used internally to validate that a saved focus reference (in `%!screen-focus` or `$!pre-modal-focus`) is still attached to the live tree before we try to restore it. O(tree depth); cheap. Public (rather than private with a leading bang) so tests can exercise the logic via the type object — `Selkie::App.widget-attached(...)` works without constructing an App instance (which would require `notcurses_init`). Apps rarely need to call this directly.
+True iff walking up `$w`'s parent chain reaches `$root`. Used internally to validate that a saved focus reference (in `%!screen-focus` or `@!pre-modal-focus-stack`) is still attached to the live tree before we try to restore it. O(tree depth); cheap. Public (rather than private with a leading bang) so tests can exercise the logic via the type object — `Selkie::App.widget-attached(...)` works without constructing an App instance (which would require `notcurses_init`). Apps rarely need to call this directly.
 
 ### method check-focus-invariant
 

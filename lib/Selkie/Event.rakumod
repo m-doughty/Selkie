@@ -109,13 +109,18 @@ if $ev.event-type ~~ MouseEvent {
 
 C<Keybind.parse> and the C<on-key> methods accept a string spec:
 
-=item Single character: C<'a'>, C<'?'>, C<'Q'>
+=item Single character: C<'a'>, C<'?'>, C<'Q'>, C<'+'>
 =item Named keys: C<'enter'>, C<'tab'>, C<'esc'> (or C<'escape'>), C<'space'>, C<'backspace'>, C<'delete'>, C<'insert'>, C<'home'>, C<'end'>, C<'pgup'>, C<'pgdown'>, C<'up'>, C<'down'>, C<'left'>, C<'right'>
 =item Function keys: C<'f1'> through C<'f60'>
 =item Modifiers: C<'ctrl+'>, C<'alt+'>, C<'shift+'>, C<'super+'>, C<'hyper+'>, C<'meta+'> — combinable, e.g. C<'ctrl+shift+a'>
 
 Letter keybinds are case-insensitive — C<'a'> matches both C<a> and C<A>
 (with Shift held).
+
+The literal C<'+'> key is bindable too: write it as C<'+'> on its own,
+or as C<'shift++'>, C<'ctrl++'>, C<'ctrl+shift++'>, etc. The parser
+recognises a trailing C<'+'> as the key when the rest of the spec
+already supplies one or more modifiers.
 
 =head1 SEE ALSO
 
@@ -277,9 +282,28 @@ class Keybind is export {
         described under L<KEYBIND SYNTAX> in this module's main pod.
         Throws on unknown modifiers or unknown key names. )
     method parse(Str:D $spec, &handler, Str :$description = '' --> Keybind) {
-        my @parts = $spec.split('+');
+        my @parts;
+        my Str $key;
+
+        # `+` is the modifier separator, so a naive split would leave the
+        # key half empty whenever the key itself is `+`. Detect those
+        # forms — `'+'`, `'shift++'`, `'ctrl+shift++'`, etc. — first and
+        # peel the trailing `+` off as the literal key. Specs that end
+        # with a single trailing `+` and nothing after (e.g. `'shift+'`)
+        # are still treated as malformed and fail in the key parser
+        # below, preserving the prior "no empty key" invariant.
+        if $spec eq '+' {
+            @parts = ();
+            $key = '+';
+        } elsif $spec.chars >= 2 && $spec.ends-with('++') {
+            @parts = $spec.substr(0, *-2).split('+');
+            $key = '+';
+        } else {
+            @parts = $spec.split('+');
+            $key = @parts.pop;
+        }
+
         my @mods;
-        my $key = @parts.pop;
 
         for @parts -> $mod {
             @mods.push: do given $mod.lc {

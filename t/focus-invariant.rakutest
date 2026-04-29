@@ -28,7 +28,7 @@ class TestContainer does Selkie::Container {
     method render() { self!render-children; self.clear-dirty }
 }
 
-plan 5;
+plan 6;
 
 subtest "widget-attached: unattached widget returns False" => {
     plan 2;
@@ -77,4 +77,32 @@ subtest "widget-attached: undefined root returns False" => {
     my $btn = Selkie::Widget::Button.new(label => 'x');
     nok Selkie::App.widget-attached($btn, Selkie::Container),
         "undefined root short-circuits to False";
+};
+
+# Stacked-modal topology — the key invariant App's close-modal relies
+# on when popping the top modal: a focus target inside the outer
+# (now-revealed) modal must validate True against that modal as root,
+# but a focus target inside the popped (destroyed) inner modal must
+# NOT validate against the outer modal. close-modal uses this to
+# decide whether to restore the saved pre-modal-focus or fall through
+# to first-focusable on the new top.
+subtest "widget-attached across stacked-modal topology" => {
+    plan 3;
+    # Two independent modal trees, each with a focusable child. The
+    # outer tree models "the editor"; the inner tree models "the
+    # confirm dialog opened from inside the editor".
+    my $outer-modal = TestContainer.new;
+    my $outer-child = Selkie::Widget::Button.new(label => 'editor save');
+    $outer-modal.add($outer-child);
+
+    my $inner-modal = TestContainer.new;
+    my $inner-child = Selkie::Widget::Button.new(label => 'confirm yes');
+    $inner-modal.add($inner-child);
+
+    ok Selkie::App.widget-attached($outer-child, $outer-modal),
+        "outer-child validates against outer-modal — pre-modal-focus restoration target";
+    nok Selkie::App.widget-attached($inner-child, $outer-modal),
+        "inner-child does NOT validate against outer-modal — close-modal must fall through to first-focusable";
+    ok Selkie::App.widget-attached($inner-child, $inner-modal),
+        "inner-child validates against inner-modal — what handles inner-modal's own focus check";
 };
