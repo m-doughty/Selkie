@@ -38,7 +38,7 @@ Two Supplies:
 
 For programmatic updates that shouldn't re-dispatch (e.g. syncing from a store subscription), use `set-text-silent` — it updates the buffer without emitting on `on-change`.
 
-Modified keys (Ctrl, Alt, Super) bubble past the input so global keybinds still work. Bare characters are consumed for typing.
+Modified keys (Ctrl, Alt, Super) bubble past the input so global keybinds still work — except when the OS keyboard layout has already composed the modifier into a different printable character (e.g. UK Mac Alt-3 → `#`, US Mac Alt-2 → `™`). In that case the composed character is treated as typed input, since blocking it would make those characters untypeable on layouts that need a modifier to produce them. Bare characters are consumed for typing.
 
 EXAMPLES
 ========

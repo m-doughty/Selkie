@@ -43,7 +43,12 @@ a store subscription), use C<set-text-silent> — it updates the buffer
 without emitting on C<on-change>.
 
 Modified keys (Ctrl, Alt, Super) bubble past the input so global
-keybinds still work. Bare characters are consumed for typing.
+keybinds still work — except when the OS keyboard layout has already
+composed the modifier into a different printable character (e.g. UK Mac
+Alt-3 → C<#>, US Mac Alt-2 → C<™>). In that case the composed character
+is treated as typed input, since blocking it would make those characters
+untypeable on layouts that need a modifier to produce them. Bare
+characters are consumed for typing.
 
 =head1 EXAMPLES
 
@@ -227,8 +232,15 @@ method handle-event(Selkie::Event $ev --> Bool) {
     return False unless $ev.input-type == NCTYPE_PRESS || $ev.input-type == NCTYPE_REPEAT
                      || $ev.input-type == NCTYPE_UNKNOWN;
 
-    # Let modified keys (except shift) bubble up for global keybinds
-    if $ev.has-modifier(Mod-Ctrl) || $ev.has-modifier(Mod-Alt) || $ev.has-modifier(Mod-Super) {
+    # Let modified keys (except shift) bubble up for global keybinds —
+    # *unless* the OS keyboard layout already composed the modifier into
+    # a different printable character (e.g. UK Mac Alt-3 → '#', US Mac
+    # Alt-2 → '™'). When eff_text differs from the keysym, the modifier
+    # was a composition input rather than a chord intent, and blocking
+    # it makes those characters untypeable.
+    my $composed = $ev.char.defined && $ev.char.chars == 1
+                && $ev.char.ord >= 32 && $ev.char.ord != $ev.id;
+    if !$composed && ($ev.has-modifier(Mod-Ctrl) || $ev.has-modifier(Mod-Alt) || $ev.has-modifier(Mod-Super)) {
         return self!check-keybinds($ev);
     }
 

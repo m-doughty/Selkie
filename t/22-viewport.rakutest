@@ -13,7 +13,7 @@ class TestContainer does Selkie::Container {
     method render() { self!render-children; self.clear-dirty }
 }
 
-plan 6;
+plan 7;
 
 subtest "widget viewport defaults to zero" => {
     plan 4;
@@ -100,4 +100,22 @@ subtest "set-viewport marks dirty on absolute-position change" => {
     $w.set-viewport(abs-y => 7, abs-x => 9, rows => 20, cols => 30);
     nok $w.is-dirty,
         "rows/cols change without abs change does not dirty (handle-resize covers that path)";
+};
+
+subtest "set-viewport tolerates pathological Int values without crashing" => {
+    plan 3;
+    # Regression: a MoarVM spesh mis-specialisation upstream can
+    # leave the Int slot holding a multi-thousand-bit bigint (see the
+    # memoization-revert note in App::Cairn::View::TaskRow). The
+    # renderer must not crash when this happens — position-changed
+    # uses boxed-Int `!=` so any-size values compare correctly.
+    my $w = TestWidget.new;
+    my Int $huge = 2 ** 3273;
+    lives-ok {
+        $w.set-viewport(:abs-y($huge), :abs-x(0), :rows(10), :cols(10));
+    }, "huge abs-y stored without unbox crash";
+    is $w.abs-y, $huge, "huge value round-trips through the slot";
+    lives-ok {
+        $w.set-viewport(:abs-y(0), :abs-x(0), :rows(10), :cols(10));
+    }, "follow-up reset compares old huge to new 0 without unbox crash";
 };

@@ -408,13 +408,21 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     # loop had warmed spesh statistics on this method, a later call
     # crashed with "P6opaque: get_boxed_ref could not unbox for the
     # representation 'P6bigint' of type Scalar" pointed at this
-    # method's signature line.
+    # method's signature line. Hoisting the comparison into a free
+    # sub gives spesh a fresh frame to specialise and that bug stops
+    # firing; the free-sub structure is the actual workaround.
     #
-    # Routing through a free sub with native-int parameters gives
-    # spesh a fresh, simpler frame to specialise; the boxed-Int
-    # comparison candidate that was being mis-specialised never
-    # appears. Screen coordinates are always well within int64 so
-    # the coercion at the call site is loss-free.
+    # The free sub takes boxed `Int` (not native `int`). An earlier
+    # iteration used native int as a spesh hint, on the assumption
+    # that screen coordinates always fit in int64. That assumption
+    # breaks when a corrupt bigint reaches the slot: a separate spesh
+    # mis-specialisation upstream (see the memoization-revert note in
+    # App::Cairn::View::TaskRow lines 148–158, "3274 bit wide
+    # bigint") can leave the Int storage holding a multi-thousand-bit
+    # value. Native-int parameters then fail to unbox and crash the
+    # renderer — collateral damage from a bug we can't prevent here.
+    # Boxed Int `!=` falls back to bigint comparison for any size, so
+    # the renderer keeps running regardless of what's in the slot.
     my $moved = position-changed($abs-y, $abs-x, $!abs-y, $!abs-x);
     $!abs-y = $abs-y;
     $!abs-x = $abs-x;
@@ -423,9 +431,10 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     self.mark-dirty if $moved;
 }
 
-# Native-int comparison helper, kept as a free sub so spesh sees a
-# clean specialisation target. See `set-viewport` for the rationale.
-sub position-changed(int $new-y, int $new-x, int $old-y, int $old-x --> Bool) {
+# Boxed-Int comparison helper, kept as a free sub so spesh sees a
+# clean specialisation target. See `set-viewport` for the rationale
+# (free sub + boxed Int — both load-bearing).
+sub position-changed(Int $new-y, Int $new-x, Int $old-y, Int $old-x --> Bool) {
     $new-y != $old-y || $new-x != $old-x;
 }
 

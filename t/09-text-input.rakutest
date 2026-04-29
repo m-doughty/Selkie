@@ -7,7 +7,7 @@ use Notcurses::Native::Types;
 
 use Selkie::Test::Keys;
 
-plan 30;
+plan 32;
 
 subtest "construction defaults" => {
     plan 3;
@@ -221,6 +221,39 @@ subtest "ctrl modifier bubbles up (not consumed by input)" => {
     );
     # With no keybinds registered on the widget, ctrl+q should not be consumed
     nok $ti.handle-event($ev), "ctrl+key not consumed by text input";
+};
+
+subtest "OS-composed alt char (e.g. UK Mac Alt-3 → '#') is typed" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    # ncinput would arrive as: id=0x33 ('3'), eff_text=0x23 ('#'),
+    # modifiers=NCKEY_MOD_ALT. Selkie::Event populates char from eff_text,
+    # so char='#' but id=51. The modifier filter must NOT swallow this.
+    my $ev = key-event(
+        id => '3'.ord,
+        char => '#',
+        modifiers => Set(Mod-Alt),
+    );
+    ok $ti.handle-event($ev), "composed-alt event consumed";
+    is $ti.text, '#', "composed character inserted into buffer";
+};
+
+subtest "plain alt chord (eff_text == id) still bubbles up" => {
+    plan 2;
+    my $ti = Selkie::Widget::TextInput.new;
+    $ti.resize(1, 40);
+    $ti.set-focused(True);
+    # Real Alt+N chord with no OS composition: eff_text == id, so char=='n'
+    # and id==110. Should still bubble so global Alt+N keybinds work.
+    my $ev = key-event(
+        id => 'n'.ord,
+        char => 'n',
+        modifiers => Set(Mod-Alt),
+    );
+    nok $ti.handle-event($ev), "alt+letter chord not consumed";
+    is $ti.text, '', "buffer untouched";
 };
 
 subtest "mask-char hides text" => {

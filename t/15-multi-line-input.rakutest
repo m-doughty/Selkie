@@ -9,7 +9,7 @@ use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 
-plan 38;
+plan 39;
 
 subtest "construction defaults" => {
     plan 5;
@@ -327,6 +327,21 @@ subtest "ctrl modifier bubbles up" => {
         id => 'q'.ord, char => 'q',
         modifiers => Set(Mod-Ctrl),
     )), "ctrl+key not consumed";
+};
+
+subtest "OS-composed alt char (e.g. UK Mac Alt-3 → '#') is typed" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    # See TextInput's matching test for the rationale.
+    my $ev = key-event(
+        id => '3'.ord,
+        char => '#',
+        modifiers => Set(Mod-Alt),
+    );
+    ok $mli.handle-event($ev), "composed-alt event consumed";
+    is $mli.text, '#', "composed character inserted";
 };
 
 subtest "on-change emits on character input" => {

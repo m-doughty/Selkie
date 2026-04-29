@@ -279,8 +279,13 @@ method handle-event(Selkie::Event $ev --> Bool) {
         }
     }
 
-    # Let Ctrl/Alt/Super bubble for global keybinds (except Ctrl+Enter handled above)
-    if $ev.has-modifier(Mod-Ctrl) || $ev.has-modifier(Mod-Alt) || $ev.has-modifier(Mod-Super) {
+    # Let Ctrl/Alt/Super bubble for global keybinds (except Ctrl+Enter
+    # handled above) — *unless* the OS keyboard layout already composed
+    # the modifier into a different printable character (e.g. UK Mac
+    # Alt-3 → '#'). See TextInput.handle-event for the full rationale.
+    my $composed = $ev.char.defined && $ev.char.chars == 1
+                && $ev.char.ord >= 32 && $ev.char.ord != $ev.id;
+    if !$composed && ($ev.has-modifier(Mod-Ctrl) || $ev.has-modifier(Mod-Alt) || $ev.has-modifier(Mod-Super)) {
         return self!check-keybinds($ev);
     }
 

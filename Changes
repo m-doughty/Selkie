@@ -2,6 +2,21 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.5.1  2026-04-29T00:45:16+01:00
+    - `Widget::TextInput` and `Widget::MultiLineInput` no longer
+      swallow OS-composed alt characters. The "modified keys (except
+      shift) bubble up for global keybinds" filter at the top of
+      `handle-event` now only fires when the event's char matches its
+      keysym (i.e. the modifier was held for chord intent, not OS
+      composition). When `eff_text` differs from `id` — UK Mac
+      Alt-3 → '#', US Mac Alt-2 → '™', and similar layout-driven
+      compositions across non-US keyboards — the composed character
+      is treated as typed input. Without this, those characters
+      were untypeable inside any focused TextInput / MultiLineInput.
+      Pure Alt+letter / Ctrl+letter chords (where char == keysym)
+      still bubble exactly as before, so global keybinds keep
+      working. Two regression tests cover the split.
+
 0.5.0  2026-04-27T22:51:02+01:00
     - `Widget::TextInput` and `Widget::MultiLineInput` now treat
       Shift+Left / Shift+Right as word-jump and Shift+Backspace as
