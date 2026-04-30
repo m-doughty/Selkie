@@ -2,6 +2,34 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.5.3  2026-04-30T02:49:37+01:00
+    - `Widget.set-viewport`: hardened against the long-standing
+      MoarVM spesh corruption that intermittently crashed the
+      renderer with "P6opaque: get_boxed_ref could not unbox for the
+      representation 'P6bigint' of type Scalar" pointed at the
+      attribute store. The previous workaround (free-sub
+      `position-changed` for boxed-Int comparison) covered the read
+      side; the assignment site `$!abs-y = $abs-y` was still
+      crashing on Scalar.STORE's inlined unbox when an upstream
+      spesh slot held a multi-thousand-bit bigint. New `safe-coord`
+      free sub uses `nqp::isbig_I` to detect any value that doesn't
+      fit in int64 — screen coordinates physically can't, so a
+      bigger-than-int64 result is the corruption signal — and
+      otherwise rebuilds a fresh boxed `Int` via
+      `nqp::unbox_i` + `nqp::box_i` so the subsequent attribute
+      STORE doesn't traverse the corrupted slot. Corrupt coords
+      log to STDERR ("skipping corrupt coord (bigint exceeds
+      int64); will retry next frame") and are skipped — the parent
+      layout re-passes coords every frame, and most spesh
+      corruption is local to a hot frame so clean values usually
+      arrive next render. The recurring log line, when it fires,
+      is the surest signal we have for an upstream-spesh repro
+      attempt. Existing `t/22-viewport.rakutest` regression
+      "tolerates pathological Int values" updated to reflect the
+      new reject-and-recover semantics (was: "stores any-size
+      value via boxed-Int dispatch", which was the half-truth that
+      missed the assignment crash).
+
 0.5.2  2026-04-30T00:41:27+01:00
     - `Selkie::App` modals now stack. Calling `show-modal` while a
       modal is already open pushes the new modal on top instead of

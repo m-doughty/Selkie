@@ -294,6 +294,8 @@ method render() {
 
 unit role Selkie::Widget;
 
+use nqp;
+
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
@@ -401,31 +403,48 @@ method viewport-cols(--> UInt) { $!viewport-cols }
     affected widget; Image's cache check then short-circuits the
     re-blit when its own state didn't change. )
 method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
-    # The dirty-on-position-change check (added in 0.4.6 for the
-    # Image avatar-ghost fix) is delegated to a free sub rather than
-    # written inline. Inlined boxed-Int `!=` here triggered a MoarVM
-    # spesh mis-specialisation on this hot path — once the render
-    # loop had warmed spesh statistics on this method, a later call
-    # crashed with "P6opaque: get_boxed_ref could not unbox for the
-    # representation 'P6bigint' of type Scalar" pointed at this
-    # method's signature line. Hoisting the comparison into a free
-    # sub gives spesh a fresh frame to specialise and that bug stops
-    # firing; the free-sub structure is the actual workaround.
+    # Defensive gate against MoarVM spesh corruption on the renderer's
+    # hot path. Two layers, both load-bearing:
     #
-    # The free sub takes boxed `Int` (not native `int`). An earlier
-    # iteration used native int as a spesh hint, on the assumption
-    # that screen coordinates always fit in int64. That assumption
-    # breaks when a corrupt bigint reaches the slot: a separate spesh
-    # mis-specialisation upstream (see the memoization-revert note in
-    # App::Cairn::View::TaskRow lines 148–158, "3274 bit wide
-    # bigint") can leave the Int storage holding a multi-thousand-bit
-    # value. Native-int parameters then fail to unbox and crash the
-    # renderer — collateral damage from a bug we can't prevent here.
-    # Boxed Int `!=` falls back to bigint comparison for any size, so
-    # the renderer keeps running regardless of what's in the slot.
-    my $moved = position-changed($abs-y, $abs-x, $!abs-y, $!abs-x);
-    $!abs-y = $abs-y;
-    $!abs-x = $abs-x;
+    # 1. `position-changed` — boxed-Int comparison delegated to a free
+    #    sub. An inlined `!=` here triggered a spesh mis-specialisation
+    #    on this method's signature line once the render loop warmed
+    #    spesh statistics; the fresh-frame trick clears it. Boxed Int
+    #    (not native int) means the comparison falls back to bigint
+    #    dispatch at any size, so the read side rides through whatever
+    #    upstream corruption produced.
+    #
+    # 2. `safe-coord` — bounds-via-bigint-width gate on the *store*
+    #    side. The previous `$!abs-y = $abs-y` direct assignment
+    #    crashed with "P6opaque: get_boxed_ref could not unbox for the
+    #    representation 'P6bigint' of type Scalar" when an upstream
+    #    spesh mis-specialisation (e.g. App::Cairn's old
+    #    View::TaskRow memoization, see its revert note for the "3274
+    #    bit wide bigint" symptom) put a multi-thousand-bit value in
+    #    the slot. The boxed comparison rode through fine but
+    #    Scalar.STORE's inlined unbox didn't. `safe-coord` checks
+    #    width via `nqp::isbig_I` (which doesn't take the corrupt
+    #    unbox path) and returns a freshly-reboxed clean Int when the
+    #    value fits in int64, or Nil when it doesn't.
+    #
+    # When safe-coord rejects either coord, we log + skip the update.
+    # The parent layout re-passes coords every frame, and most spesh
+    # corruption is local to a hot frame — clean values usually
+    # arrive on the next render. Worst case is stale position + log
+    # spam (which is itself useful: a recurring log line is the
+    # surest signal we have that upstream spesh is misbehaving and
+    # should be repro'd for an upstream report).
+    my $safe-y = safe-coord($abs-y);
+    my $safe-x = safe-coord($abs-x);
+    unless $safe-y.defined && $safe-x.defined {
+        note "Selkie::Widget.set-viewport: skipping corrupt coord "
+           ~ "(bigint exceeds int64); will retry next frame";
+        return;
+    }
+
+    my $moved = position-changed($safe-y, $safe-x, $!abs-y, $!abs-x);
+    $!abs-y = $safe-y;
+    $!abs-x = $safe-x;
     $!viewport-rows = $rows;
     $!viewport-cols = $cols;
     self.mark-dirty if $moved;
@@ -436,6 +455,21 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
 # (free sub + boxed Int — both load-bearing).
 sub position-changed(Int $new-y, Int $new-x, Int $old-y, Int $old-x --> Bool) {
     $new-y != $old-y || $new-x != $old-x;
+}
+
+# Bounds-via-bigint-width gate. Returns a freshly-reboxed clean Int
+# when the value fits in int64 (so the subsequent attribute STORE in
+# `set-viewport` operates on a value spesh hasn't mis-specialised),
+# or Nil when the bigint exceeds int64 — the corruption signal:
+# screen coordinates can't legitimately need >int64 storage, so
+# anything wider is upstream spesh corruption. `nqp::isbig_I` does
+# the width check at the NQP level, sidestepping the spesh-corrupt
+# Raku unbox path that the direct assignment used to crash on.
+sub safe-coord(Int $n) {
+    my $d := nqp::decont($n);
+    nqp::isbig_I($d)
+        ?? Nil
+        !! nqp::box_i(nqp::unbox_i($d), Int);
 }
 
 #|( The effective theme for this widget. Walks up the parent chain until

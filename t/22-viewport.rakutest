@@ -102,20 +102,47 @@ subtest "set-viewport marks dirty on absolute-position change" => {
         "rows/cols change without abs change does not dirty (handle-resize covers that path)";
 };
 
-subtest "set-viewport tolerates pathological Int values without crashing" => {
-    plan 3;
-    # Regression: a MoarVM spesh mis-specialisation upstream can
-    # leave the Int slot holding a multi-thousand-bit bigint (see the
+subtest "set-viewport rejects pathological Int values via safe-coord gate" => {
+    plan 7;
+    # Regression: a MoarVM spesh mis-specialisation upstream can leave
+    # the Int slot holding a multi-thousand-bit bigint (see the
     # memoization-revert note in App::Cairn::View::TaskRow). The
-    # renderer must not crash when this happens — position-changed
-    # uses boxed-Int `!=` so any-size values compare correctly.
+    # renderer must not crash. Earlier behavior was "store the big
+    # value and rely on boxed-Int dispatch to keep the comparison
+    # working" — but that left the assignment site (line 427's
+    # `$!abs-y = $abs-y`) crashing on Scalar.STORE's inlined unbox.
+    #
+    # New behavior: safe-coord uses nqp::isbig_I to detect any value
+    # that doesn't fit in int64 and signals corruption via Nil.
+    # set-viewport then logs to STDERR and skips the update — the
+    # widget keeps its previous (clean) coords, the parent layout
+    # re-passes coords on the next render, and recovery is automatic
+    # if the upstream spesh slot has cleared.
     my $w = TestWidget.new;
+    # Seed a known-good baseline so we can verify the rejected update
+    # leaves the slot untouched.
+    $w.set-viewport(:abs-y(7), :abs-x(11), :rows(10), :cols(10));
+    is $w.abs-y, 7, "baseline abs-y stored cleanly";
+    is $w.abs-x, 11, "baseline abs-x stored cleanly";
+
     my Int $huge = 2 ** 3273;
+    # Suppress the expected `note` so prove6 output stays clean. The
+    # log message itself is part of the contract — see line 422 in
+    # Selkie::Widget — but we don't need to parse it here.
+    my $captured-note;
+    quietly {
+        lives-ok {
+            $w.set-viewport(:abs-y($huge), :abs-x(0), :rows(10), :cols(10));
+        }, "huge abs-y is rejected without crashing";
+    }
+    is $w.abs-y, 7, "rejected coord doesn't overwrite the prior clean abs-y";
+    is $w.abs-x, 11, "rejected coord doesn't overwrite the prior clean abs-x";
+
+    # Recovery: the next set-viewport call with sane values must work
+    # exactly as if the corrupt call never happened.
     lives-ok {
-        $w.set-viewport(:abs-y($huge), :abs-x(0), :rows(10), :cols(10));
-    }, "huge abs-y stored without unbox crash";
-    is $w.abs-y, $huge, "huge value round-trips through the slot";
-    lives-ok {
-        $w.set-viewport(:abs-y(0), :abs-x(0), :rows(10), :cols(10));
-    }, "follow-up reset compares old huge to new 0 without unbox crash";
+        $w.set-viewport(:abs-y(42), :abs-x(99), :rows(10), :cols(10));
+    }, "follow-up call with sane coords succeeds after a rejected one";
+    is-deeply (:y($w.abs-y), :x($w.abs-x)).hash, (:y(42), :x(99)).hash,
+        "post-recovery slot holds the sane coords";
 };
