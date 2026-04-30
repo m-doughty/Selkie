@@ -82,6 +82,21 @@ method new(*%args --> Selkie::Widget::RadioGroup) {
     callwith(|%args);
 }
 
+submethod TWEAK() {
+    # Primary click on a row commits that row as the new selection
+    # — radio buttons short-circuit the cursor-then-Enter dance the
+    # keyboard path uses, since mouse intent is unambiguous. Clicks
+    # on the scrollbar column fall through (no scrollbar-thumb drag
+    # in v1 for RadioGroup; scroll-wheel covers the common case).
+    self.on-click: -> $ev {
+        my $row = self.local-row($ev);
+        if $row >= 0 {
+            my $idx = $!scroll-offset + $row;
+            self.select-index($idx) if @!items && $idx < @!items.elems;
+        }
+    };
+}
+
 method items(--> List) { @!items.List }
 method cursor(--> UInt) { $!cursor }
 method selected(--> UInt) { $!selected }
@@ -269,7 +284,8 @@ method handle-event(Selkie::Event $ev --> Bool) {
         }
     }
 
-    # Mouse scroll
+    # Mouse: route scroll-wheel into cursor movement, click handlers
+    # registered in TWEAK pick up press events.
     if $ev.event-type ~~ MouseEvent {
         given $ev.id {
             when NCKEY_SCROLL_UP {
@@ -281,6 +297,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
                 return True;
             }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
 
     False;

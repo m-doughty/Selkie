@@ -19,7 +19,10 @@ $ok.on-press.tap: -> $ { $app.store.dispatch('form/save') };
 =head1 DESCRIPTION
 
 Emits on its C<on-press> Supply when the user presses C<Enter> or
-C<Space> while focused. Highlights visually while focused.
+C<Space> while focused, or when they primary-click anywhere on the
+button. Highlights visually while focused. The click path also takes
+focus first (via L<Selkie::App>'s click-to-focus), so a mouse-driven
+press leaves the button in the same state a keyboard press would.
 
 Focusable by default (no need to pass C<focusable => True>). The label
 is immutable after construction — build a new button if you need
@@ -69,6 +72,14 @@ has Supplier $!press-supplier = Supplier.new;
 method new(*%args --> Selkie::Widget::Button) {
     %args<focusable> //= True;
     callwith(|%args);
+}
+
+submethod TWEAK() {
+    # Mouse press fires the same activate path as Enter / Space. App's
+    # dispatcher has already given us focus by the time this fires
+    # (click-to-focus runs on PRESS before delivery), so the supply
+    # emit matches the keyboard activation contract exactly.
+    self.on-click: -> $ { $!press-supplier.emit(True) };
 }
 
 #| Supply that emits each time the user activates the button (Enter or
@@ -121,6 +132,15 @@ method render() {
 }
 
 method handle-event(Selkie::Event $ev --> Bool) {
+    # Mouse events route through the registration API regardless of
+    # focus state — App's coordinate-based dispatch only reaches us
+    # if a click landed in our rect, and click-to-focus has already
+    # promoted us to the focused widget on press.
+    if $ev.event-type ~~ MouseEvent {
+        return True if self!dispatch-mouse-handlers($ev);
+        return False;
+    }
+
     return False unless $!focused;
 
     if $ev.event-type ~~ KeyEvent {

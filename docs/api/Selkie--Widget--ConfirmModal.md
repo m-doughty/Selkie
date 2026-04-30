@@ -35,6 +35,8 @@ Use `$cm.no-button` (or `yes-button`) when calling `focus` on the app so the def
 
 Build the modal with `build(...)` and pass the returned Modal to `$app.show-modal`. The `.modal` accessor returns the same Modal after construction.
 
+A primary mouse click on either button activates it — Selkie::App's coordinate dispatcher routes the click to the deepest hit (the Button widget itself), and Button's built-in click handler fires the same `on-press` path Enter / Space drive. The default `dismiss-on-click-outside` stays False (a Yes/No decision shouldn't be silently abandoned by a stray click).
+
 EXAMPLES
 ========
 

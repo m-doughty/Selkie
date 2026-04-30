@@ -7,7 +7,7 @@ use Notcurses::Native::Types;
 
 use Selkie::Test::Keys;
 
-plan 32;
+plan 39;
 
 subtest "construction defaults" => {
     plan 3;
@@ -286,37 +286,41 @@ sub typed-input(Str:D $text, UInt :$cols = 80) {
     $ti;
 }
 
-subtest "shift+left jumps to start of previous word" => {
-    plan 2;
+subtest "shift+left extends selection to previous word" => {
+    plan 3;
     my $ti = typed-input('hello world foo');
-    # cursor is at end (15). shift+left → 'foo' starts at 12.
+    # cursor is at end (15). shift+left selects back to 'foo' start (12).
     $ti.handle-event(key-event('shift+left'));
+    is $ti.selected-text, 'foo', 'first jump selects "foo"';
+    # Typing replaces the selection — canonical text-editor behaviour.
     $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
-    is $ti.text, 'hello world Xfoo', "first jump landed at 'foo' start";
+    is $ti.text, 'hello world X', 'type replaces selected word';
 
-    # next shift+left from 'X' goes to 'world' start.
-    $ti.handle-event(key-event(id => NCKEY_BACKSPACE));
-    $ti.handle-event(key-event('shift+left'));
+    # Selection cleared after replacement. Re-verify by jumping again.
+    $ti.handle-event(key-event('shift+left'));   # selects 'X'
+    $ti.handle-event(key-event('shift+left'));   # extends selection to 'world '
     $ti.handle-event(key-event(id => 'Y'.ord, char => 'Y'));
-    is $ti.text, 'hello Yworld foo', "second jump landed at 'world' start";
+    is $ti.text, 'hello Y', 'second extension covers world+X';
 };
 
-subtest "shift+right jumps to start of next word" => {
-    plan 1;
+subtest "shift+right extends selection to next word" => {
+    plan 2;
     my $ti = typed-input('hello world foo');
     $ti.handle-event(key-event(id => NCKEY_HOME));
-    $ti.handle-event(key-event('shift+right'));   # to 'world' start
+    $ti.handle-event(key-event('shift+right'));
+    is $ti.selected-text, 'hello ', 'extends to start of next word';
     $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
-    is $ti.text, 'hello Xworld foo', "first jump landed at 'world' start";
+    is $ti.text, 'Xworld foo', 'type replaces selected leading-word run';
 };
 
 subtest "shift+left at start of buffer is a no-op" => {
-    plan 1;
+    plan 2;
     my $ti = typed-input('hello');
     $ti.handle-event(key-event(id => NCKEY_HOME));
     $ti.handle-event(key-event('shift+left'));
+    nok $ti.has-selection, 'no selection — there was nothing to extend over';
     $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
-    is $ti.text, 'Xhello', "buffer unchanged in position";
+    is $ti.text, 'Xhello', 'X inserts at the front';
 };
 
 subtest "shift+backspace deletes the previous word" => {
@@ -370,4 +374,76 @@ subtest "insert-text strips control chars and newlines (single-line)" => {
     $ti.set-focused(True);
     $ti.insert-text("hello\nworld\ttab\r\nbye");
     is $ti.text, 'helloworldtabbye', "control chars and newlines dropped";
+};
+
+# --- Selection model + mouse ---
+
+subtest "ctrl+a selects the whole buffer" => {
+    plan 2;
+    my $ti = typed-input('hello world');
+    $ti.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    ok $ti.has-selection, 'selection active after ctrl+a';
+    is $ti.selected-text, 'hello world', 'selection covers full buffer';
+};
+
+subtest "ctrl+c emits selected text without modifying buffer" => {
+    plan 3;
+    my $ti = typed-input('hello world');
+    $ti.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    my $copied;
+    $ti.on-copy.tap: -> $t { $copied = $t };
+    $ti.handle-event(key-event(id => 'c'.ord, modifiers => Set(Mod-Ctrl)));
+    is $copied, 'hello world', 'on-copy fired with selected text';
+    is $ti.text, 'hello world', 'buffer unchanged after copy';
+    ok $ti.has-selection, 'selection still active after copy';
+};
+
+subtest "ctrl+x emits selected text and deletes the selection" => {
+    plan 3;
+    my $ti = typed-input('hello world');
+    $ti.handle-event(key-event(id => NCKEY_HOME));
+    $ti.handle-event(key-event('shift+right'));
+    my $cut;
+    $ti.on-cut.tap: -> $t { $cut = $t };
+    $ti.handle-event(key-event(id => 'x'.ord, modifiers => Set(Mod-Ctrl)));
+    is $cut, 'hello ', 'on-cut fired with selected text';
+    is $ti.text, 'world', 'cut removed selection from buffer';
+    nok $ti.has-selection, 'selection cleared after cut';
+};
+
+subtest "typing replaces an active selection" => {
+    plan 1;
+    my $ti = typed-input('hello world');
+    $ti.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $ti.text, 'X', 'typed char replaced full selection';
+};
+
+subtest "backspace deletes an active selection" => {
+    plan 1;
+    my $ti = typed-input('hello world');
+    $ti.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    $ti.handle-event(key-event(id => NCKEY_BACKSPACE));
+    is $ti.text, '', 'backspace deleted full selection';
+};
+
+subtest "primary click positions caret at clicked column" => {
+    plan 2;
+    my $ti = typed-input('hello world');
+    # Place the widget at known abs coordinates so local-col makes sense.
+    $ti.set-viewport(abs-y => 0, abs-x => 0, rows => 1, cols => 80);
+    $ti.handle-event(mouse-event(id => NCKEY_BUTTON1, y => 0, x => 6,
+                                 input-type => NCTYPE_PRESS, click-count => 1));
+    nok $ti.has-selection, 'no selection from a single click';
+    $ti.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $ti.text, 'hello Xworld', 'X inserted at clicked column';
+};
+
+subtest "double-click selects the word under the cursor" => {
+    plan 1;
+    my $ti = typed-input('hello world foo');
+    $ti.set-viewport(abs-y => 0, abs-x => 0, rows => 1, cols => 80);
+    $ti.handle-event(mouse-event(id => NCKEY_BUTTON1, y => 0, x => 8,
+                                 input-type => NCTYPE_PRESS, click-count => 2));
+    is $ti.selected-text, 'world', 'double-click selected the word at column 8';
 };

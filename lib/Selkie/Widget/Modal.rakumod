@@ -93,6 +93,19 @@ has Selkie::Widget $!content;
 has Rat $.width-ratio = 0.8;
 has Rat $.height-ratio = 0.6;
 has Bool $.dim-background = True;
+
+#|( When True, a primary mouse click outside the modal's content
+    rectangle dismisses the modal — the framework calls
+    C<Selkie::App.close-modal>, restoring the pre-modal focus and
+    revealing whatever was behind. Default False matches the
+    keyboard focus-trap behavior: stray clicks in the dimmed
+    backdrop are ignored. Subclasses override the default by
+    passing C<:dismiss-on-click-outside> to their parent
+    constructor — C<HelpOverlay> defaults to True (lightweight
+    informational overlay), C<ConfirmModal> stays False (a Yes/No
+    decision shouldn't be silently abandoned). )
+has Bool $.dismiss-on-click-outside = False;
+
 has NcplaneHandle $!bg-plane;
 has Supplier $!close-supplier = Supplier.new;
 

@@ -109,6 +109,43 @@ method new(*%args --> Selkie::Widget::TabBar) {
     callwith(|%args);
 }
 
+submethod TWEAK() {
+    # Primary mouse click activates the tab under the cursor (and
+    # re-emits if the click hits the already-active tab — same
+    # contract as Enter/Space on the active index).
+    self.on-click: -> $ev {
+        my $col = self.local-col($ev);
+        if $col >= 0 {
+            my $idx = self!tab-index-at-col($col);
+            if $idx >= 0 {
+                if $idx == $!active-idx {
+                    $!select-supplier.emit(@!tabs[$idx]<name>) if @!tabs;
+                } else {
+                    self!activate($idx);
+                }
+            }
+        }
+    };
+}
+
+# Map a local column to the tab index whose rendered span covers it.
+# Returns -1 when the cursor is in the focus prefix or past the last
+# tab. Mirrors the per-tab width computation in render() exactly so
+# hit-testing stays consistent with the visible layout.
+method !tab-index-at-col(Int $col --> Int) {
+    return -1 unless @!tabs;
+    my $x = 2;          # focus prefix is always 2 cells (▶/space + space)
+    return -1 if $col < $x;
+    for @!tabs.kv -> $i, %tab {
+        my $width = $i == $!active-idx
+            ?? "[ {%tab<label>} ]".chars
+            !! "  {%tab<label>}  ".chars;
+        return $i if $col < $x + $width;
+        $x += $width;
+    }
+    -1;
+}
+
 #|( Register a tab. C<name> is the identifier (usually matches a
     screen name); C<label> is what's shown to the user. Tabs render
     in the order they're added. )
@@ -262,6 +299,11 @@ method render() {
 }
 
 method handle-event(Selkie::Event $ev --> Bool) {
+    if $ev.event-type ~~ MouseEvent {
+        return True if self!dispatch-mouse-handlers($ev);
+        return False;
+    }
+
     return False unless $!focused;
 
     if $ev.event-type ~~ KeyEvent {

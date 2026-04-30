@@ -17,7 +17,7 @@ $ok.on-press.tap: -> $ { $app.store.dispatch('form/save') };
 DESCRIPTION
 ===========
 
-Emits on its `on-press` Supply when the user presses `Enter` or `Space` while focused. Highlights visually while focused.
+Emits on its `on-press` Supply when the user presses `Enter` or `Space` while focused, or when they primary-click anywhere on the button. Highlights visually while focused. The click path also takes focus first (via [Selkie::App](Selkie--App.md)'s click-to-focus), so a mouse-driven press leaves the button in the same state a keyboard press would.
 
 Focusable by default (no need to pass `focusable =` True>). The label is immutable after construction — build a new button if you need different text.
 

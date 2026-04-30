@@ -361,6 +361,74 @@ $app.focus-prev;
 $app.focus($specific-widget);
 ```
 
+MOUSE SUPPORT
+=============
+
+Mouse support is enabled by default. `Selkie::App` calls `notcurses_mice_enable` on construction (button + drag events), and the dispatcher routes presses, drags, releases, and scroll-wheel through the same `handle-event` path keystrokes use — but with a different routing rule: **mouse events follow coordinates, not focus**.
+
+Dispatch model
+--------------
+
+  * **Keyboard** goes to the focused widget, then ancestors, then global keybinds.
+
+  * **Mouse** goes to the deepest widget under the cursor, then ancestors, then global keybinds.
+
+  * A primary press on a focusable widget gives it focus **before** the event is delivered. Mouse-driven activation matches keyboard-driven activation.
+
+  * **Drag capture**: a press on widget X routes subsequent drag and release events for that button to X regardless of where the cursor is. Scrollbar drags and text-selection drags work even when the cursor leaves the widget.
+
+  * **Modal isolation**: clicks outside the active modal are dropped by default. Pass `:dismiss-on-click-outside` to opt in (`HelpOverlay` uses this; `ConfirmModal` deliberately doesn't).
+
+Per-widget API
+--------------
+
+The same shape as `on-key`:
+
+```raku
+$widget.on-click: -> $ev {
+    say "clicked at row {$widget.local-row($ev)}, col {$widget.local-col($ev)}";
+};
+$widget.on-click: -> $ev { open-context }, button => 3;   # right-click
+
+$widget.on-scroll: -> $ev {
+    given $ev.id {
+        when NCKEY_SCROLL_UP   { ... }
+        when NCKEY_SCROLL_DOWN { ... }
+    }
+};
+
+$widget.on-drag: -> $ev { ... };          # press + motion-with-button-held
+$widget.on-mouse-down: -> $ev { ... };    # every press
+$widget.on-mouse-up:   -> $ev { ... };    # every release
+```
+
+`self.local-row($ev)` / `self.local-col($ev)` translate absolute screen coordinates into widget-local cells. `contains-point(y, x)` exposes the same hit-test the framework uses.
+
+Press events carry a `click-count` annotation: 1 = single, 2 = double, 3 = triple. The framework counts a press as a continuation of the previous click when it lands on the same cell with the same button within 300 ms.
+
+What every built-in widget does with the mouse
+----------------------------------------------
+
+  * **Button**, **Checkbox** — primary click activates / toggles.
+
+  * **TabBar** — primary click activates the tab under the cursor.
+
+  * **RadioGroup**, **ListView**, **Table** — single-click selects the row; scroll wheel moves the cursor. Table also clicks the column header to cycle sort. ListView and Table fire `on-activate` on double-click.
+
+  * **Select** — click toggles the dropdown; scroll wheel scrolls the open dropdown; click on a dropdown row commits.
+
+  * **TextInput**, **MultiLineInput** — click positions the caret; drag selects; double-click selects the word; triple-click selects the line / buffer; Ctrl+A selects all; Ctrl+C / Ctrl+X emit on `on-copy` / `on-cut` supplies (apps wire the system clipboard themselves via OSC 52 or notcurses paste-buffer).
+
+  * **CardList** — click selects the card under the cursor; scroll wheel moves between cards.
+
+  * **ScrollView**, **TextStream** — scroll wheel scrolls; drag on the scrollbar column drags the thumb.
+
+  * **ConfirmModal**, **CommandPalette**, **FileBrowser** — clicks fall through to the embedded Button / ListView / TextInput, which handle them with their built-in behaviour.
+
+  * **HelpOverlay** — click outside dismisses (it sets `dismiss-on-click-outside`); the embedded Close button still works.
+
+Display-only widgets (Text, RichText, Image, Border, ProgressBar, Spinner, Toast, Legend, all charts) don't react to mouse — Border passes through to its content.
+
 LAYOUTS
 =======
 

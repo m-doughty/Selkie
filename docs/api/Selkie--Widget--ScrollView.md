@@ -46,9 +46,21 @@ SEE ALSO
 
   * [Selkie::Widget::CardList](Selkie--Widget--CardList.md) — interactive variable-height list
 
+### has Bool $!follow-active
+
+Persistent tail-follow state, only meaningful when `follow-bottom` is True. Computed once on every user-driven `scroll-to` call (the funnel that scroll-by, scroll-page-by, scroll-to-end, scroll-to-start, mouse wheel, and scrollbar drag all route through), based on whether the user landed at `max-offset` or not. `render` reads this flag without touching it — content-height changes between frames don't affect follow status. The previous implementation computed "follow active" per render by checking `scroll-offset `= max-offset> against the OLD content-height. That snapshot proved fragile: CardList resizes mid-frame change `self.rows` and so `max-offset` before content-height is even re-measured, and children with lazy `logical-height` (RichText) can briefly report stale heights between `set-content` and the next render. Either fragility flipped the per-frame check to False and silently disabled tail-follow for streaming bodies. Tracking persistent state survives both.
+
 ### has Bool $.follow-bottom
 
 Auto-pin to the bottom of content as it grows. When True, each render checks whether the scroll offset was at `max-offset` just before `update-content-height` ran; if so, it snaps the new offset to the new `max-offset`. Streaming additions stay visible without manual scrolling. When False, scroll position is preserved across content changes (with clamping).
+
+### method follow-active
+
+```raku
+method follow-active() returns Bool
+```
+
+Read-only view of the persistent tail-follow flag. True when `follow-bottom` is enabled and the user is currently at (or has been clamped to) `max-offset`. Useful for app code that wants to surface a "follow-mode" indicator in the UI, and for tests to verify follow transitions without driving a full render. Always True for views constructed with `follow-bottom =` False> — the flag is simply unused.
 
 ### method scroll-page-by
 

@@ -159,6 +159,10 @@ Mouse Y coordinate for `MouseEvent`, -1 otherwise.
 
 Mouse X coordinate for `MouseEvent`, -1 otherwise.
 
+### has Int $.click-count
+
+Click multiplicity for `MouseEvent` presses: 1 for a single click, 2 for a double-click, 3 for a triple-click. `0` for everything else (motion, drag, release, scroll, keyboard / resize events). Computed by `Selkie::App` from the inter-press timing and target cell — widgets read this to distinguish e.g. "select" from "open" in [Selkie::Widget::FileBrowser](Selkie--Widget--FileBrowser.md).
+
 ### method has-modifier
 
 ```raku
@@ -168,6 +172,16 @@ method has-modifier(
 ```
 
 True if the given modifier is part of the event's modifier set.
+
+### method with-click-count
+
+```raku
+method with-click-count(
+    Int $n
+) returns Selkie::Event
+```
+
+Return a fresh `Selkie::Event` identical to this one but with the given `click-count`. Used by `Selkie::App`'s mouse dispatcher to annotate a press event with its multiplicity before delivery.
 
 ### method has-any-modifier
 
@@ -237,4 +251,45 @@ method matches(
 ```
 
 Does the given event match this keybind? Letter binds are case-insensitive — `'a'` matches a typed `A` with Shift held. All other binds require an exact modifier-set match.
+
+MouseHandler
+============
+
+A registered click / scroll / drag / mouse-down / mouse-up handler, produced by the `on-click` / `on-scroll` / etc. methods on [Selkie::Widget](Selkie--Widget.md). Surfaced via `mouse-handlers` so help overlays can list registered mouse interactions alongside keyboard binds. Apps don't normally construct these directly.
+
+### has Str $.kind
+
+The kind of event this handler responds to: one of `'click'`, `'scroll'`, `'drag'`, `'mouse-down'`, `'mouse-up'`.
+
+### has UInt $.button
+
+The button this handler fires on (1=primary, 2=middle, 3=right). `0` is the wildcard "any button" — used by `on-scroll` (where the wheel arrives as buttons 4 and 5) and by low-level handlers that want to see every press.
+
+### has Callable &.handler
+
+The handler callable; receives the `Selkie::Event`.
+
+### has Str $.description
+
+Optional human-readable description, surfaced in help overlays.
+
+### sub mouse-event-kinds
+
+```raku
+sub mouse-event-kinds(
+    Selkie::Event $ev
+) returns List
+```
+
+Classify a mouse event into the list of `MouseHandler.kind`s it should fan out to. A press fires both `'click'` and `'mouse-down'` handlers; a release fires `'mouse-up'`; drag motion fires `'drag'`; scroll wheel fires `'scroll'`. Empty list for events that don't match any kind (e.g. unknown id).
+
+### sub mouse-event-button
+
+```raku
+sub mouse-event-button(
+    Selkie::Event $ev
+) returns UInt
+```
+
+Extract the 1-indexed button number from a mouse event id. Scroll events are buttons 4 and 5 by encoding; pure motion (NCKEY_MOTION) has no associated button and returns `0`.
 

@@ -177,9 +177,33 @@ has Int $.y = -1;
 #| Mouse X coordinate for C<MouseEvent>, -1 otherwise.
 has Int $.x = -1;
 
+#|( Click multiplicity for C<MouseEvent> presses: 1 for a single click,
+    2 for a double-click, 3 for a triple-click. C<0> for everything else
+    (motion, drag, release, scroll, keyboard / resize events). Computed
+    by C<Selkie::App> from the inter-press timing and target cell —
+    widgets read this to distinguish e.g. "select" from "open" in
+    L<Selkie::Widget::FileBrowser>. )
+has Int $.click-count = 0;
+
 #| True if the given modifier is part of the event's modifier set.
 method has-modifier(Modifier $mod --> Bool) {
     $mod ∈ $!modifiers;
+}
+
+#|( Return a fresh C<Selkie::Event> identical to this one but with the
+    given C<click-count>. Used by C<Selkie::App>'s mouse dispatcher to
+    annotate a press event with its multiplicity before delivery. )
+method with-click-count(Int $n --> Selkie::Event) {
+    Selkie::Event.new(
+        id          => $!id,
+        char        => $!char,
+        modifiers   => $!modifiers,
+        input-type  => $!input-type,
+        event-type  => $!event-type,
+        y           => $!y,
+        x           => $!x,
+        click-count => $n,
+    );
 }
 
 #| True if any modifier is held. Useful for "pass bare keys to the
@@ -367,5 +391,74 @@ class Keybind is export {
         }
         return False unless $ev.modifiers eqv $!modifiers;
         $ev.id == $!id;
+    }
+}
+
+=begin pod
+
+=head1 MouseHandler
+
+A registered click / scroll / drag / mouse-down / mouse-up handler,
+produced by the C<on-click> / C<on-scroll> / etc. methods on
+L<Selkie::Widget>. Surfaced via C<mouse-handlers> so help overlays
+can list registered mouse interactions alongside keyboard binds.
+Apps don't normally construct these directly.
+
+=end pod
+
+class MouseHandler is export {
+    #| The kind of event this handler responds to: one of C<'click'>,
+    #| C<'scroll'>, C<'drag'>, C<'mouse-down'>, C<'mouse-up'>.
+    has Str $.kind;
+
+    #| The button this handler fires on (1=primary, 2=middle, 3=right).
+    #| C<0> is the wildcard "any button" — used by C<on-scroll> (where
+    #| the wheel arrives as buttons 4 and 5) and by low-level handlers
+    #| that want to see every press.
+    has UInt $.button;
+
+    #| The handler callable; receives the C<Selkie::Event>.
+    has &.handler is required;
+
+    #| Optional human-readable description, surfaced in help overlays.
+    has Str $.description = '';
+}
+
+#|( Classify a mouse event into the list of C<MouseHandler.kind>s it
+    should fan out to. A press fires both C<'click'> and
+    C<'mouse-down'> handlers; a release fires C<'mouse-up'>; drag
+    motion fires C<'drag'>; scroll wheel fires C<'scroll'>. Empty list
+    for events that don't match any kind (e.g. unknown id). )
+sub mouse-event-kinds(Selkie::Event $ev --> List) is export {
+    return ().List unless $ev.event-type ~~ MouseEvent;
+    given $ev.id {
+        when NCKEY_SCROLL_UP | NCKEY_SCROLL_DOWN { return ('scroll',).List }
+        when NCKEY_MOTION { return ('drag',).List }
+    }
+    given $ev.input-type {
+        when NCTYPE_PRESS   { return <click mouse-down>.List }
+        when NCTYPE_REPEAT  { return ('drag',).List }
+        when NCTYPE_RELEASE { return ('mouse-up',).List }
+    }
+    ().List;
+}
+
+#|( Extract the 1-indexed button number from a mouse event id.
+    Scroll events are buttons 4 and 5 by encoding; pure motion (NCKEY_MOTION)
+    has no associated button and returns C<0>. )
+sub mouse-event-button(Selkie::Event $ev --> UInt) is export {
+    given $ev.id {
+        when NCKEY_BUTTON1  { 1 }
+        when NCKEY_BUTTON2  { 2 }
+        when NCKEY_BUTTON3  { 3 }
+        when NCKEY_BUTTON4  { 4 }   # scroll up
+        when NCKEY_BUTTON5  { 5 }   # scroll down
+        when NCKEY_BUTTON6  { 6 }
+        when NCKEY_BUTTON7  { 7 }
+        when NCKEY_BUTTON8  { 8 }
+        when NCKEY_BUTTON9  { 9 }
+        when NCKEY_BUTTON10 { 10 }
+        when NCKEY_BUTTON11 { 11 }
+        default             { 0 }
     }
 }

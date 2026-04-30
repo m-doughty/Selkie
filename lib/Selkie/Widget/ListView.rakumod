@@ -87,6 +87,35 @@ method new(*%args --> Selkie::Widget::ListView) {
     callwith(|%args);
 }
 
+submethod TWEAK() {
+    # Single-click moves the cursor to the row under the pointer (same
+    # semantics as Up/Down — selection only). Double-click activates,
+    # matching the on-activate keyboard path (Enter). Clicks on the
+    # scrollbar column fall through; scroll-wheel covers the common
+    # navigation case for v1.
+    self.on-click: -> $ev {
+        my $row = self.local-row($ev);
+        my $col = self.local-col($ev);
+        if $row >= 0 && $col >= 0 {
+            my UInt $vw = self.cols;
+            my Bool $need-scrollbar = $!show-scrollbar && @!items.elems > self.rows;
+            my UInt $content-w = $need-scrollbar ?? $vw - 1 !! $vw;
+            if $col < $content-w {
+                my $idx = $!scroll-offset + $row;
+                if @!items && $idx < @!items.elems {
+                    if $idx != $!cursor {
+                        $!cursor = $idx;
+                        self!ensure-visible;
+                        self.mark-dirty;
+                        $!select-supplier.emit(self.selected);
+                    }
+                    $!activate-supplier.emit(self.selected) if $ev.click-count >= 2;
+                }
+            }
+        }
+    };
+}
+
 method items(--> List) { @!items.List }
 method cursor(--> UInt) { $!cursor }
 method selected(--> Str) { @!items[$!cursor] // Str }
@@ -277,7 +306,8 @@ method handle-event(Selkie::Event $ev --> Bool) {
         }
     }
 
-    # Mouse scroll
+    # Mouse: scroll-wheel moves the cursor; click handlers registered
+    # in TWEAK select / activate by row.
     if $ev.event-type ~~ MouseEvent {
         given $ev.id {
             when NCKEY_SCROLL_UP {
@@ -289,6 +319,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
                 return True;
             }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
 
     False;

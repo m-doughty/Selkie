@@ -43,6 +43,8 @@ A modal file picker built on top of `Modal`, `ListView`, and `TextInput`. Behave
 
   * `Esc` cancels without selecting
 
+  * Single-click on a list row positions the cursor; double-click descends/selects (same path Enter takes)
+
 Extension filtering is optional — pass `extensions =` ()> or omit to show everything. Hidden files (`.name`) are excluded unless `show-dotfiles` is True.
 
 EXAMPLES

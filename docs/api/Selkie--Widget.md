@@ -646,6 +646,125 @@ method on-key(
 
 Register a keybind for this widget. Fires when the widget has focus and an unconsumed event matches the spec. See [Selkie::Event](Selkie--Event.md) for the spec syntax (`'a'`, `'ctrl+q'`, `'shift+tab'`, etc). Pass `:description` to surface the bind in [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md). Binds without a description still work — they just don't appear in the help listing. Example: $list.on-key: 'd', -> $ { delete-item }, :description('Delete'); $list.on-key: 'ctrl+r', -> $ { refresh }, :description('Refresh');
 
+### method on-click
+
+```raku
+method on-click(
+    &handler,
+    Int :$button where { ... } = 1,
+    Str :$description = ""
+) returns Mu
+```
+
+Register a click handler. Fires on a mouse button press whose cell falls within this widget's on-screen rectangle (per `abs-y`, `abs-x`, viewport extents). Default `button` is 1 (primary). The handler receives the `Selkie::Event`; use `self.local-row($ev)` and `self.local-col($ev)` for widget-local coordinates. Click handlers receive press events only — release is delivered via `on-mouse-up` if you need it. The `click-count` field on the event distinguishes single (1), double (2), and triple (3) clicks within the framework's 300 ms window.
+
+### method on-scroll
+
+```raku
+method on-scroll(
+    &handler,
+    Str :$description = ""
+) returns Mu
+```
+
+Register a scroll-wheel handler. Fires on scroll-up (`NCKEY_SCROLL_UP`) and scroll-down (`NCKEY_SCROLL_DOWN`) events whose cell falls within this widget's on-screen rectangle. The handler receives the `Selkie::Event`; check `$ev.id` for direction.
+
+### method on-drag
+
+```raku
+method on-drag(
+    &handler,
+    Int :$button where { ... } = 1,
+    Str :$description = ""
+) returns Mu
+```
+
+Register a drag handler. Fires on motion events while the given button is held — the press that started the drag is delivered to `on-click` (or `on-mouse-down`); subsequent motion-while-held events come here regardless of whether the cursor has left the widget's bounds. Release is delivered via `on-mouse-up` and automatically clears the drag capture.
+
+### method on-mouse-down
+
+```raku
+method on-mouse-down(
+    &handler,
+    Int :$button where { ... } = 1,
+    Str :$description = ""
+) returns Mu
+```
+
+Register a low-level mouse-down handler. Fires on every press, regardless of button (defaults to 1 — pass `:button(0)` to listen on any button). Use this when you need to react to the press itself rather than the higher-level "click" abstraction.
+
+### method on-mouse-up
+
+```raku
+method on-mouse-up(
+    &handler,
+    Int :$button where { ... } = 1,
+    Str :$description = ""
+) returns Mu
+```
+
+Register a mouse-up (release) handler. Fires on every release, including releases that end a drag (in which case it fires after the drag capture has already been cleared). Default `button` is 1.
+
+### method mouse-handlers
+
+```raku
+method mouse-handlers() returns List
+```
+
+Read-only access to this widget's registered mouse handlers. Used by the framework's mouse dispatcher.
+
+### method local-row
+
+```raku
+method local-row(
+    Selkie::Event $ev
+) returns Int
+```
+
+Translate an absolute-screen mouse event into this widget's local Y coordinate (0-based, top-down). Returns `-1` when the event falls outside the widget's viewport, so callers can guard with a single check.
+
+### method local-col
+
+```raku
+method local-col(
+    Selkie::Event $ev
+) returns Int
+```
+
+Translate an absolute-screen mouse event into this widget's local X coordinate. See `local-row`.
+
+### method contains-point
+
+```raku
+method contains-point(
+    Int $y,
+    Int $x
+) returns Bool
+```
+
+True iff the given absolute-screen cell falls within this widget's on-screen rectangle (taking viewport clipping into account). The framework uses this for mouse hit-testing; widgets rarely need to call it directly. A widget with zero viewport dimensions never contains any point — that's how we filter out unmounted widgets and parked-off-screen widgets without needing to consult the plane handle.
+
+### method claims-overlay-at
+
+```raku
+method claims-overlay-at(
+    Int $y,
+    Int $x
+) returns Bool
+```
+
+True iff this widget paints an overlay region that extends past its nominal rect (per `contains-point`) AND the given cell falls within that overlay. The framework's mouse dispatcher does an overlay-pass against the entire tree before the normal containment walk, so widgets that paint over the layout flow can still claim clicks the layout-aware walk would miss. The canonical consumer is [Selkie::Widget::Select](Selkie--Widget--Select.md): an open dropdown is rendered as a notcurses child plane that paints over whatever widget sits below the Select in its layout, and the widget tree doesn't know about that overdraw. By overriding `claims-overlay-at`, the Select can capture clicks on the dropdown rows even though its parent layout's bounds end at the Select's closed-display row. Default returns False; overlay widgets opt in.
+
+### method dispatch-mouse-handlers
+
+```raku
+method dispatch-mouse-handlers(
+    Selkie::Event $ev
+) returns Bool
+```
+
+Internal: dispatch a `MouseEvent` to any registered handlers on this widget. Returns True if a handler consumed the event, False to let it bubble up. The framework calls this from the default `handle-event` when the event is a `MouseEvent`; widgets that override `handle-event` with their own mouse switch can skip this and handle the event raw, or call it explicitly to mix the registration API with their own logic. A press event fans out to both `'click'` and `'mouse-down'` handlers in registration order; first to return True consumes. Release events fire `'mouse-up'`. Drag motion (buttons held) and pure motion (when a drag capture is active upstream) fire `'drag'`. Scroll wheel fires `'scroll'`.
+
 ### method keybinds
 
 ```raku
@@ -662,7 +781,7 @@ method handle-event(
 ) returns Bool
 ```
 
-Handle a keyboard or mouse event. Return True if the event was consumed (the event will stop bubbling to the parent); False to let it continue up the chain. The default implementation dispatches to any registered keybinds — override to implement cursor movement, character input, click handling, etc.
+Handle a keyboard or mouse event. Return True if the event was consumed (the event will stop bubbling to the parent); False to let it continue up the chain. The default implementation routes `MouseEvent`s through any handlers registered via `on-click`, `on-scroll`, `on-drag`, `on-mouse-down`, `on-mouse-up`, and falls through to the keybind table (registered via `on-key`) for everything else. Override to implement cursor movement, character input, or widget-specific click handling. Overrides that want to keep the registration-API behaviour can call `self!dispatch-mouse-handlers($ev)` explicitly and use its return value as the consume decision.
 
 ### method destroy
 

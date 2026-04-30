@@ -33,6 +33,13 @@ plumbing (e.g. the editor cursor's character-handling) rather than
 discoverable shortcuts. Authors opt in by passing C<:description> to
 C<Widget.on-key>.
 
+The overlay's modal sets C<dismiss-on-click-outside => True> by
+default — clicking anywhere outside the help panel closes it. The
+embedded Close button still works (Enter, Space, or click), and so
+does Esc. The list itself doesn't yet scroll on overflow; widgets
+with very long bind lists scroll their owner ScrollView via the
+standard scroll-wheel routing.
+
 =head1 SEE ALSO
 
 =item L<Selkie::Widget> — C<on-key> registers binds, C<keybinds> reads them
@@ -63,7 +70,15 @@ has Selkie::Widget::Modal $!modal;
 method modal(--> Selkie::Widget::Modal) { $!modal }
 
 method build(--> Selkie::Widget::Modal) {
-    $!modal = Selkie::Widget::Modal.new(width-ratio => 0.6, height-ratio => 0.7);
+    # dismiss-on-click-outside defaults True for HelpOverlay: it's a
+    # lightweight informational overlay, and "click outside to dismiss"
+    # is the standard convention for help / about / tooltip-style
+    # popups. ConfirmModal stays at the safer False default.
+    $!modal = Selkie::Widget::Modal.new(
+        width-ratio              => 0.6,
+        height-ratio             => 0.7,
+        dismiss-on-click-outside => True,
+    );
 
     my $body = Selkie::Layout::VBox.new(sizing => Sizing.flex);
 

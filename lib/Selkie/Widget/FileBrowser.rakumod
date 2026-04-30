@@ -39,6 +39,7 @@ C<TextInput>. Behaves like a shell prompt:
 =item C<Enter> on a directory descends into it; on a file selects it
 =item C<Up>/C<Down> navigate the list
 =item C<Esc> cancels without selecting
+=item Single-click on a list row positions the cursor; double-click descends/selects (same path Enter takes)
 
 Extension filtering is optional — pass C<extensions => ()> or omit to
 show everything. Hidden files (C<.name>) are excluded unless

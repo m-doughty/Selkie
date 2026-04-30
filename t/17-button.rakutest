@@ -6,7 +6,7 @@ use Selkie::Event;
 use Selkie::Test::Keys;
 use Notcurses::Native::Types;
 
-plan 11;
+plan 12;
 
 subtest "construction" => {
     plan 3;
@@ -138,4 +138,20 @@ subtest "modifier-held arrow keys are not consumed" => {
     # any modifier held the event bubbles up.
     nok $b.handle-event(key-event(id => NCKEY_RIGHT, modifiers => Set(Mod-Shift))),
         'Shift+Right not consumed by Button';
+};
+
+subtest "primary click fires on-press supply" => {
+    plan 2;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    # No set-focused — App's click-to-focus runs upstream of
+    # handle-event, but TWEAK's on-click registration doesn't depend
+    # on focus state, so a hit-tested press still activates.
+    my $pressed = False;
+    $b.on-press.tap: -> $ { $pressed = True };
+    my $consumed = $b.handle-event(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS,
+                    click-count => 1)
+    );
+    ok $consumed, 'click event consumed';
+    ok $pressed, 'on-press fired from primary click';
 };

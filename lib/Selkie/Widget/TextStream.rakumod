@@ -102,6 +102,41 @@ has Bool $.show-scrollbar = True;
 
 has Supplier $!input-supplier = Supplier.new;
 
+submethod TWEAK() {
+    # Click + drag on the scrollbar column drags the thumb. Same
+    # proportional mapping as ScrollView. Dragging also disables
+    # auto-follow (scroll-to does this for us via $!follow rebind),
+    # which is the user-expected behaviour: "I dragged off the end,
+    # don't snap back when new lines arrive".
+    self.on-mouse-down: -> $ev {
+        if $!show-scrollbar {
+            my $col = self.local-col($ev);
+            if $col == (self.cols - 1).Int {
+                self!scrollbar-jump-to-row(self.local-row($ev).UInt);
+            }
+        }
+    };
+    self.on-drag: -> $ev {
+        if $!show-scrollbar {
+            my $raw-row = $ev.y - self.abs-y;
+            my $clamped = ($raw-row max 0) min (self.rows - 1).Int;
+            self!scrollbar-jump-to-row($clamped.UInt);
+        }
+    };
+}
+
+method !scrollbar-jump-to-row(UInt $row) {
+    my UInt $vh = self.rows;
+    return unless $vh > 0;
+    my UInt $max = self!max-offset;
+    return unless $max > 0;
+    my Rat $thumb-ratio = $vh / ($!count max 1);
+    my UInt $thumb-h = ($vh * $thumb-ratio).ceiling.UInt max 1;
+    my UInt $track = ($vh - $thumb-h) max 1;
+    my UInt $clamped = $row min $track;
+    self.scroll-to(($clamped * $max / $track).floor.UInt);
+}
+
 #| Number of lines currently in the buffer.
 method logical-height(--> UInt) { $!count }
 
@@ -252,6 +287,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
             when NCKEY_SCROLL_UP   { self.scroll-by(-3); return True }
             when NCKEY_SCROLL_DOWN { self.scroll-by(3);  return True }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
     if $ev.event-type ~~ KeyEvent {
         given $ev.id {

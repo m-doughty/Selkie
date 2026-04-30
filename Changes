@@ -2,7 +2,247 @@ Revision history for Selkie
 
 {{$NEXT}}
 
-0.5.4  2026-04-30T13:11:17+01:00
+0.6.0  2026-04-30T17:03:19+01:00
+    - First-class mouse support across the whole framework. Selkie::App
+      enables button + drag events on construction (via
+      C<notcurses_mice_enable> with the existing v1 button-event mask)
+      and the input loop now routes mouse events through a new
+      coordinate-based dispatcher alongside the keyboard path. Apps and
+      consumer widgets get the behaviour for free — no opt-in flag,
+      no per-app wiring; every prebuilt widget reacts to the pointer.
+      Display-only widgets (Text, RichText, Image, Border, ProgressBar,
+      Spinner, Toast, Legend, charts) deliberately don't react — Border
+      passes clicks through to its content. The new C<MOUSE SUPPORT>
+      pod section in `lib/Selkie.rakumod` is the user-facing reference.
+
+    - `Selkie::App.!dispatch-mouse`: coordinate-based dispatch for
+      mouse events. Resolves the deepest widget under the cursor via
+      `widget-at-in`, applies drag-capture so motion / release stay
+      routed to the press's target (scrollbar drags, text-selection
+      drags don't break when the cursor leaves the widget), performs
+      click-to-focus on focusable presses, annotates presses with
+      double / triple multiplicity, then bubbles up the parent chain
+      using the same consume-or-bubble rule as keyboard events.
+      Modal isolation matches the keyboard path — clicks outside the
+      active modal are dropped (or trigger a synthesized close on
+      modals that opted in via the new C<dismiss-on-click-outside>
+      flag). Click-to-focus is skipped when the click hits the
+      already-focused widget so set-focused(False) → set-focused(True)
+      churn doesn't tear down focus-bound state (Select dropdowns,
+      caret styles) before the click handler observes it.
+
+    - `Selkie::App.widget-at-in($root, $y, $x)`: public hit-test
+      against an arbitrary root, returning the deepest widget whose
+      on-screen rectangle contains the given absolute cell. Two-phase
+      resolution — first pass walks the whole tree looking for any
+      widget whose `claims-overlay-at` returns True (catches widgets
+      that paint outside their nominal rect, like an open `Select`
+      dropdown), then a standard depth-first containment walk.
+      Children are walked in reverse so later-added (visually on-top)
+      siblings win at the same point, matching render order. Type
+      object when nothing claims the point. Companion to the existing
+      `widget-attached` — tests can drive the hit-test logic without
+      a live App / notcurses instance.
+
+    - `Selkie::Event` gained C<click-count> (1 / 2 / 3 for single /
+      double / triple presses, 0 for everything else) and a
+      C<with-click-count> builder. `Selkie::App` computes the count
+      from inter-press timing (300 ms window) and the press cell —
+      strict same-cell rule, so sloppy drags don't manufacture
+      spurious double-clicks. Multiplicity is tracked per-button so
+      chord-style presses don't reset each other's counters.
+
+    - `Selkie::Event::MouseHandler` is the new registration record
+      produced by the on-* mouse methods on `Selkie::Widget`. Surfaced
+      via `Widget.mouse-handlers` so future help overlays can list
+      registered mouse interactions alongside keyboard binds. Two
+      free subs `mouse-event-kinds(Selkie::Event)` and
+      `mouse-event-button(Selkie::Event)` classify a mouse event into
+      the handler kind(s) it should fan out to and extract the
+      1-indexed button number — the dispatcher fans presses out to
+      both `'click'` and `'mouse-down'`, motion-while-held to
+      `'drag'`, releases to `'mouse-up'`, and scroll wheel to
+      `'scroll'`.
+
+    - `Selkie::Widget` gained the matching registration API:
+      `on-click(&handler, :button = 1, :description)`,
+      `on-scroll(&handler, :description)`,
+      `on-drag(&handler, :button = 1, :description)`,
+      `on-mouse-down(&handler, :button = 1, :description)`,
+      `on-mouse-up(&handler, :button = 1, :description)`. `:button(0)`
+      catches any button (used internally by `on-scroll`, useful for
+      low-level mouse-down handlers). Accompanying coordinate helpers
+      `local-row(Selkie::Event)` / `local-col(Selkie::Event)` translate
+      absolute screen coords into widget-local cells (returning -1 for
+      out-of-bounds, so callers can guard with a single check), and
+      `contains-point(Int $y, Int $x)` exposes the same hit-test the
+      framework uses internally. Widgets with zero viewport dimensions
+      never contain any point — that's how unmounted / parked widgets
+      drop out of dispatch without consulting plane handles.
+
+    - `Selkie::Widget.claims-overlay-at(Int $y, Int $x)`: opt-in
+      override for widgets that paint over the layout flow. Default
+      returns False; `Select` overrides it so an open dropdown
+      captures clicks even though its parent layout's bounds end at
+      the closed-display row.
+
+    - `Selkie::Widget.handle-event` default now routes `MouseEvent`s
+      through any handlers registered via the on-* methods before
+      falling through to the keybind table. Existing `handle-event`
+      overrides that already had a mouse switch (CardList, ListView,
+      RadioGroup, Table, ScrollView, TextStream, Select)
+      explicitly call `self!dispatch-mouse-handlers($ev)` after their
+      built-in scroll-wheel branches so the registration API still
+      composes with their custom logic.
+
+    - `Selkie::Widget::Modal` gained `:dismiss-on-click-outside`
+      (default False). When True, a primary mouse click outside the
+      modal's content rectangle dismisses the modal — the framework
+      calls `close-modal`, restoring pre-modal focus. Default False
+      matches the keyboard focus-trap behaviour: stray clicks in the
+      dimmed backdrop are ignored. Confirm-style modals stay safe
+      (a Yes/No decision shouldn't be silently abandoned by a stray
+      click); informational overlays opt in.
+
+    - `Selkie::Widget::HelpOverlay` flips the new modal flag on by
+      default — clicking anywhere outside the help panel closes it
+      (standard help / about / tooltip-style popup convention). The
+      embedded Close button still works (Enter, Space, click), and so
+      does Esc.
+
+    - Built-in widget mouse behaviours:
+      * `Button` — primary click activates (same path as Enter/Space).
+      * `Checkbox` — primary click toggles.
+      * `TabBar` — primary click activates the tab under the cursor;
+        clicking the already-active tab re-emits `on-select`.
+      * `RadioGroup` — single-click commits the row as the new
+        selection (mouse intent is unambiguous, so no cursor-then-
+        Enter dance); scroll-wheel still moves the cursor.
+      * `ListView` — single-click moves the cursor to the row;
+        double-click fires `on-activate` (matching Enter); scroll-wheel
+        moves the cursor.
+      * `Table` — header click cycles sort on sortable columns; body
+        single-click selects the row; double-click fires `on-activate`;
+        scroll-wheel moves the cursor. Column-from-x mirrors the
+        renderer's column-widths pass exactly so hit-testing tracks
+        the visible layout.
+      * `Select` — click on the closed-display row toggles the
+        dropdown; click on a dropdown row commits and closes; click
+        elsewhere closes. `claims-overlay-at` extends the hit-test
+        rect over the dropdown so those clicks reach the Select
+        even though the parent layout doesn't know about the
+        overdraw. Scroll-wheel scrolls the open dropdown.
+      * `CardList` — click selects the card under the cursor. Card
+        heights are heterogeneous, so the new `!card-index-at-row`
+        helper walks visible items from `scroll-top` accumulating
+        heights until the click row falls inside one. Scroll-wheel
+        still moves between cards.
+      * `ScrollView`, `TextStream` — primary mouse-down on the
+        scrollbar column jumps the thumb; drag tracks the cursor.
+        Mapping is proportional (cursor row → scroll-offset such
+        that thumb-y == cursor-row, clamped to thumb-track bounds).
+        Drag captures keep the widget as the target even when the
+        cursor leaves the scrollbar.
+      * `TextInput` — click positions the caret; drag selects from
+        the press anchor to the current cursor cell; double-click
+        selects the word; triple-click selects the buffer; Ctrl+A
+        selects all; Ctrl+C / Ctrl+X emit on the new `on-copy` /
+        `on-cut` Supplies (cut also deletes); Backspace and Delete
+        consume an active selection if present, typing replaces it.
+        Selections are rendered with reverse-video and exposed via
+        `has-selection`, `selection-range`, `selected-text`. Selkie
+        does not own the system clipboard — apps wire OSC 52 /
+        notcurses paste-buffer in their `on-copy` / `on-cut` taps.
+        Shift+Left / Shift+Right now also extend the selection, not
+        just word-jump the caret.
+      * `MultiLineInput` — same selection model, extended to 2D.
+        Click positions the caret; drag selects across rows; the
+        highlight follows the wrapped layout (visual rows), not the
+        raw logical offsets. Double-click selects the word;
+        triple-click selects the entire current logical line. Drag
+        captures keep selection extending past the visible plane —
+        clamping to the visible cell while `!visual-to-logical` pins
+        beyond-the-buffer rows to the last line / last column. Same
+        Ctrl+A / Ctrl+C / Ctrl+X / on-copy / on-cut contract as
+        TextInput. Drag arms the selection anchor lazily on first
+        motion (anchoring at click time would turn every post-click
+        keystroke into a 1-char selection).
+      * `ConfirmModal`, `CommandPalette`, `FileBrowser` — clicks fall
+        through to the embedded Button / ListView / TextInput, which
+        handle them with their built-in behaviour. FileBrowser
+        descends / selects on double-click.
+
+    - `Selkie::Test::Keys.mouse-event` accepts `:click-count` and
+      documents `NCKEY_MOTION` as a valid `:id`. Existing call sites
+      keep working — defaults preserve the old single-press shape.
+      `t/59-mouse-dispatch.rakutest` is the new in-process test
+      coverage for hit-testing, the event-classification helpers, the
+      Selkie::Event annotation API, the default Widget.handle-event
+      mouse fan-out, and Modal's new dismiss-on-click-outside flag.
+      Live App-instance flow (capture, click-to-focus, modal isolation)
+      needs notcurses_init and is covered by manual smoke in
+      App::Cantina; see TODO/Selkie.md for the v1 mouse plan.
+
+    - `Selkie::Widget::ScrollView` follow-bottom rewritten around a
+      persistent `$!follow-active` flag. The previous implementation
+      computed "follow active" per render by checking
+      `scroll-offset >= max-offset` against the OLD content-height,
+      which proved fragile: CardList resizes mid-frame change
+      `self.rows` (and so `max-offset`) before content-height is
+      re-measured, and children with lazy `logical-height` (RichText)
+      can briefly report stale heights between `set-content` and the
+      next render. Either fragility flipped the per-frame check to
+      False and silently disabled tail-follow for streaming bodies.
+      The new flag is maintained at the single `scroll-to` funnel
+      (which `scroll-by`, `scroll-page-by`, `scroll-to-end`,
+      `scroll-to-start`, mouse wheel, and scrollbar drag all route
+      through), so user intent is the only thing that toggles it.
+      Render also re-engages follow when a content shrink or viewport
+      grow involuntarily lands the user back at `max-offset` — typical
+      cause is a sibling card collapsing past where the user previously
+      parked. New `follow-active` accessor exposes the flag for apps
+      that want a "follow-mode" indicator and for tests.
+
+    - `Selkie::Widget::CardList` defense-in-depth for sprixel ghosting.
+      Sprixel cleanup goes via the terminal wire as an escape sequence;
+      rapid sprite churn on scroll / resize occasionally lets the new
+      blit land before the old remove has flushed, leaving ghost
+      avatars at the previous positions. CardList now snapshots
+      scroll-top, selected, viewport dims, and per-item heights across
+      renders, and parks every item up front when any of them change —
+      forcing fresh sprixel IDs on the layout pass below and sidestepping
+      the incremental-update reliability question entirely. Per-item-
+      height tracking deliberately fires on streaming wraps (~1% of
+      tokens, when a rendered line wraps and the card grows by a row)
+      but stays silent on tokens that just append text within an
+      existing row, so the snapshot comparison stays cheap on the hot
+      path.
+
+    - `Selkie::Widget::CardList.add-item` wires per-item widgets into
+      the parent chain when their `parent` is undefined. Without this
+      link, `self.theme` on a card walks past CardList and falls back
+      to `Selkie::Theme.default`, so the first `init-plane` →
+      `!sync-plane-base` on each card paints its base cell with the
+      framework's default palette instead of the active theme — the
+      card stays themed against the default background until the next
+      explicit `set-theme` cascade overwrites `$!theme`. Setting
+      parent here lets the theme inheritance walk find the live theme
+      at the moment the plane is first created.
+
+    - `Selkie::Widget::Select` rendering now resolves all colours
+      through the active theme. The closed-display row uses
+      `theme.input-focused` / `theme.input` instead of hardcoded
+      RGB; the dropdown plane's base cell is painted from
+      `theme.input.bg` (or `theme.base.bg`) so unwritten regions
+      (right-edge padding past the longest item) carry the input bg
+      rather than the terminal default; dropdown rows use
+      `theme.text-highlight` / `theme.input` for cursor / non-cursor
+      including bg + styles, instead of the previous `0x4A4A8A` /
+      `0x3A3A5A` / `0x2A2A3E` hardcoded values. Custom themes that
+      were already setting these slots picked up the wrong rendering
+      for the dropdown before; they get the right one now.
+
+
     - `Widget::Button` now treats Left / Right arrow as focus
       cycle, mirroring Tab / Shift-Tab. Buttons in a modal's
       action row sit horizontally — most users reach for arrow

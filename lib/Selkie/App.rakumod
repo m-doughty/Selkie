@@ -309,6 +309,25 @@ has UInt $!rows = 0;
 has UInt $!cols = 0;
 has Instant $!last-resize-check = Instant.from-posix(0);
 
+# --- Mouse dispatch state ---
+#
+# Drag capture: when a button is pressed on widget X, subsequent
+# motion / release events for that same button go to X regardless of
+# whether the cursor is still inside X's bounds. Without this,
+# dragging a scrollbar past the widget edge or selecting text past
+# the input edge would silently release capture mid-drag — the
+# canonical broken-feel UX. Hash keyed by button number (1=primary,
+# 2=middle, 3=right) so each button has its own capture independently.
+has %!mouse-capture;
+
+# Click multiplicity tracking: a press at the same cell with the same
+# button within DOUBLE-CLICK-MS of the previous press counts as
+# double / triple / etc. The annotated count is stuffed into
+# C<click-count> on the dispatched event so widgets like FileBrowser
+# can distinguish "select" from "open".
+has %!last-click;        # button => { abs-y, abs-x, time, count }
+my constant DOUBLE-CLICK-MS = 300;
+
 #|( Set asynchronously by our SIGWINCH handler when the terminal is
     resized. Consumed by C<!maybe-check-terminal-resize>, which clears
     the flag and bypasses the 12 Hz rate-limit so the new dims propagate
@@ -1158,12 +1177,20 @@ method !flush-paste-batch(Str:D $text) {
 }
 
 method !dispatch-event(Selkie::Event $ev) {
-    return if $ev.input-type == NCTYPE_RELEASE;
-
     if $ev.event-type ~~ ResizeEvent {
         self!check-terminal-resize;
         return;
     }
+
+    if $ev.event-type ~~ MouseEvent {
+        # Mouse events follow coordinates, not focus — and RELEASE is
+        # meaningful (it ends a drag and clears capture), so they
+        # bypass the keyboard-only NCTYPE_RELEASE drop below.
+        self!dispatch-mouse($ev);
+        return;
+    }
+
+    return if $ev.input-type == NCTYPE_RELEASE;
 
     my $top = self!active-modal;
     if $top.defined {
@@ -1189,6 +1216,193 @@ method !dispatch-event(Selkie::Event $ev) {
     }
 
     self!bubble-event($ev);
+}
+
+#|( Coordinate-based dispatch for mouse events. Resolves the deepest
+    widget whose on-screen rectangle contains the click point, applies
+    drag-capture so motion / release stay routed to the press's
+    target, performs click-to-focus on focusable presses, annotates
+    presses with their double / triple multiplicity, then bubbles the
+    event up the parent chain — same consume-or-bubble rule as
+    keyboard events. Modal isolation matches the keyboard path: clicks
+    outside the active modal are dropped (or trigger a synthesized
+    close on modals that opted in via C<dismiss-on-click-outside>). )
+method !dispatch-mouse(Selkie::Event $ev) {
+    my Int $y = $ev.y;
+    my Int $x = $ev.x;
+    return if $y < 0 || $x < 0;
+
+    my $is-button = self!is-button-id($ev.id);
+    my $is-motion = $ev.id == NCKEY_MOTION;
+    my UInt $btn  = self!button-from-id($ev.id);
+
+    # Resolve target. Drag (REPEAT or pure motion while a button is
+    # captured) goes to the captured widget; everything else uses
+    # coordinate hit-testing.
+    my $target;
+    my $is-drag-event = $is-button && $ev.input-type == NCTYPE_REPEAT;
+    if $is-drag-event {
+        $target = %!mouse-capture{$btn} // self!widget-at($y, $x);
+    } elsif $is-motion {
+        # Pure motion is only meaningful while dragging in v1 — we
+        # don't enable NCMICE_MOVE_EVENT so pointer-only motion never
+        # arrives. If somebody enables it later, route motion to any
+        # captured widget so drag handlers see it; otherwise drop.
+        return unless %!mouse-capture;
+        $target = %!mouse-capture.values[0];
+    } else {
+        $target = self!widget-at($y, $x);
+    }
+
+    # Modal isolation: clicks outside the active modal are dropped
+    # (default) or trigger a synthesized close on modals that opted in.
+    my $modal = self!active-modal;
+    if $modal.defined {
+        my $in-modal = $target.defined && self.widget-attached($target, $modal);
+        unless $in-modal {
+            if $modal.can('dismiss-on-click-outside')
+               && $modal.dismiss-on-click-outside
+               && $is-button
+               && $ev.input-type == NCTYPE_PRESS {
+                self.close-modal;
+            }
+            return;
+        }
+    }
+    return without $target;
+
+    # Click-to-focus: any press inside a focusable widget (or one
+    # whose ancestor is focusable) gives that widget focus before
+    # the press is delivered. Keeps mouse and keyboard focus models
+    # consistent — no clicked-but-unfocused state.
+    #
+    # Skipped when the target is already focused. Re-focusing churns
+    # set-focused(False) → set-focused(True), and widgets that hook
+    # set-focused(False) for cleanup (Select closes its dropdown,
+    # TextInput might reset its caret style, etc.) get spuriously
+    # torn down before their click handler runs. A click on the
+    # already-focused widget should leave focus undisturbed and let
+    # the click handler observe the same state the user saw on screen.
+    if $is-button && $ev.input-type == NCTYPE_PRESS {
+        my $w = $target;
+        while $w.defined {
+            if $w.focusable {
+                self.focus($w) unless $w === $!focused;
+                last;
+            }
+            $w = $w.parent;
+        }
+    }
+
+    # Click multiplicity. Track per-button so chord-style presses
+    # don't reset each other's counters. The "same cell" rule is
+    # strict — moving the cursor by even one cell starts a fresh
+    # click sequence — which matches every common GUI's behavior
+    # and avoids spurious double-clicks during sloppy drags.
+    my $delivered = $ev;
+    if $is-button && $ev.input-type == NCTYPE_PRESS {
+        my $count = 1;
+        if %!last-click{$btn}:exists {
+            my %prev = %!last-click{$btn};
+            if %prev<abs-y> == $y && %prev<abs-x> == $x
+               && (now - %prev<time>).Num * 1000 < DOUBLE-CLICK-MS {
+                $count = %prev<count> + 1;
+            }
+        }
+        %!last-click{$btn} = {
+            abs-y => $y, abs-x => $x, time => now, count => $count,
+        };
+        $delivered = $ev.with-click-count($count);
+    }
+
+    # Capture management: PRESS opens, RELEASE closes. Capture is
+    # stored on the *resolved target* (the widget under the cursor at
+    # press time), not its ancestors, so a drag handler higher in the
+    # tree only fires if the press also originated inside its bounds.
+    if $is-button {
+        if $ev.input-type == NCTYPE_PRESS {
+            %!mouse-capture{$btn} = $target;
+        } elsif $ev.input-type == NCTYPE_RELEASE {
+            %!mouse-capture{$btn}:delete;
+        }
+    }
+
+    # Bubble up the parent chain, same rule as keyboard. Stop at the
+    # active modal if any — prevents a click inside the modal from
+    # bubbling out into widgets behind it.
+    my $w = $target;
+    my $stop-at = $modal.defined ?? $modal.parent !! Selkie::Widget;
+    while $w.defined && $w !=== $stop-at {
+        return if $w.handle-event($delivered);
+        $w = $w.parent;
+    }
+}
+
+#| True iff the given id is one of the C<NCKEY_BUTTON1..11> keycodes.
+#| Pure motion (C<NCKEY_MOTION>) and other input ids return False.
+method !is-button-id(UInt $id --> Bool) {
+    $id >= NCKEY_BUTTON1 && $id <= NCKEY_BUTTON11;
+}
+
+#|( Extract the 1-indexed button number from a button event id, or
+    C<0> for non-button events (motion, scroll wheel — which is
+    technically buttons 4/5 but tracked as scroll, not press/release).
+    Used for capture keying. )
+method !button-from-id(UInt $id --> UInt) {
+    given $id {
+        when NCKEY_BUTTON1 { 1 }
+        when NCKEY_BUTTON2 { 2 }
+        when NCKEY_BUTTON3 { 3 }
+        when NCKEY_BUTTON4 { 0 }   # scroll up — no capture
+        when NCKEY_BUTTON5 { 0 }   # scroll down — no capture
+        when NCKEY_BUTTON6 { 6 }
+        when NCKEY_BUTTON7 { 7 }
+        when NCKEY_BUTTON8 { 8 }
+        when NCKEY_BUTTON9 { 9 }
+        when NCKEY_BUTTON10 { 10 }
+        when NCKEY_BUTTON11 { 11 }
+        default { 0 }
+    }
+}
+
+#|( Return the deepest widget whose on-screen rectangle contains the
+    given absolute cell. Walks the active modal's content if a modal
+    is open, otherwise the active screen's root. Children are tried
+    after parents (depth-first), so a click inside a nested widget
+    correctly resolves to the nested one. Type object if no widget
+    matches (e.g. click in a region nothing has rendered to). )
+method !widget-at(Int $y, Int $x --> Selkie::Widget) {
+    my $modal = self!active-modal;
+    my $root = $modal.defined ?? $modal !! self.root;
+    return Selkie::Widget without $root;
+    Selkie::App.widget-at-in($root, $y, $x);
+}
+
+#|( Public hit-test against an arbitrary root. Returns the deepest
+    widget whose on-screen rectangle contains the given absolute cell,
+    falling back to C<$root> itself when the point is in the root's
+    own bounds but no descendant claims it. Returns the C<Selkie::Widget>
+    type object when the root doesn't contain the point.
+
+    Two-phase resolution:
+
+    =item B<Phase 1>: walk the whole tree looking for any widget whose
+      C<claims-overlay-at> returns True. This catches widgets that
+      paint outside their nominal rect (open dropdowns, popovers) —
+      the layout-aware walk would miss them because their parent's
+      C<contains-point> doesn't extend over the overlay area.
+    =item B<Phase 2>: fall through to the standard depth-first
+      containment walk.
+
+    Exposed (rather than left private) so tests can exercise the
+    coordinate-walk logic without needing a live App instance — same
+    pattern as L<widget-attached>. App's mouse dispatcher uses this
+    with the active modal / screen root resolved at call time. )
+method widget-at-in($root, Int $y, Int $x --> Selkie::Widget) {
+    return Selkie::Widget without $root;
+    my $overlay = walk-for-overlay($root, $y, $x);
+    return $overlay if $overlay.defined;
+    walk-for-point($root, $y, $x) // Selkie::Widget;
 }
 
 method !bubble-event(Selkie::Event $ev --> Bool) {
@@ -1375,6 +1589,56 @@ method shutdown() {
 
 method DESTROY() {
     self.shutdown if $!nc;
+}
+
+# Coordinate-based depth-first hit-test against a widget tree. Free
+# sub (rather than method) so it doesn't require a live App and stays
+# straightforward to unit-test via Selkie::App.widget-at-in. Children
+# are walked in reverse so later-added (visually on-top) siblings win
+# over earlier ones at the same point — matching the render order.
+sub walk-for-point($w, Int $y, Int $x) {
+    return Nil without $w;
+    return Nil unless $w.contains-point($y, $x);
+    if $w.can('children') {
+        for $w.children.reverse -> $child {
+            my $hit = walk-for-point($child, $y, $x);
+            return $hit if $hit.defined;
+        }
+    }
+    if $w.can('content') {
+        my $c = $w.content;
+        if $c.defined {
+            my $hit = walk-for-point($c, $y, $x);
+            return $hit if $hit.defined;
+        }
+    }
+    $w;
+}
+
+# Whole-tree walk looking for any widget that claims an overlay at
+# the given cell. Doesn't short-circuit on contains-point — overlay
+# widgets paint outside their nominal rect, so we have to visit
+# every node. Returns the first match (depth-first, leaf-preferred)
+# or Nil. Cheap in practice: only fires when the user clicks
+# (not per-frame), and most widgets' default claims-overlay-at is
+# a constant False.
+sub walk-for-overlay($w, Int $y, Int $x) {
+    return Nil without $w;
+    if $w.can('children') {
+        for $w.children -> $child {
+            my $hit = walk-for-overlay($child, $y, $x);
+            return $hit if $hit.defined;
+        }
+    }
+    if $w.can('content') {
+        my $c = $w.content;
+        if $c.defined {
+            my $hit = walk-for-overlay($c, $y, $x);
+            return $hit if $hit.defined;
+        }
+    }
+    return $w if $w.claims-overlay-at($y, $x);
+    Nil;
 }
 
 # --- Error-log redirection ------------------------------------------------

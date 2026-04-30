@@ -9,7 +9,7 @@ use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 
-plan 39;
+plan 45;
 
 subtest "construction defaults" => {
     plan 5;
@@ -499,4 +499,81 @@ subtest "insert-text scales to thousands of chars" => {
     $mli.insert-text($body);
     is $mli.text.chars, $body.chars, "all chars retained";
     is $mli.line-count, 1, "no newlines, single line";
+};
+
+# --- Selection model + mouse ----------------------------------------------
+
+subtest "ctrl+a selects the entire buffer (multi-line)" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3), max-lines => 8);
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("alpha\nbeta\ngamma");
+    $mli.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    ok $mli.has-selection, 'selection active';
+    is $mli.selected-text, "alpha\nbeta\ngamma",
+        'selected text spans all lines with newline joins';
+};
+
+subtest "ctrl+c emits selected text without changing buffer" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3));
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("foo\nbar");
+    $mli.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    my $copied;
+    $mli.on-copy.tap: -> $t { $copied = $t };
+    $mli.handle-event(key-event(id => 'c'.ord, modifiers => Set(Mod-Ctrl)));
+    is $copied, "foo\nbar", 'on-copy fires with full selection';
+    is $mli.text, "foo\nbar", 'buffer unchanged';
+};
+
+subtest "ctrl+x cuts selection (deletes from buffer)" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3));
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("foo\nbar");
+    $mli.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    $mli.handle-event(key-event(id => 'x'.ord, modifiers => Set(Mod-Ctrl)));
+    is $mli.text, '', 'buffer drained after cut';
+    nok $mli.has-selection, 'selection cleared after cut';
+};
+
+subtest "typing replaces an active selection" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3));
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello");
+    $mli.handle-event(key-event(id => 'a'.ord, modifiers => Set(Mod-Ctrl)));
+    $mli.handle-event(key-event(id => 'X'.ord, char => 'X'));
+    is $mli.text, 'X', 'X replaced selection';
+};
+
+subtest "primary click positions caret at clicked cell" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3));
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello\nworld");
+    $mli.set-viewport(abs-y => 0, abs-x => 0, rows => 3, cols => 40);
+    $mli.handle-event(mouse-event(id => NCKEY_BUTTON1, y => 1, x => 3,
+                                  input-type => NCTYPE_PRESS, click-count => 1));
+    is $mli.cursor-row, 1, 'cursor moved to row 1';
+    is $mli.cursor-col, 3, 'cursor moved to col 3';
+};
+
+subtest "double-click selects the word under the cursor (multi-line)" => {
+    plan 1;
+    my $mli = Selkie::Widget::MultiLineInput.new(sizing => Sizing.fixed(3));
+    $mli.resize(3, 40);
+    $mli.set-focused(True);
+    $mli.set-text("hello world\nfoo bar");
+    $mli.set-viewport(abs-y => 0, abs-x => 0, rows => 3, cols => 40);
+    # Click in the middle of "world" on row 0 (cols 6-10).
+    $mli.handle-event(mouse-event(id => NCKEY_BUTTON1, y => 0, x => 8,
+                                  input-type => NCTYPE_PRESS, click-count => 2));
+    is $mli.selected-text, 'world', 'double-click selected word "world"';
 };

@@ -41,6 +41,13 @@ Build the modal with C<build(...)> and pass the returned Modal to
 C<$app.show-modal>. The C<.modal> accessor returns the same Modal
 after construction.
 
+A primary mouse click on either button activates it — Selkie::App's
+coordinate dispatcher routes the click to the deepest hit (the Button
+widget itself), and Button's built-in click handler fires the same
+C<on-press> path Enter / Space drive. The default
+C<dismiss-on-click-outside> stays False (a Yes/No decision shouldn't
+be silently abandoned by a stray click).
+
 =head1 EXAMPLES
 
 =head2 Delete confirmation

@@ -70,6 +70,7 @@ $theme-select.on-change.tap: -> $v {
 use Notcurses::Native;
 use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
+use Notcurses::Native::Channel;
 
 use Selkie::Widget;
 use Selkie::Style;
@@ -91,6 +92,50 @@ has Supplier $!change-supplier = Supplier.new;
 method new(*%args --> Selkie::Widget::Select) {
     %args<focusable> //= True;
     callwith(|%args);
+}
+
+submethod TWEAK() {
+    # Click on the closed-display row (y == abs-y) toggles the dropdown.
+    # Click on a dropdown row (y > abs-y) when open commits that item.
+    # Clicks elsewhere close the dropdown — the contains-point override
+    # extends our hit-test rect to cover the dropdown so they reach us.
+    self.on-click: -> $ev {
+        my $row = $ev.y - self.abs-y;
+        my $col = $ev.x - self.abs-x;
+        if $col >= 0 {
+            if $row == 0 {
+                $!open ?? self!close-dropdown !! self.open;
+            } elsif $!open && $row >= 1 {
+                my $idx = $!scroll-offset + ($row - 1).UInt;
+                if @!items && $idx < @!items.elems {
+                    $!cursor = $idx;
+                    if $idx != $!selected {
+                        $!selected = $idx;
+                        $!change-supplier.emit($!selected);
+                    }
+                    self!close-dropdown;
+                }
+            }
+        }
+    };
+}
+
+#|( When the dropdown is open, claim overlay rights for the
+    dropdown rows. The framework's C<widget-at-in> does an overlay
+    pass against the entire tree before normal containment walk, so
+    clicks on the dropdown reach the Select even though the parent
+    layout's bounds end at our closed-display row.
+
+    The closed-display row itself stays under standard
+    contains-point — when the dropdown isn't open, we behave like
+    any other 1-row widget. )
+method claims-overlay-at(Int $y, Int $x --> Bool) {
+    return False unless $!open;
+    my $h = 1 + self!dropdown-height;
+    my $w = self.viewport-cols || self.cols;
+    return False if $h <= 0 || $w <= 0;
+    $y >= self.abs-y && $y < self.abs-y + $h
+      && $x >= self.abs-x && $x < self.abs-x + $w;
 }
 
 method items(--> List) { @!items.List }
@@ -204,14 +249,8 @@ method render() {
     $label = $label.substr(0, $w) if $label.chars > $w;
     $label = $label ~ (' ' x (($w - $label.chars) max 0));
 
-    if $!focused {
-        ncplane_set_fg_rgb(self.plane, 0xFFFFFF);
-        ncplane_set_bg_rgb(self.plane, 0x4A4A8A);
-        ncplane_set_styles(self.plane, NCSTYLE_BOLD);
-    } else {
-        my $style = self.theme.input;
-        self.apply-style($style);
-    }
+    my $style = $!focused ?? self.theme.input-focused !! self.theme.input;
+    self.apply-style($style);
     ncplane_putstr_yx(self.plane, 0, 0, $label);
 
     # Render dropdown if open
@@ -243,9 +282,23 @@ method !render-dropdown() {
     my UInt $max = self!max-offset;
     $!scroll-offset = $max if $!scroll-offset > $max;
 
-    my $normal = self.theme.text;
+    # Theme the dropdown plane's base cell so unwritten regions
+    # (right-edge padding past the longest item, etc.) carry the
+    # input bg rather than the terminal default. The plane was
+    # raw-created via ncplane_create above and so misses the
+    # init-plane → !sync-plane-base hook every other widget gets.
+    my $base    = self.theme.base;
+    my $input   = self.theme.input;
+    my $normal-bg = $input.bg // $base.bg;
+    if $normal-bg.defined {
+        my uint64 $base-channels = 0;
+        ncchannels_set_fg_rgb($base-channels, $base.fg) if $base.fg.defined;
+        ncchannels_set_bg_rgb($base-channels, $normal-bg);
+        ncplane_set_base($!dropdown-plane, ' ', 0, $base-channels);
+    }
+
+    my $normal    = self.theme.input;
     my $highlight = self.theme.text-highlight;
-    my $base = self.theme.base;
 
     for ^$dh -> $row {
         my UInt $idx = $!scroll-offset + $row;
@@ -261,12 +314,12 @@ method !render-dropdown() {
 
         if $is-cursor {
             ncplane_set_fg_rgb($!dropdown-plane, $highlight.fg) if $highlight.fg.defined;
-            ncplane_set_bg_rgb($!dropdown-plane, 0x3A3A5A);
+            ncplane_set_bg_rgb($!dropdown-plane, $highlight.bg) if $highlight.bg.defined;
             ncplane_set_styles($!dropdown-plane, $highlight.styles);
         } else {
             ncplane_set_fg_rgb($!dropdown-plane, $normal.fg) if $normal.fg.defined;
-            ncplane_set_bg_rgb($!dropdown-plane, 0x2A2A3E);
-            ncplane_set_styles($!dropdown-plane, 0);
+            ncplane_set_bg_rgb($!dropdown-plane, $normal.bg) if $normal.bg.defined;
+            ncplane_set_styles($!dropdown-plane, $normal.styles);
         }
 
         ncplane_putstr_yx($!dropdown-plane, $row, 0, $text);
@@ -274,6 +327,16 @@ method !render-dropdown() {
 }
 
 method handle-event(Selkie::Event $ev --> Bool) {
+    # Mouse routes through the registration API regardless of current
+    # focus — App's click-to-focus has already promoted us on press,
+    # and clicks-while-open need to reach the dropdown handler even
+    # if focus is being recomputed mid-event.
+    if $ev.event-type ~~ MouseEvent {
+        return True if self!dispatch-mouse-handlers($ev);
+        # Scroll wheel + any other mouse event falls through to the
+        # focus-gated branch below.
+    }
+
     return False unless $!focused;
 
     if $ev.event-type ~~ KeyEvent {
@@ -284,18 +347,20 @@ method handle-event(Selkie::Event $ev --> Bool) {
         }
     }
 
-    # Mouse scroll when open
-    if $!open && $ev.event-type ~~ MouseEvent {
-        given $ev.id {
-            when NCKEY_SCROLL_UP {
-                if $!cursor > 0 { $!cursor--; self!ensure-cursor-visible; self.mark-dirty }
-                return True;
-            }
-            when NCKEY_SCROLL_DOWN {
-                if $!cursor < @!items.elems - 1 { $!cursor++; self!ensure-cursor-visible; self.mark-dirty }
-                return True;
+    if $ev.event-type ~~ MouseEvent {
+        if $!open {
+            given $ev.id {
+                when NCKEY_SCROLL_UP {
+                    if $!cursor > 0 { $!cursor--; self!ensure-cursor-visible; self.mark-dirty }
+                    return True;
+                }
+                when NCKEY_SCROLL_DOWN {
+                    if $!cursor < @!items.elems - 1 { $!cursor++; self!ensure-cursor-visible; self.mark-dirty }
+                    return True;
+                }
             }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
 
     self!check-keybinds($ev);

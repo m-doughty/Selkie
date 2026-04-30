@@ -149,11 +149,12 @@ sub mouse-event(
     Int :$y = Code.new,
     Int :$x = Code.new,
     Set :$modifiers = Code.new,
-    NcInputType :$input-type = NcInputType::NCTYPE_PRESS
+    NcInputType :$input-type = NcInputType::NCTYPE_PRESS,
+    Int :$click-count = 0
 ) returns Selkie::Event
 ```
 
-Construct a mouse event. `:id` is one of `NCKEY_SCROLL_UP`, `NCKEY_SCROLL_DOWN`, `NCKEY_BUTTON1..6`. `:y` and `:x` are optional screen coordinates for click events.
+Construct a mouse event. `:id` is one of `NCKEY_SCROLL_UP`, `NCKEY_SCROLL_DOWN`, `NCKEY_BUTTON1..6`, or `NCKEY_MOTION`. `:y` and `:x` are optional screen coordinates. `:click-count` annotates a press with multiplicity (1 single, 2 double, 3 triple) — production code receives this from `Selkie::App`'s mouse dispatcher.
 
 ### sub resize-event
 

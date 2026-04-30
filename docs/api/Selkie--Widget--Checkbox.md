@@ -22,7 +22,7 @@ $cb.on-change.tap: -> Bool $checked {
 DESCRIPTION
 ===========
 
-Renders as `[x] label` when checked, `[ ] label` when unchecked. Space or Enter toggles the state.
+Renders as `[x] label` when checked, `[ ] label` when unchecked. Space or Enter toggles the state, as does a primary mouse click on any cell of the checkbox row.
 
 `set-checked` is idempotent — passing the current value is a no-op and doesn't emit on `on-change`. Safe to call from a store subscription without causing feedback loops.
 

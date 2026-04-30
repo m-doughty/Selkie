@@ -30,15 +30,29 @@ DESCRIPTION
 
 A one-line text input. Arrow keys, Home, End, Backspace, and Delete behave as you'd expect. Characters wider than the visible width horizontally scroll the view to follow the cursor.
 
-Two Supplies:
+Four Supplies:
 
   * `on-submit` — fires once when the user presses Enter, carrying the current text
 
   * `on-change` — fires on every keystroke that modifies the buffer
 
+  * `on-copy` — fires on Ctrl+C, carrying the currently-selected text
+
+  * `on-cut` — fires on Ctrl+X, carrying the cut text (which is also deleted from the buffer)
+
 For programmatic updates that shouldn't re-dispatch (e.g. syncing from a store subscription), use `set-text-silent` — it updates the buffer without emitting on `on-change`.
 
-Modified keys (Ctrl, Alt, Super) bubble past the input so global keybinds still work — except when the OS keyboard layout has already composed the modifier into a different printable character (e.g. UK Mac Alt-3 → `#`, US Mac Alt-2 → `™`). In that case the composed character is treated as typed input, since blocking it would make those characters untypeable on layouts that need a modifier to produce them. Bare characters are consumed for typing.
+Mouse and selection
+-------------------
+
+Click positions the caret. Drag selects from the press point to the current cursor cell — the selection range is rendered with reverse-video. Double-click selects the word under the cursor; triple-click selects the entire buffer. `has-selection`, `selection-range`, and `selected-text` expose the current selection state.
+
+Keyboard cooperates: Shift+Left / Shift+Right jump by word AND extend the selection (the legacy word-jump is now also a selection-extend); plain arrows clear any selection before moving. Ctrl+A selects all. Ctrl+C and Ctrl+X emit on the corresponding supplies — Selkie does not own the system clipboard, so apps wire OSC 52 / notcurses paste-buffer in their handlers. Backspace and Delete delete an active selection if present; typing replaces it.
+
+Modifier bubbling
+-----------------
+
+Modified keys (Ctrl, Alt, Super) bubble past the input so global keybinds still work — except for Ctrl+A / C / X (selection-related, handled internally) and except when the OS keyboard layout has already composed the modifier into a different printable character (e.g. UK Mac Alt-3 → `#`, US Mac Alt-2 → `™`). In that case the composed character is treated as typed input, since blocking it would make those characters untypeable on layouts that need a modifier to produce them. Bare characters are consumed for typing.
 
 EXAMPLES
 ========
@@ -87,6 +101,58 @@ sub prev-word-pos(
 
 Find the position of the start of the previous word at or before `$pos` in `$s`. Skips backwards through any non-word chars, then backwards through word chars, landing on the index of the first char of that word — or 0 if we walked off the start. Used by shift-left and shift-backspace.
 
+### has Int $!sel-anchor
+
+Selection anchor offset. -1 means "no selection" — the cursor is a bare caret. When >= 0, the selection covers the half-open range from `min(anchor, cursor)` to `max(anchor, cursor)`. The cursor is the movable end; the anchor stays put while extending.
+
+### method has-selection
+
+```raku
+method has-selection() returns Bool
+```
+
+True iff there is an active selection (anchor differs from cursor). A bare caret returns False.
+
+### method selection-range
+
+```raku
+method selection-range() returns Range
+```
+
+Half-open offset range of the current selection, normalised to `low..^high`. Returns `0..^0` when there's no selection.
+
+### method selected-text
+
+```raku
+method selected-text() returns Str
+```
+
+The substring currently selected, or the empty string when there is no selection.
+
+### method clear-selection
+
+```raku
+method clear-selection() returns Mu
+```
+
+Clear any active selection without moving the caret.
+
+### method on-copy
+
+```raku
+method on-copy() returns Supply
+```
+
+Supply emitting the currently-selected text on Ctrl+C. The Selkie framework does not own the system clipboard — apps wire this up themselves via OSC 52 or notcurses paste-buffer. The supply only fires when there's an active selection.
+
+### method on-cut
+
+```raku
+method on-cut() returns Supply
+```
+
+Supply emitting on Ctrl+X. Like on-copy but the selection is also deleted from the buffer.
+
 ### method insert-text
 
 ```raku
@@ -95,5 +161,5 @@ method insert-text(
 ) returns Nil
 ```
 
-Insert `$text` at the current cursor position in one operation. Equivalent to typing each character in turn, but does ONE buffer concat instead of one per char — drops paste cost from O(n²) to O(n). Newlines and other control chars in `$text` are stripped (single-line input). Used by the App's paste-batching drain loop; application code can call it directly to programmatically insert text.
+Insert `$text` at the current cursor position in one operation. Equivalent to typing each character in turn, but does ONE buffer concat instead of one per char — drops paste cost from O(n²) to O(n). Newlines and other control chars in `$text` are stripped (single-line input). Used by the App's paste-batching drain loop; application code can call it directly to programmatically insert text. If a selection is active, it is replaced (deleted then the new text is inserted at the deletion point) — matches the canonical "type to overwrite selection" behavior of every text editor.
 

@@ -26,6 +26,8 @@ Walks the focused widget and each ancestor up to (and including) the screen root
 
 Binds without descriptions are skipped — they're considered internal plumbing (e.g. the editor cursor's character-handling) rather than discoverable shortcuts. Authors opt in by passing `:description` to `Widget.on-key`.
 
+The overlay's modal sets `dismiss-on-click-outside =` True> by default — clicking anywhere outside the help panel closes it. The embedded Close button still works (Enter, Space, or click), and so does Esc. The list itself doesn't yet scroll on overflow; widgets with very long bind lists scroll their owner ScrollView via the standard scroll-wheel routing.
+
 SEE ALSO
 ========
 

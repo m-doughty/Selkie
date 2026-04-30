@@ -82,6 +82,68 @@ has UInt $!scroll-offset = 0;
 has Bool $.show-scrollbar = True;
 has UInt $!content-height = 0;
 
+#|( Persistent tail-follow state, only meaningful when
+    C<follow-bottom> is True. Computed once on every user-driven
+    C<scroll-to> call (the funnel that scroll-by, scroll-page-by,
+    scroll-to-end, scroll-to-start, mouse wheel, and scrollbar drag
+    all route through), based on whether the user landed at
+    C<max-offset> or not. C<render> reads this flag without
+    touching it — content-height changes between frames don't
+    affect follow status.
+
+    The previous implementation computed "follow active" per
+    render by checking C<scroll-offset >= max-offset> against the
+    OLD content-height. That snapshot proved fragile: CardList
+    resizes mid-frame change C<self.rows> and so C<max-offset>
+    before content-height is even re-measured, and children with
+    lazy C<logical-height> (RichText) can briefly report stale
+    heights between C<set-content> and the next render. Either
+    fragility flipped the per-frame check to False and silently
+    disabled tail-follow for streaming bodies. Tracking persistent
+    state survives both. )
+has Bool $!follow-active = True;
+
+submethod TWEAK() {
+    # Click + drag on the scrollbar column drags the thumb. The
+    # mapping is proportional: cursor row → scroll-offset such that
+    # thumb-y == cursor-row (clamped to thumb-track bounds). Click
+    # outside the scrollbar column falls through; click inside the
+    # body would normally land on a child via deeper hit-testing.
+    self.on-mouse-down: -> $ev {
+        if $!show-scrollbar {
+            my $col = self.local-col($ev);
+            if $col == (self.cols - 1).Int {
+                self!scrollbar-jump-to-row(self.local-row($ev).UInt);
+            }
+        }
+    };
+    self.on-drag: -> $ev {
+        if $!show-scrollbar {
+            # Drag captures keep us as the target even when the
+            # cursor leaves our bounds; recompute against raw event
+            # y so the thumb tracks the cursor.
+            my $raw-row = $ev.y - self.abs-y;
+            my $clamped = ($raw-row max 0) min (self.rows - 1).Int;
+            self!scrollbar-jump-to-row($clamped.UInt);
+        }
+    };
+}
+
+# Map a viewport row to a scroll-offset such that the thumb lands at
+# that row. Clamps to the thumb-track range so dragging past the
+# extremes saturates instead of jumping erratically.
+method !scrollbar-jump-to-row(UInt $row) {
+    my UInt $vh = self.rows;
+    return unless $vh > 0;
+    my UInt $max = self!max-offset;
+    return unless $max > 0;
+    my Rat $thumb-ratio = $vh / ($!content-height max 1);
+    my UInt $thumb-h = ($vh * $thumb-ratio).ceiling.UInt max 1;
+    my UInt $track = ($vh - $thumb-h) max 1;
+    my UInt $clamped = $row min $track;
+    self.scroll-to(($clamped * $max / $track).floor.UInt);
+}
+
 #|( Auto-pin to the bottom of content as it grows. When True, each
     render checks whether the scroll offset was at C<max-offset> just
     before C<update-content-height> ran; if so, it snaps the new
@@ -94,9 +156,24 @@ method scroll-offset(--> UInt) { $!scroll-offset }
 method content-height(--> UInt) { $!content-height }
 method viewport-height(--> UInt) { self.rows }
 
+#|( Read-only view of the persistent tail-follow flag. True when
+    C<follow-bottom> is enabled and the user is currently at (or
+    has been clamped to) C<max-offset>. Useful for app code that
+    wants to surface a "follow-mode" indicator in the UI, and for
+    tests to verify follow transitions without driving a full
+    render. Always True for views constructed with
+    C<follow-bottom => False> — the flag is simply unused. )
+method follow-active(--> Bool) { $!follow-active }
+
 method scroll-to(UInt $row) {
     my UInt $max = self!max-offset;
     $!scroll-offset = $row min $max;
+    # Re-evaluate tail-follow state from where the user landed.
+    # Reaching max-offset re-engages follow; landing anywhere
+    # short of it disengages until they scroll back. This is the
+    # single point that maintains $!follow-active — see the
+    # attribute comment for the rationale.
+    $!follow-active = $!scroll-offset >= $max;
     self.mark-dirty;
 }
 
@@ -169,17 +246,28 @@ method render() {
         }
     }
 
-    # Phase 2: capture "was at end" against the OLD content-height so
-    # that a user scroll-up between frames is correctly recognised
-    # as "no longer following the tail". Then update content-height
-    # and let follow-bottom snap to the new max if applicable.
-    my Bool $was-at-end = $!scroll-offset >= self!max-offset;
+    # Phase 2: refresh content-height from children (now sized
+    # correctly by Phase 1), then resolve scroll position from the
+    # persistent C<$!follow-active> flag. The flag is maintained
+    # by C<scroll-to> on user input and is unaffected by between-
+    # frame height fragilities — see the attribute comment.
     self!update-content-height;
 
-    if $!follow-bottom && $was-at-end {
-        $!scroll-offset = self!max-offset;
+    my UInt $new-max = self!max-offset;
+    if $!follow-bottom && $!follow-active {
+        $!scroll-offset = $new-max;
     } else {
-        $!scroll-offset = $!scroll-offset min self!max-offset;
+        $!scroll-offset = $!scroll-offset min $new-max;
+        # If a content shrink (or viewport grow) clamped us
+        # exactly to max-offset, re-engage follow. The user is
+        # back at the tail even though they didn't actively scroll
+        # there — typical cause is a sibling card collapsing
+        # (reasoning toggle, multi-line input shrink, width
+        # change wrapping fewer rows) which lowers our max-offset
+        # past where the user previously parked. Without this,
+        # follow stays disengaged forever after the first
+        # involuntary land-at-tail.
+        $!follow-active = True if $!scroll-offset >= $new-max;
     }
 
     ncplane_erase(self.plane);
@@ -267,6 +355,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
             when NCKEY_SCROLL_UP   { self.scroll-by(-3); return True }
             when NCKEY_SCROLL_DOWN { self.scroll-by(3);  return True }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
     if $ev.event-type ~~ KeyEvent {
         given $ev.id {

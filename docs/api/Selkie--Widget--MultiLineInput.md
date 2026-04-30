@@ -29,6 +29,11 @@ The height auto-adjusts via `desired-height`: if you pass `sizing =` Sizing.fixe
 
 `set-text-silent` updates the buffer without emitting `on-change` — use this from store subscriptions to avoid feedback loops.
 
+Mouse and selection
+-------------------
+
+Click positions the caret. Drag selects across rows; the selection range is rendered with reverse-video and respects word-wrap (the highlight follows the wrapped layout, not raw offsets). Double-click selects the word under the cursor; triple-click selects the entire current logical line. Scroll-wheel moves the cursor up/down. Ctrl+A selects everything; Ctrl+C / Ctrl+X emit on `on-copy` / `on-cut` and (for cut) delete the selection. Backspace and Delete consume an active selection if present; typing replaces it.
+
 EXAMPLES
 ========
 
@@ -55,6 +60,50 @@ SEE ALSO
   * [Selkie::Widget::TextInput](Selkie--Widget--TextInput.md) — single-line variant
 
   * [Selkie::Widget::TextStream](Selkie--Widget--TextStream.md) — append-only log (no editing)
+
+### has Int $!sel-anchor-row
+
+Selection anchor in (logical-row, logical-col). `-1` in $!sel-anchor-row means "no selection" — cursor is a bare caret. When >= 0 the selection covers the half-open range from `min(anchor, cursor)` to `max(anchor, cursor)`, walked across logical lines.
+
+### method has-selection
+
+```raku
+method has-selection() returns Bool
+```
+
+True iff a selection is active (anchor differs from cursor). Bare caret returns False.
+
+### method selection-range
+
+```raku
+method selection-range() returns List
+```
+
+Returns the normalised selection range as a List of two pairs: `(:row, :col)` for the start and `(:row, :col)` for the end (half-open at end). Returns `()` when no selection.
+
+### method selected-text
+
+```raku
+method selected-text() returns Str
+```
+
+The text currently selected, walking line by line. `\n` joins successive logical lines. Empty string when no selection.
+
+### method clear-selection
+
+```raku
+method clear-selection() returns Mu
+```
+
+Clear the active selection without moving the caret.
+
+### method visual-rows
+
+```raku
+method visual-rows() returns Array
+```
+
+Same shape as `!visual-lines`, but each entry is a hash with `logical-row`, `logical-col-start`, `text`. Used by the selection overlay to map visual rows back to logical (row, col) spans for highlighting.
 
 ### method insert-text
 

@@ -72,3 +72,7 @@ SEE ALSO
 
   * [Selkie::App](Selkie--App.md) — `show-modal` and `close-modal` methods
 
+### has Bool $.dismiss-on-click-outside
+
+When True, a primary mouse click outside the modal's content rectangle dismisses the modal — the framework calls `Selkie::App.close-modal`, restoring the pre-modal focus and revealing whatever was behind. Default False matches the keyboard focus-trap behavior: stray clicks in the dimmed backdrop are ignored. Subclasses override the default by passing `:dismiss-on-click-outside` to their parent constructor — `HelpOverlay` defaults to True (lightweight informational overlay), `ConfirmModal` stays False (a Yes/No decision shouldn't be silently abandoned).
+

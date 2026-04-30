@@ -167,6 +167,50 @@ method new(*%args --> Selkie::Widget::Table) {
     callwith(|%args);
 }
 
+submethod TWEAK() {
+    # Mouse routing:
+    # - Click on the header row of a sortable column → cycle sort
+    # - Click in the body → move cursor to that row
+    # - Double-click in the body → activate the row (same as Enter)
+    # Header/body are distinguished by row 0 vs row 1+, mirroring
+    # render(). Column-from-x is computed from the same column-widths
+    # pass the renderer uses, so hit-testing tracks layout exactly.
+    self.on-click: -> $ev {
+        my $row = self.local-row($ev);
+        my $col = self.local-col($ev);
+        if $row >= 0 && $col >= 0 && @!columns {
+            my @widths = self!column-widths;
+            my $col-idx = self!col-index-at-x($col, @widths);
+            if $row == 0 {
+                if $col-idx >= 0 {
+                    my $name = @!columns[$col-idx].name;
+                    self.sort-by($name) if @!columns[$col-idx].sortable;
+                }
+            } else {
+                my UInt $body-row = $row - 1;
+                my UInt $idx = $!scroll-offset + $body-row;
+                if $idx < @!view-rows.elems {
+                    self.select-index($idx) if $idx != $!cursor;
+                    $!activate-supplier.emit($!cursor) if $ev.click-count >= 2;
+                }
+            }
+        }
+    };
+}
+
+# Map a local column to the column index whose rendered span covers
+# it. Returns -1 when the cursor is past the last column or in the
+# scrollbar gutter.
+method !col-index-at-x(Int $col, @widths --> Int) {
+    my $x = 0;
+    for @widths.kv -> $i, $w {
+        next unless $w > 0;
+        return $i if $col < $x + $w;
+        $x += $w;
+    }
+    -1;
+}
+
 # --- Accessors ------------------------------------------------------------
 
 #| The list of registered columns in order. Read-only.
@@ -549,6 +593,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
                 return True;
             }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
 
     False;

@@ -24,7 +24,8 @@ $cb.on-change.tap: -> Bool $checked {
 =head1 DESCRIPTION
 
 Renders as C<[x] label> when checked, C<[ ] label> when unchecked.
-Space or Enter toggles the state.
+Space or Enter toggles the state, as does a primary mouse click on
+any cell of the checkbox row.
 
 C<set-checked> is idempotent — passing the current value is a no-op and
 doesn't emit on C<on-change>. Safe to call from a store subscription
@@ -78,6 +79,11 @@ has Supplier $!change-supplier = Supplier.new;
 method new(*%args --> Selkie::Widget::Checkbox) {
     %args<focusable> //= True;
     callwith(|%args);
+}
+
+submethod TWEAK() {
+    # Primary mouse click toggles, same path as Enter / Space.
+    self.on-click: -> $ { self.toggle };
 }
 
 #| Current state.
@@ -136,6 +142,11 @@ method render() {
 }
 
 method handle-event(Selkie::Event $ev --> Bool) {
+    if $ev.event-type ~~ MouseEvent {
+        return True if self!dispatch-mouse-handlers($ev);
+        return False;
+    }
+
     return False unless $!focused;
 
     if $ev.event-type ~~ KeyEvent {

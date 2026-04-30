@@ -229,6 +229,13 @@ method build(
     $!modal;
 }
 
+#|( Mouse: clicking a list row positions the cursor (single-click)
+    or activates the command (double-click) — these are ListView's
+    standard semantics, inherited because CommandPalette delegates
+    list rendering and dispatch to its inner C<Selkie::Widget::ListView>.
+    Scroll-wheel over the list moves the cursor. Clicking the input
+    row places the caret as TextInput would. )
+
 #| Which widget should receive initial focus when the modal opens.
 #| The TextInput — typing immediately filters without pressing Tab.
 method focusable-widget() { $!input }

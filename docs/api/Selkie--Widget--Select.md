@@ -60,6 +60,17 @@ SEE ALSO
 
   * [Selkie::Widget::ListView](Selkie--Widget--ListView.md) — full-height scrollable list
 
+### method claims-overlay-at
+
+```raku
+method claims-overlay-at(
+    Int $y,
+    Int $x
+) returns Bool
+```
+
+When the dropdown is open, claim overlay rights for the dropdown rows. The framework's `widget-at-in` does an overlay pass against the entire tree before normal containment walk, so clicks on the dropdown reach the Select even though the parent layout's bounds end at our closed-display row. The closed-display row itself stays under standard contains-point — when the dropdown isn't open, we behave like any other 1-row widget.
+
 ### method select-by-value
 
 ```raku

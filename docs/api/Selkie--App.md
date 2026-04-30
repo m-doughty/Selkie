@@ -466,6 +466,59 @@ method flush-paste-batch(
 
 Apply an accumulated paste batch to the focused widget's `insert-text` method. Caller has already verified that the focused widget supports the method, so this is a single dispatch plus one O(n) buffer rebuild — total cost O(n) for the whole paste, not O(n²) the per-char path would incur.
 
+### method dispatch-mouse
+
+```raku
+method dispatch-mouse(
+    Selkie::Event $ev
+) returns Mu
+```
+
+Coordinate-based dispatch for mouse events. Resolves the deepest widget whose on-screen rectangle contains the click point, applies drag-capture so motion / release stay routed to the press's target, performs click-to-focus on focusable presses, annotates presses with their double / triple multiplicity, then bubbles the event up the parent chain — same consume-or-bubble rule as keyboard events. Modal isolation matches the keyboard path: clicks outside the active modal are dropped (or trigger a synthesized close on modals that opted in via `dismiss-on-click-outside`).
+
+### method is-button-id
+
+```raku
+method is-button-id(
+    Int $id where { ... }
+) returns Bool
+```
+
+True iff the given id is one of the `NCKEY_BUTTON1..11` keycodes. Pure motion (`NCKEY_MOTION`) and other input ids return False.
+
+### method button-from-id
+
+```raku
+method button-from-id(
+    Int $id where { ... }
+) returns UInt
+```
+
+Extract the 1-indexed button number from a button event id, or `0` for non-button events (motion, scroll wheel — which is technically buttons 4/5 but tracked as scroll, not press/release). Used for capture keying.
+
+### method widget-at
+
+```raku
+method widget-at(
+    Int $y,
+    Int $x
+) returns Selkie::Widget
+```
+
+Return the deepest widget whose on-screen rectangle contains the given absolute cell. Walks the active modal's content if a modal is open, otherwise the active screen's root. Children are tried after parents (depth-first), so a click inside a nested widget correctly resolves to the nested one. Type object if no widget matches (e.g. click in a region nothing has rendered to).
+
+### method widget-at-in
+
+```raku
+method widget-at-in(
+    $root,
+    Int $y,
+    Int $x
+) returns Selkie::Widget
+```
+
+Public hit-test against an arbitrary root. Returns the deepest widget whose on-screen rectangle contains the given absolute cell, falling back to `$root` itself when the point is in the root's own bounds but no descendant claims it. Returns the `Selkie::Widget` type object when the root doesn't contain the point. Two-phase resolution: =item **Phase 1**: walk the whole tree looking for any widget whose `claims-overlay-at` returns True. This catches widgets that paint outside their nominal rect (open dropdowns, popovers) — the layout-aware walk would miss them because their parent's `contains-point` doesn't extend over the overlay area. =item **Phase 2**: fall through to the standard depth-first containment walk. Exposed (rather than left private) so tests can exercise the coordinate-walk logic without needing a live App instance — same pattern as widget-attached. App's mouse dispatcher uses this with the active modal / screen root resolved at call time.
+
 ### method check-terminal-resize
 
 ```raku

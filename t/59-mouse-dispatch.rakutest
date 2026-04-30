@@ -1,0 +1,249 @@
+use Test;
+use lib 'lib';
+
+use Notcurses::Native::Types;
+
+use Selkie::App;
+use Selkie::Widget;
+use Selkie::Container;
+use Selkie::Widget::Button;
+use Selkie::Widget::Modal;
+use Selkie::Event;
+use Selkie::Test::Keys;
+
+# Mouse dispatch foundation. Most of the App-instance flow (capture,
+# click-to-focus, modal isolation) needs notcurses_init and is covered
+# by manual smoke in App-Cantina (see the v1 plan); this file pins
+# down the pieces that ARE testable in-process: hit-testing, the
+# event-classification helpers, the Selkie::Event annotation API, the
+# default Widget.handle-event mouse fan-out, and Modal's new
+# dismiss-on-click-outside default.
+
+# Tiny test container — same pattern as t/focus-invariant.rakutest.
+class TestContainer does Selkie::Container {
+    method render() { self!render-children; self.clear-dirty }
+}
+
+# Helper: position a widget on screen by setting its viewport state
+# directly. In production the layout pass does this — in tests we want
+# fast deterministic placement without spinning notcurses.
+sub place(Selkie::Widget $w, :$abs-y!, :$abs-x!, :$rows!, :$cols!) {
+    $w.set-viewport(:$abs-y, :$abs-x, :$rows, :$cols);
+}
+
+plan 12;
+
+subtest "mouse-event-button extracts the 1-indexed button" => {
+    plan 6;
+    is mouse-event-button(mouse-event(id => NCKEY_BUTTON1)), 1, 'BUTTON1 → 1';
+    is mouse-event-button(mouse-event(id => NCKEY_BUTTON2)), 2, 'BUTTON2 → 2';
+    is mouse-event-button(mouse-event(id => NCKEY_BUTTON3)), 3, 'BUTTON3 → 3';
+    is mouse-event-button(mouse-event(id => NCKEY_SCROLL_UP)), 4,
+        'SCROLL_UP is button 4 by encoding';
+    is mouse-event-button(mouse-event(id => NCKEY_SCROLL_DOWN)), 5,
+        'SCROLL_DOWN is button 5';
+    is mouse-event-button(mouse-event(id => NCKEY_MOTION)), 0,
+        'pure motion has no button';
+};
+
+subtest "mouse-event-kinds fans out by input type" => {
+    plan 5;
+    is-deeply mouse-event-kinds(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS)
+    ).List, <click mouse-down>.List,
+        'press fans out to click + mouse-down';
+    is-deeply mouse-event-kinds(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_RELEASE)
+    ).List, ('mouse-up',).List,
+        'release fires mouse-up only';
+    is-deeply mouse-event-kinds(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_REPEAT)
+    ).List, ('drag',).List,
+        'repeat (button held + motion) fires drag';
+    is-deeply mouse-event-kinds(
+        mouse-event(id => NCKEY_SCROLL_UP)
+    ).List, ('scroll',).List,
+        'scroll wheel fires scroll regardless of input-type';
+    is-deeply mouse-event-kinds(
+        mouse-event(id => NCKEY_MOTION)
+    ).List, ('drag',).List,
+        'pure motion classifies as drag';
+};
+
+subtest "Widget.contains-point uses viewport rect" => {
+    plan 6;
+    my $w = Selkie::Widget::Button.new(label => 'x');
+    nok $w.contains-point(0, 0),
+        'unmounted widget (zero viewport) contains nothing';
+
+    place($w, abs-y => 5, abs-x => 10, rows => 3, cols => 8);
+    ok  $w.contains-point(5, 10),  'top-left corner is inside';
+    ok  $w.contains-point(7, 17),  'bottom-right corner (5+3-1, 10+8-1) is inside';
+    nok $w.contains-point(4, 10),  'one cell above is outside';
+    nok $w.contains-point(8, 10),  'one row past bottom is outside';
+    nok $w.contains-point(5, 18),  'one col past right is outside';
+};
+
+subtest "Widget.local-row / local-col" => {
+    plan 4;
+    my $w = Selkie::Widget::Button.new(label => 'x');
+    place($w, abs-y => 5, abs-x => 10, rows => 3, cols => 8);
+    is $w.local-row(mouse-event(id => NCKEY_BUTTON1, y => 5, x => 10)), 0,
+        'top of widget → local row 0';
+    is $w.local-col(mouse-event(id => NCKEY_BUTTON1, y => 5, x => 12)), 2,
+        'col 12 against abs-x 10 → 2';
+    is $w.local-row(mouse-event(id => NCKEY_BUTTON1, y => 9, x => 10)), -1,
+        'event below widget → -1';
+    is $w.local-col(mouse-event(id => NCKEY_BUTTON1, y => 5, x => 5)), -1,
+        'event left of widget → -1';
+};
+
+subtest "App.widget-at-in: deepest hit wins" => {
+    plan 4;
+    my $root = TestContainer.new;
+    my $a = Selkie::Widget::Button.new(label => 'A');
+    my $b = Selkie::Widget::Button.new(label => 'B');
+    $root.add($a);
+    $root.add($b);
+
+    place($root, abs-y => 0, abs-x => 0, rows => 10, cols => 20);
+    place($a,    abs-y => 0, abs-x => 0, rows => 5,  cols => 10);
+    place($b,    abs-y => 5, abs-x => 0, rows => 5,  cols => 10);
+
+    is Selkie::App.widget-at-in($root, 1, 1).label, 'A',
+        'click in upper region resolves to A';
+    is Selkie::App.widget-at-in($root, 6, 1).label, 'B',
+        'click in lower region resolves to B';
+    is Selkie::App.widget-at-in($root, 0, 15), $root,
+        'click in root-only area (no child rect) resolves to root';
+    nok Selkie::App.widget-at-in($root, 100, 100).defined,
+        'click outside root returns the type object';
+};
+
+subtest "App.widget-at-in: nested children resolve to leaf" => {
+    plan 2;
+    my $root = TestContainer.new;
+    my $mid  = TestContainer.new;
+    my $leaf = Selkie::Widget::Button.new(label => 'leaf');
+    $root.add($mid);
+    $mid.add($leaf);
+
+    place($root, abs-y => 0, abs-x => 0, rows => 10, cols => 20);
+    place($mid,  abs-y => 1, abs-x => 1, rows => 8,  cols => 18);
+    place($leaf, abs-y => 2, abs-x => 2, rows => 4,  cols => 10);
+
+    is Selkie::App.widget-at-in($root, 3, 5).label, 'leaf',
+        'click inside leaf resolves through root → mid → leaf';
+    is Selkie::App.widget-at-in($root, 1, 1), $mid,
+        'click in mid-only band (above leaf) resolves to mid';
+};
+
+subtest "Selkie::Event.with-click-count clones into a new event" => {
+    plan 4;
+    my $base = mouse-event(id => NCKEY_BUTTON1, y => 7, x => 13);
+    my $two  = $base.with-click-count(2);
+    is $two.click-count, 2, 'cloned event reports the new count';
+    is $two.y, 7, 'y preserved across clone';
+    is $two.x, 13, 'x preserved across clone';
+    is $base.click-count, 0, 'original event is untouched (immutability)';
+};
+
+subtest "Widget.on-click registers a click handler" => {
+    plan 3;
+    my class TestWidget does Selkie::Widget {
+        method render() { self.clear-dirty }
+    }
+    my $w = TestWidget.new;
+    my $fired = 0;
+    $w.on-click(-> $ev { $fired++ });
+    is $w.mouse-handlers.elems, 1, 'one handler registered';
+    is $w.mouse-handlers[0].kind, 'click', 'kind is "click"';
+    is $w.mouse-handlers[0].button, 1, 'default button is 1';
+};
+
+subtest "Widget.handle-event default routes a press through on-click" => {
+    plan 3;
+    # Plain Selkie::Widget composer so the default handle-event runs
+    # (Button overrides handle-event with its own logic).
+    my class TestWidget does Selkie::Widget {
+        method render() { self.clear-dirty }
+    }
+    my $w = TestWidget.new;
+    place($w, abs-y => 0, abs-x => 0, rows => 1, cols => 1);
+    my @fired;
+    $w.on-click(-> $ev { @fired.push: $ev.click-count });
+
+    my $ev = mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS, click-count => 1);
+    ok $w.handle-event($ev), 'press is consumed by registered click handler';
+    is @fired.elems, 1, 'handler fired exactly once';
+    is @fired[0], 1, 'handler saw the click-count annotation';
+};
+
+subtest "Widget.handle-event ignores press when no matching button registered" => {
+    plan 2;
+    my class TestWidget does Selkie::Widget {
+        method render() { self.clear-dirty }
+    }
+    my $w = TestWidget.new;
+    place($w, abs-y => 0, abs-x => 0, rows => 1, cols => 1);
+    $w.on-click(-> $ev { ; }, button => 2);
+    my $primary-press = mouse-event(input-type => NCTYPE_PRESS, id => NCKEY_BUTTON1);
+    nok $w.handle-event($primary-press),
+        'button-1 press doesn\'t fire a button-2 handler';
+    my $middle-press = mouse-event(input-type => NCTYPE_PRESS, id => NCKEY_BUTTON2);
+    ok $w.handle-event($middle-press),
+        'button-2 press fires the button-2 handler';
+};
+
+subtest "Modal default dismiss-on-click-outside is False" => {
+    plan 2;
+    my $m = Selkie::Widget::Modal.new;
+    nok $m.dismiss-on-click-outside,
+        'default is the focus-trap behavior — clicks outside are dropped';
+    my $opt-in = Selkie::Widget::Modal.new(dismiss-on-click-outside => True);
+    ok $opt-in.dismiss-on-click-outside,
+        'opt-in flag flips on construction';
+};
+
+subtest "widget-at-in routes through overlay claims" => {
+    # Regression for the dropdown-in-Select bug: widgets that paint
+    # over the layout flow (open Selects, popovers) must capture clicks
+    # on their overlay area even when the parent's contains-point
+    # would otherwise hand the click to a sibling sitting underneath.
+    plan 3;
+    my class OverlayWidget does Selkie::Widget {
+        has Bool $.open is rw = False;
+        method render() { self.clear-dirty }
+        method claims-overlay-at(Int $y, Int $x --> Bool) {
+            return False unless $!open;
+            $y >= self.abs-y && $y < self.abs-y + 4
+                && $x >= self.abs-x && $x < self.abs-x + 8;
+        }
+    }
+    my $root = TestContainer.new;
+    place($root, abs-y => 0, abs-x => 0, rows => 5, cols => 20);
+
+    my $top = OverlayWidget.new;
+    my $bot = Selkie::Widget::Button.new(label => 'underneath');
+    $root.add($top);
+    $root.add($bot);
+    place($top, abs-y => 0, abs-x => 0, rows => 1, cols => 8);
+    place($bot, abs-y => 1, abs-x => 0, rows => 1, cols => 8);
+
+    # Closed: click on row 1 lands on the bottom button (normal
+    # containment walk).
+    is Selkie::App.widget-at-in($root, 1, 2).label, 'underneath',
+        'closed overlay defers to layout flow';
+
+    # Opened: same click is captured by the overlay widget — its
+    # painted region extends down to row 3.
+    $top.open = True;
+    is Selkie::App.widget-at-in($root, 1, 2), $top,
+        'open overlay captures clicks past its own viewport';
+
+    # Click outside the overlay's painted region (still inside the
+    # root container) falls back to containment walk and lands on
+    # the root — no descendant covers row 4.
+    is Selkie::App.widget-at-in($root, 4, 2), $root,
+        'click below the overlay extent falls back to containment walk';
+};

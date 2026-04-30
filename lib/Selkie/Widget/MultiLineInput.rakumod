@@ -35,6 +35,17 @@ desired height grow as content is added, bounded by C<max-lines>.
 C<set-text-silent> updates the buffer without emitting C<on-change> —
 use this from store subscriptions to avoid feedback loops.
 
+=head2 Mouse and selection
+
+Click positions the caret. Drag selects across rows; the selection
+range is rendered with reverse-video and respects word-wrap (the
+highlight follows the wrapped layout, not raw offsets). Double-click
+selects the word under the cursor; triple-click selects the entire
+current logical line. Scroll-wheel moves the cursor up/down. Ctrl+A
+selects everything; Ctrl+C / Ctrl+X emit on C<on-copy> / C<on-cut> and
+(for cut) delete the selection. Backspace and Delete consume an active
+selection if present; typing replaces it.
+
 =head1 EXAMPLES
 
 =head2 Chat compose area
@@ -83,10 +94,209 @@ has Str $.placeholder is rw = '';
 has Bool $!focused = False;
 has Supplier $!submit-supplier = Supplier.new;
 has Supplier $!change-supplier = Supplier.new;
+has Supplier $!copy-supplier = Supplier.new;
+has Supplier $!cut-supplier = Supplier.new;
+
+#|( Selection anchor in (logical-row, logical-col). C<-1> in $!sel-anchor-row
+    means "no selection" — cursor is a bare caret. When >= 0 the
+    selection covers the half-open range from C<min(anchor, cursor)>
+    to C<max(anchor, cursor)>, walked across logical lines. )
+has Int $!sel-anchor-row = -1;
+has Int $!sel-anchor-col = 0;
 
 method new(*%args --> Selkie::Widget::MultiLineInput) {
     %args<focusable> //= True;
     callwith(|%args);
+}
+
+submethod TWEAK() {
+    # Click positions the caret. Double-click selects the word under
+    # the cursor; triple-click selects the entire current logical
+    # line (matches the per-row selection convention from text
+    # editors). Drag extends the selection from the press anchor.
+    self.on-click: -> $ev {
+        my $vrow = self.local-row($ev);
+        my $vcol = self.local-col($ev);
+        if $vrow >= 0 && $vcol >= 0 {
+            my ($lrow, $lcol) = self!visual-to-logical(($!scroll-y + $vrow).UInt, $vcol.UInt);
+            given $ev.click-count {
+                when 2 { self!select-word-at($lrow, $lcol) }
+                when 3 { self!select-line-at($lrow) }
+                default {
+                    # Place the caret and clear any selection. Drag
+                    # arms the anchor lazily on first motion — see
+                    # the on-drag handler. Anchoring here would turn
+                    # every post-click keystroke into a 1-char
+                    # selection (cursor advances; anchor stays).
+                    $!cursor-row = $lrow;
+                    $!cursor-col = $lcol;
+                    $!sel-anchor-row = -1;
+                    self.mark-dirty;
+                }
+            }
+        }
+    };
+    self.on-drag: -> $ev {
+        my $raw-row = $ev.y - self.abs-y;
+        my $raw-col = $ev.x - self.abs-x;
+        # Clamp to the visible plane — drag captures keep us as the
+        # target even when the cursor leaves our bounds. Beyond the
+        # buffer's last visual row, !visual-to-logical pins to the
+        # last line / last column for us.
+        my $vrow = ($raw-row max 0) min (self.rows - 1);
+        my $vcol = ($raw-col max 0) min (self.cols - 1);
+        my ($lrow, $lcol) = self!visual-to-logical(($!scroll-y + $vrow).UInt, $vcol.UInt);
+        unless $lrow == $!cursor-row && $lcol == $!cursor-col {
+            # First motion of a drag: anchor at the press-time
+            # cursor (row, col). Subsequent motions extend.
+            if $!sel-anchor-row < 0 {
+                $!sel-anchor-row = $!cursor-row.Int;
+                $!sel-anchor-col = $!cursor-col.Int;
+            }
+            $!cursor-row = $lrow;
+            $!cursor-col = $lcol;
+            self.mark-dirty;
+        }
+    };
+}
+
+# --- Selection model -------------------------------------------------------
+
+#|( True iff a selection is active (anchor differs from cursor).
+    Bare caret returns False. )
+method has-selection(--> Bool) {
+    $!sel-anchor-row >= 0
+        && ($!sel-anchor-row != $!cursor-row.Int
+            || $!sel-anchor-col != $!cursor-col.Int);
+}
+
+#|( Returns the normalised selection range as a List of two pairs:
+    C<(:row, :col)> for the start and C<(:row, :col)> for the end
+    (half-open at end). Returns C<()> when no selection. )
+method selection-range(--> List) {
+    return ().List unless self.has-selection;
+    my ($a-r, $a-c) = ($!sel-anchor-row, $!sel-anchor-col);
+    my ($c-r, $c-c) = ($!cursor-row.Int, $!cursor-col.Int);
+    if $a-r < $c-r || ($a-r == $c-r && $a-c <= $c-c) {
+        return ({ :row($a-r), :col($a-c) }, { :row($c-r), :col($c-c) }).List;
+    }
+    ({ :row($c-r), :col($c-c) }, { :row($a-r), :col($a-c) }).List;
+}
+
+#|( The text currently selected, walking line by line. C<\n> joins
+    successive logical lines. Empty string when no selection. )
+method selected-text(--> Str) {
+    return '' unless self.has-selection;
+    my ($s, $e) = self.selection-range;
+    if $s<row> == $e<row> {
+        return @!lines[$s<row>].substr($s<col>, $e<col> - $s<col>);
+    }
+    my @parts;
+    @parts.push: @!lines[$s<row>].substr($s<col>);
+    for ($s<row> + 1 .. $e<row> - 1) -> $r {
+        @parts.push: @!lines[$r];
+    }
+    @parts.push: @!lines[$e<row>].substr(0, $e<col>);
+    @parts.join("\n");
+}
+
+#| Clear the active selection without moving the caret.
+method clear-selection() {
+    return unless $!sel-anchor-row >= 0;
+    $!sel-anchor-row = -1;
+    self.mark-dirty;
+}
+
+method on-copy(--> Supply) { $!copy-supplier.Supply }
+method on-cut(--> Supply)  { $!cut-supplier.Supply }
+
+method !select-word-at(UInt $row, UInt $col) {
+    my $line = @!lines[$row];
+    return unless $line.chars > 0;
+    my $start = prev-word-pos($line, ($col + 1).Int);
+    my $end   = next-word-pos($line, $col.Int);
+    while $end > $start && !($line.substr($end - 1, 1) ~~ /\w/) {
+        $end--;
+    }
+    return if $end == $start;
+    $!sel-anchor-row = $row.Int;
+    $!sel-anchor-col = $start;
+    $!cursor-row = $row;
+    $!cursor-col = $end.UInt;
+    self.mark-dirty;
+}
+
+method !select-line-at(UInt $row) {
+    return unless @!lines[$row].chars > 0;
+    $!sel-anchor-row = $row.Int;
+    $!sel-anchor-col = 0;
+    $!cursor-row = $row;
+    $!cursor-col = @!lines[$row].chars;
+    self.mark-dirty;
+}
+
+method !select-all() {
+    return unless @!lines.elems > 0 && self.text.chars > 0;
+    $!sel-anchor-row = 0;
+    $!sel-anchor-col = 0;
+    $!cursor-row = @!lines.end.UInt;
+    $!cursor-col = @!lines[*-1].chars.UInt;
+    self.mark-dirty;
+}
+
+# Delete the active selection from the buffer, leaving the caret at
+# the start of the (now-deleted) range. Returns True if deletion
+# actually happened. Caller emits change / dirty.
+method !delete-selection(--> Bool) {
+    return False unless self.has-selection;
+    my ($s, $e) = self.selection-range;
+    if $s<row> == $e<row> {
+        my $line = @!lines[$s<row>];
+        @!lines[$s<row>] = $line.substr(0, $s<col>) ~ $line.substr($e<col>);
+    } else {
+        my $head = @!lines[$s<row>].substr(0, $s<col>);
+        my $tail = @!lines[$e<row>].substr($e<col>);
+        @!lines[$s<row>] = $head ~ $tail;
+        @!lines.splice($s<row> + 1, $e<row> - $s<row>);
+    }
+    $!cursor-row = $s<row>.UInt;
+    $!cursor-col = $s<col>.UInt;
+    $!sel-anchor-row = -1;
+    True;
+}
+
+# Set both cursor coords; either clear the selection (extend=False)
+# or anchor at the previous cursor position (extend=True).
+method !move-cursor(UInt $r, UInt $c, Bool $extend) {
+    if $extend {
+        if $!sel-anchor-row < 0 {
+            $!sel-anchor-row = $!cursor-row.Int;
+            $!sel-anchor-col = $!cursor-col.Int;
+        }
+    } else {
+        $!sel-anchor-row = -1;
+    }
+    $!cursor-row = $r;
+    $!cursor-col = $c;
+    self.mark-dirty;
+}
+
+# Map a visual (vrow, vcol) to logical (row, col). When vrow runs
+# past the last visual row, pins to the last line / last column —
+# useful so a click in empty space below the buffer lands at the end.
+method !visual-to-logical(UInt $vrow, UInt $vcol --> List) {
+    my $w = self!wrap-width;
+    my $vidx = 0;
+    for @!lines.kv -> $r, $line {
+        my $line-vrows = ($line.chars / $w).ceiling max 1;
+        if $vidx + $line-vrows > $vrow {
+            my $segment = $vrow - $vidx;
+            my $col = ($segment * $w + $vcol) min $line.chars;
+            return ($r.UInt, $col.UInt);
+        }
+        $vidx += $line-vrows;
+    }
+    (@!lines.end.UInt, @!lines[*-1].chars.UInt);
 }
 
 method text(--> Str) { @!lines.join("\n") }
@@ -112,6 +322,7 @@ method !load-text(Str:D $t) {
     @!lines = ('',) unless @!lines;
     $!cursor-row = @!lines.end;
     $!cursor-col = @!lines[*-1].chars;
+    $!sel-anchor-row = -1;
 }
 
 method clear() { self.set-text('') }
@@ -189,6 +400,33 @@ method !visual-lines(--> Array) {
     @vlines.Array;
 }
 
+#|( Same shape as C<!visual-lines>, but each entry is a hash with
+    C<logical-row>, C<logical-col-start>, C<text>. Used by the
+    selection overlay to map visual rows back to logical (row, col)
+    spans for highlighting. )
+method !visual-rows(--> Array) {
+    my $w = self!wrap-width;
+    my @rows;
+    for @!lines.kv -> $r, $line {
+        if $line.chars == 0 {
+            @rows.push({ :logical-row($r), :logical-col-start(0), :text('') });
+        } elsif $line.chars <= $w {
+            @rows.push({ :logical-row($r), :logical-col-start(0), :text($line) });
+        } else {
+            my $pos = 0;
+            while $pos < $line.chars {
+                @rows.push({
+                    :logical-row($r),
+                    :logical-col-start($pos),
+                    :text($line.substr($pos, $w)),
+                });
+                $pos += $w;
+            }
+        }
+    }
+    @rows.Array;
+}
+
 method render() {
     return without self.plane;
     ncplane_erase(self.plane);
@@ -212,15 +450,39 @@ method render() {
         self.apply-style($style);
         self!adjust-scroll;
 
-        my @vlines = self!visual-lines;
+        my @vrows = self!visual-rows;
         for ^$visible-rows -> $row {
             my UInt $vline-idx = $!scroll-y + $row;
-            last if $vline-idx >= @vlines.elems;
-            ncplane_putstr_yx(self.plane, $row, 0, @vlines[$vline-idx]);
+            last if $vline-idx >= @vrows.elems;
+            ncplane_putstr_yx(self.plane, $row, 0, @vrows[$vline-idx]<text>);
         }
 
-        # Draw cursor
-        if $!focused {
+        # Selection overlay: redraw cells in the selection range with
+        # reverse-video. Walks the visible visual rows and computes
+        # overlap per-row against the normalised selection bounds.
+        if self.has-selection {
+            my ($s, $e) = self.selection-range;
+            ncplane_set_fg_rgb(self.plane, $style.bg // 0x1A1A2E);
+            ncplane_set_bg_rgb(self.plane, $style.fg // 0xFFFFFF);
+            for ^$visible-rows -> $row {
+                my UInt $vline-idx = $!scroll-y + $row;
+                last if $vline-idx >= @vrows.elems;
+                my %vr = @vrows[$vline-idx];
+                next if %vr<logical-row> < $s<row> || %vr<logical-row> > $e<row>;
+                my $seg-start = %vr<logical-col-start>;
+                my $seg-end   = $seg-start + %vr<text>.chars;
+                my $hi-lo = %vr<logical-row> == $s<row> ?? max($s<col>, $seg-start) !! $seg-start;
+                my $hi-hi = %vr<logical-row> == $e<row> ?? min($e<col>, $seg-end)   !! $seg-end;
+                next unless $hi-hi > $hi-lo;
+                my $start-col = $hi-lo - $seg-start;
+                my $sel-text = %vr<text>.substr($start-col, $hi-hi - $hi-lo);
+                ncplane_putstr_yx(self.plane, $row, $start-col, $sel-text);
+            }
+        }
+
+        # Draw cursor (skipped while selection is active — the
+        # reverse-video span already marks the active end).
+        if $!focused && !self.has-selection {
             my Int $cursor-vrow = self!cursor-visual-row - $!scroll-y;
             my UInt $cursor-vcol = self!cursor-visual-col;
             if $cursor-vrow >= 0 && $cursor-vrow < $visible-rows {
@@ -254,46 +516,82 @@ method !adjust-scroll() {
 }
 
 method handle-event(Selkie::Event $ev --> Bool) {
-    return False unless $!focused;
-
-    # Mouse scroll
+    # Mouse routes through the registration API regardless of focus.
     if $ev.event-type ~~ MouseEvent {
+        # Scroll-wheel keeps its existing cursor-driven semantics.
         given $ev.id {
             when NCKEY_SCROLL_UP   { self!move-up; return True }
             when NCKEY_SCROLL_DOWN { self!move-down; return True }
         }
+        return True if self!dispatch-mouse-handlers($ev);
         return False;
     }
+
+    return False unless $!focused;
 
     return False unless $ev.input-type == NCTYPE_PRESS || $ev.input-type == NCTYPE_REPEAT
                      || $ev.input-type == NCTYPE_UNKNOWN;
 
-    # Ctrl+Enter submits; plain Enter inserts newline
+    my $shift = $ev.has-modifier(Mod-Shift);
+    my $ctrl  = $ev.has-modifier(Mod-Ctrl);
+
+    # Ctrl+Enter submits; plain Enter inserts newline (replacing
+    # selection if any).
     if $ev.id == NCKEY_ENTER {
-        if $ev.has-modifier(Mod-Ctrl) {
+        if $ctrl {
             $!submit-supplier.emit(self.text);
             return True;
         } else {
+            self!delete-selection;
             self!insert-newline;
             return True;
         }
     }
 
-    # Let Ctrl/Alt/Super bubble for global keybinds (except Ctrl+Enter
-    # handled above) — *unless* the OS keyboard layout already composed
-    # the modifier into a different printable character (e.g. UK Mac
-    # Alt-3 → '#'). See TextInput.handle-event for the full rationale.
+    # Ctrl-chord shortcuts that own selection / copy / cut. Handled
+    # before the generic Ctrl-bubble-out so they don't fall through
+    # to global keybinds. Match on id (case-insensitive) — char is
+    # typically unset for ctrl chords outside the kitty-keyboard path.
+    if $ctrl && !$ev.has-modifier(Mod-Alt) && !$ev.has-modifier(Mod-Super) {
+        my $lower-id = $ev.id;
+        $lower-id = $lower-id + 32 if $lower-id >= 'A'.ord && $lower-id <= 'Z'.ord;
+        given $lower-id {
+            when 'a'.ord { self!select-all; return True }
+            when 'c'.ord {
+                $!copy-supplier.emit(self.selected-text) if self.has-selection;
+                return True;
+            }
+            when 'x'.ord {
+                if self.has-selection {
+                    $!cut-supplier.emit(self.selected-text);
+                    self!delete-selection;
+                    $!change-supplier.emit(self.text);
+                    self!update-sizing;
+                    self.mark-dirty;
+                }
+                return True;
+            }
+        }
+    }
+
+    # Let other Ctrl/Alt/Super bubble for global keybinds — *unless*
+    # the OS keyboard layout already composed the modifier into a
+    # different printable character (e.g. UK Mac Alt-3 → '#'). See
+    # TextInput.handle-event for the full rationale.
     my $composed = $ev.char.defined && $ev.char.chars == 1
                 && $ev.char.ord >= 32 && $ev.char.ord != $ev.id;
     if !$composed && ($ev.has-modifier(Mod-Ctrl) || $ev.has-modifier(Mod-Alt) || $ev.has-modifier(Mod-Super)) {
         return self!check-keybinds($ev);
     }
 
-    my $shift = $ev.has-modifier(Mod-Shift);
-
     given $ev.id {
         when NCKEY_BACKSPACE {
-            if $shift {
+            if self.has-selection {
+                self!delete-selection;
+                $!change-supplier.emit(self.text);
+                self!update-sizing;
+                self.mark-dirty;
+            } elsif $shift {
                 self!do-word-backspace;
             } else {
                 self!do-backspace;
@@ -301,50 +599,48 @@ method handle-event(Selkie::Event $ev --> Bool) {
             return True;
         }
         when NCKEY_DEL {
-            self!do-delete;
+            if self.has-selection {
+                self!delete-selection;
+                $!change-supplier.emit(self.text);
+                self!update-sizing;
+                self.mark-dirty;
+            } else {
+                self!do-delete;
+            }
             return True;
         }
         when NCKEY_LEFT {
-            if $shift {
-                self!move-word-left;
-            } else {
-                self!move-left;
-            }
+            self!handle-left($shift);
             return True;
         }
         when NCKEY_RIGHT {
-            if $shift {
-                self!move-word-right;
-            } else {
-                self!move-right;
-            }
+            self!handle-right($shift);
             return True;
         }
         when NCKEY_UP {
-            self!move-up;
+            self!handle-up($shift);
             return True;
         }
         when NCKEY_DOWN {
-            self!move-down;
+            self!handle-down($shift);
             return True;
         }
         when NCKEY_HOME {
-            $!cursor-col = 0;
-            self.mark-dirty;
+            self!set-cursor-extending($!cursor-row, 0, $shift);
             return True;
         }
         when NCKEY_END {
-            $!cursor-col = @!lines[$!cursor-row].chars;
-            self.mark-dirty;
+            self!set-cursor-extending($!cursor-row, @!lines[$!cursor-row].chars, $shift);
             return True;
         }
         default {
             if $ev.char.defined && $ev.char.chars == 1 {
                 if $ev.char.ord == 10 || $ev.char.ord == 13 {
-                    # Newline from paste
+                    self!delete-selection;
                     self!insert-newline;
                     return True;
                 } elsif $ev.char.ord >= 32 {
+                    self!delete-selection;   # type-replaces-selection
                     self!insert-char($ev.char);
                     return True;
                 }
@@ -352,6 +648,84 @@ method handle-event(Selkie::Event $ev --> Bool) {
         }
     }
     False;
+}
+
+# --- Selection-aware cursor moves --------------------------------------
+
+# Helper: position cursor and clear/extend selection in one call.
+method !set-cursor-extending(UInt $r, UInt $c, Bool $extend) {
+    self!move-cursor($r, $c, $extend);
+}
+
+method !handle-left(Bool $extend) {
+    my $start-row = $!cursor-row;
+    my $start-col = $!cursor-col;
+    if $extend {
+        # Shift+Left: word-jump (matches existing convention) AND
+        # extend selection. Falls back to plain prev-cell at column 0.
+        if $!cursor-col == 0 && $!cursor-row > 0 {
+            my $r = $!cursor-row - 1;
+            my $line = @!lines[$r];
+            my $c = $line.chars > 0 ?? prev-word-pos($line, $line.chars).UInt !! 0;
+            self!move-cursor($r, $c, True);
+        } elsif $!cursor-col > 0 {
+            my $line = @!lines[$!cursor-row];
+            my $c = prev-word-pos($line, $!cursor-col.Int).UInt;
+            self!move-cursor($!cursor-row, $c, True);
+        }
+        return;
+    }
+    # Plain Left: clear selection, step one cell back across line
+    # boundaries.
+    if $!cursor-col > 0 {
+        self!move-cursor($!cursor-row, $!cursor-col - 1, False);
+    } elsif $!cursor-row > 0 {
+        my $r = $!cursor-row - 1;
+        self!move-cursor($r, @!lines[$r].chars.UInt, False);
+    } else {
+        self.clear-selection;
+    }
+}
+
+method !handle-right(Bool $extend) {
+    if $extend {
+        my $line = @!lines[$!cursor-row];
+        if $!cursor-col >= $line.chars && $!cursor-row < @!lines.end {
+            self!move-cursor(($!cursor-row + 1).UInt, 0, True);
+        } elsif $!cursor-col < $line.chars {
+            my $c = next-word-pos($line, $!cursor-col.Int).UInt;
+            self!move-cursor($!cursor-row, $c, True);
+        }
+        return;
+    }
+    my $line = @!lines[$!cursor-row];
+    if $!cursor-col < $line.chars {
+        self!move-cursor($!cursor-row, $!cursor-col + 1, False);
+    } elsif $!cursor-row < @!lines.end {
+        self!move-cursor(($!cursor-row + 1).UInt, 0, False);
+    } else {
+        self.clear-selection;
+    }
+}
+
+method !handle-up(Bool $extend) {
+    if $!cursor-row > 0 {
+        my $r = $!cursor-row - 1;
+        my $c = $!cursor-col min @!lines[$r].chars;
+        self!move-cursor($r, $c.UInt, $extend);
+    } elsif !$extend {
+        self.clear-selection;
+    }
+}
+
+method !handle-down(Bool $extend) {
+    if $!cursor-row < @!lines.end {
+        my $r = $!cursor-row + 1;
+        my $c = $!cursor-col min @!lines[$r].chars;
+        self!move-cursor($r.UInt, $c.UInt, $extend);
+    } elsif !$extend {
+        self.clear-selection;
+    }
 }
 
 method !insert-char(Str $ch) {
@@ -371,6 +745,7 @@ method !insert-char(Str $ch) {
     drain loop. )
 method insert-text(Str:D $text --> Nil) {
     return if $text.chars == 0;
+    self!delete-selection;
     # Strip control chars except \n (\r is normalised to \n) and \t.
     my $norm = $text.subst(/\r\n|\r/, "\n", :g);
     $norm = $norm.subst(/<[\x[00]..\x[08]\x[0B]..\x[0C]\x[0E]..\x[1F]\x[7F]]>/, '', :g);

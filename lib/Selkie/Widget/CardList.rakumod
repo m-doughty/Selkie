@@ -113,6 +113,38 @@ has Int $!selected = 0;
 has Int $!scroll-top = 0;
 has Supplier $!select-supplier = Supplier.new;
 
+#|( State carried across renders so we can detect any layout shift
+    that would otherwise rely on Image's per-Image cache invalidation
+    to be 100% reliable — which it isn't in practice. Sprixel
+    cleanup goes via the terminal wire as an escape sequence; rapid
+    sprite churn on scroll / resize occasionally lets the new blit
+    land before the old remove has flushed, leaving ghost avatars at
+    the previous positions. Detecting state changes here lets us
+    park every card before the normal layout pass, which forces a
+    fresh sprixel ID on every visible card and sidesteps the
+    incremental-update reliability question entirely.
+
+    C<@!last-heights> tracks per-item heights across renders so a
+    streaming-token-driven height growth (~1% of tokens, when a
+    rendered line wraps and the card grows by a row) is treated as
+    a layout shift. Most streaming tokens don't change card height,
+    so the snapshot comparison stays cheap and the park-all only
+    fires on wraps.
+
+    C<$!last-selected> catches selection-only changes that shift
+    card positions without moving scroll-top — clicking a card
+    that's already on screen recomputes C<$top-clip> in render
+    based on the new selected-index, which can push every visible
+    card's row offset up or down by a few cells. Without this in
+    the trigger set, those clicks would re-render at a new
+    geometry without first parking the avatar planes, and notcurses
+    would emit the new sprixels alongside the old ghosts. )
+has Int $!last-scroll-top = -1;
+has Int $!last-selected = -1;
+has UInt $!last-vh = 0;
+has UInt $!last-vw = 0;
+has @!last-heights;
+
 #|( When True and the rendered cards (from C<scroll-top> through the
     last item) sum to less than the viewport height, render shifts
     every visible card down so the LAST item ends at the bottom of
@@ -129,6 +161,34 @@ has Bool $.bottom-anchor = False;
 method new(*%args) {
     %args<focusable> //= True;
     callwith(|%args);
+}
+
+submethod TWEAK() {
+    # Click selects the card under the cursor. Card heights are
+    # heterogeneous, so we walk visible items from the current
+    # scroll-top and accumulate heights until we find the one the
+    # click row falls inside.
+    self.on-click: -> $ev {
+        my $row = self.local-row($ev);
+        if $row >= 0 {
+            my $idx = self!card-index-at-row($row.UInt);
+            self.select-index($idx) if $idx >= 0 && $idx != $!selected;
+        }
+    };
+}
+
+method !card-index-at-row(UInt $row --> Int) {
+    return -1 unless @!items;
+    my $y = 0;
+    my $i = $!scroll-top;
+    while $i < @!items.elems {
+        my $h = @!items[$i]<height>;
+        return $i if $row < $y + $h;
+        $y += $h;
+        last if $y >= self.rows;
+        $i++;
+    }
+    -1;
 }
 
 method on-select(--> Supply) { $!select-supplier.Supply }
@@ -191,6 +251,19 @@ method add-item($widget, :$root!, :$height!, :$border) {
     # focus derivation so set-has-focus (called per-render below) is
     # the single source of truth.
     $border.focus-from-store = False if $border;
+
+    # Wire the per-item widgets into the parent chain. Without this
+    # link C<self.theme> on a card walks past CardList and falls back
+    # to C<Selkie::Theme.default>, so the first C<init-plane> →
+    # C<!sync-plane-base> on each card paints its base cell with the
+    # framework's default palette instead of the active theme — the
+    # card stays themed against the default background until the next
+    # explicit C<set-theme> cascade overwrites C<$!theme>. Setting
+    # parent here lets the theme inheritance walk find the live theme
+    # at the moment the plane is first created.
+    $root.parent   = self if $root.defined   && !$root.parent.defined;
+    $border.parent = self if $border.defined && !$border.parent.defined;
+
     @!items.push({ :$widget, :$root, :$height, :$border });
     self.mark-dirty;
 }
@@ -249,6 +322,48 @@ method render() {
     return self.clear-dirty unless @!items && $vh > 0;
 
     self!recalc-scroll;
+
+    # Defense in depth for sprixel ghosting. When scroll-top, viewport
+    # dims, item count, or any item's height changes between renders,
+    # cards are about to shift and Image's incremental sprixel-update
+    # path can leak ghosts (terminal wire drops the remove half of a
+    # remove+emit pair under rapid churn). Park every item up front so
+    # visible cards re-init from a clean plane state on the layout
+    # pass below, forcing fresh sprixel IDs; off-screen cards stay
+    # parked.
+    #
+    # Per-item-height tracking deliberately fires on streaming wraps
+    # (the ~1% of tokens that grow a card by a row) but stays silent
+    # on tokens that just append text within an existing row. Most
+    # streaming frames hit the cheap "no shift" path; only the
+    # rare-but-disruptive layout shifts get the heavy cleanup. This
+    # keeps streaming visually clean without per-token churn.
+    my @current-heights = @!items.map(*<height>);
+    my Bool $heights-changed = False;
+    if @current-heights.elems != @!last-heights.elems {
+        $heights-changed = True;
+    } else {
+        for ^@current-heights.elems -> $i {
+            if @current-heights[$i] != @!last-heights[$i] {
+                $heights-changed = True;
+                last;
+            }
+        }
+    }
+    if $!scroll-top != $!last-scroll-top
+       || $!selected   != $!last-selected
+       || $vh != $!last-vh
+       || $vw != $!last-vw
+       || $heights-changed {
+        for @!items -> %item {
+            %item<root>.park if %item<root>.plane;
+        }
+    }
+    $!last-scroll-top = $!scroll-top;
+    $!last-selected   = $!selected;
+    $!last-vh = $vh;
+    $!last-vw = $vw;
+    @!last-heights = @current-heights;
 
     # Calculate top clip offset
     my $total-to-selected = 0;
@@ -370,6 +485,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
             when NCKEY_SCROLL_UP   { self!select-prev; return True }
             when NCKEY_SCROLL_DOWN { self!select-next; return True }
         }
+        return True if self!dispatch-mouse-handlers($ev);
     }
 
     False;

@@ -186,17 +186,21 @@ sub type-text(Selkie::Widget $widget, Str:D $text) is export {
 }
 
 #|( Construct a mouse event. C<:id> is one of C<NCKEY_SCROLL_UP>,
-    C<NCKEY_SCROLL_DOWN>, C<NCKEY_BUTTON1..6>. C<:y> and C<:x> are
-    optional screen coordinates for click events. )
+    C<NCKEY_SCROLL_DOWN>, C<NCKEY_BUTTON1..6>, or C<NCKEY_MOTION>.
+    C<:y> and C<:x> are optional screen coordinates. C<:click-count>
+    annotates a press with multiplicity (1 single, 2 double, 3
+    triple) — production code receives this from C<Selkie::App>'s
+    mouse dispatcher. )
 sub mouse-event(UInt :$id!,
                 Int :$y = -1,
                 Int :$x = -1,
                 Set :$modifiers = Set.new,
-                NcInputType :$input-type = NCTYPE_PRESS
+                NcInputType :$input-type = NCTYPE_PRESS,
+                Int :$click-count = 0
                 --> Selkie::Event
 ) is export {
     Selkie::Event.new(
-        :$id, :$modifiers, :$input-type, :$y, :$x,
+        :$id, :$modifiers, :$input-type, :$y, :$x, :$click-count,
         event-type => MouseEvent,
     );
 }

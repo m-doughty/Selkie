@@ -36,7 +36,7 @@ sub add-stub($cl, Int :$height = 5) {
     $widget;
 }
 
-plan 23;
+plan 24;
 
 subtest "construction defaults" => {
     plan 3;
@@ -299,4 +299,46 @@ subtest "bottom-anchor flag" => {
     $anchored.resize(50, 40);
     $anchored.select-last;
     is $anchored.selected, 2, "selection still tracks last item under bottom-anchor";
+};
+
+subtest "click on a deep card descendant bubbles up to CardList" => {
+    plan 3;
+    my $cl = Selkie::Widget::CardList.new;
+    $cl.resize(20, 30);
+    $cl.set-viewport(abs-y => 0, abs-x => 0, rows => 20, cols => 30);
+
+    # Two cards, height 5 each.
+    my $stub-a = StubWidget.new;
+    my $root-a = Selkie::Layout::VBox.new(sizing => Sizing.fixed(5));
+    $cl.add-item($stub-a, root => $root-a, height => 5);
+    my $stub-b = StubWidget.new;
+    my $root-b = Selkie::Layout::VBox.new(sizing => Sizing.fixed(5));
+    $cl.add-item($stub-b, root => $root-b, height => 5);
+
+    # Wire stub-b's parent chain manually so the bubble walks
+    # stub-b → root-b → CardList. add-item set root-b.parent = $cl;
+    # we just need stub-b.parent set to root-b for the test stub
+    # (production VBox.add does this automatically).
+    $stub-b.parent = $root-b;
+
+    # Click at row 6, col 4 — that's inside the second card (rows 5-9).
+    my $ev = mouse-event(id => NCKEY_BUTTON1, y => 6, x => 4,
+                         input-type => NCTYPE_PRESS, click-count => 1);
+    my $consumed = $stub-b.handle-event($ev);
+    # The click consumes inside CardList via the bubble; default
+    # handle-event on the stub returns False (no handlers), the
+    # parent walks up. We assert the side-effect of CardList's
+    # click handler firing.
+    is $cl.selected, 0, 'precondition: starts on the first card';
+
+    # Walk the bubble manually as App.dispatch-mouse does — the
+    # framework's bubble stops at the first handler returning True.
+    my $w = $stub-b;
+    my Bool $handled = False;
+    while $w.defined && !$handled {
+        $handled = $w.handle-event($ev);
+        $w = $w.parent;
+    }
+    ok $handled, 'click eventually consumed somewhere up the chain';
+    is $cl.selected, 1, 'CardList reacted to the bubbled click and selected the second card';
 };
