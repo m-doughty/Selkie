@@ -215,6 +215,18 @@ overwrites the previous subscription. C<unsubscribe($id)> removes one
 by key; C<unsubscribe-widget($w)> removes every subscription bound to
 a widget (used during widget destruction).
 
+=head2 Mutation safety
+
+It's safe for a subscription's callback to call C<unsubscribe> (its
+own id, or any sibling) — the per-tick subscription walk snapshots
+the key set up front and re-resolves each entry through an
+existence-guarded lookup, so deletions during iteration don't
+corrupt the loop. This matters whenever a callback closes a modal
+(which destroys the modal's widget tree, which calls
+C<unsubscribe-widget> for every child), since a tick can otherwise
+crash with "expected Associative but got Mu" on the next pair-bind.
+The same applies to C<flush-push-subs> for path subscriptions.
+
 =head2 Equality semantics
 
 Subscription computes are compared against the previous value with a
@@ -692,7 +704,21 @@ method !run-effect(Str:D $fx-name, $fx-params, Str :$event) {
 }
 
 method !check-subscriptions() {
-    for %!subscriptions.kv -> $id, %sub {
+    # Snapshot the keys upfront and re-resolve each value through
+    # `:exists`-guarded lookup. A subscription's callback is allowed
+    # to call `unsubscribe` (its own id, or others) — `Hash.kv`
+    # iterates lazily so a deleted entry would otherwise yield Nil at
+    # value-bind time, failing the typecheck on `%sub`. Mirrors the
+    # pattern already used in C<!flush-push-subs>. Without this,
+    # closing a modal from inside a subscription callback (which
+    # destroys the modal's widget tree, which calls
+    # C<unsubscribe-widget> for each child) caused a non-deterministic
+    # "expected Associative but got Mu" crash one or two ticks later
+    # depending on hash ordering.
+    for %!subscriptions.keys -> $id {
+        next unless %!subscriptions{$id}:exists;
+        my %sub := %!subscriptions{$id};
+
         # Push-handled types bypass the per-tick walk entirely —
         # they fire from C<!flush-push-subs> on actual writes.
         next if (%sub<type> // '') eq any('path', 'path-callback');

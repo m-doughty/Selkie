@@ -427,18 +427,20 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     #    unbox path) and returns a freshly-reboxed clean Int when the
     #    value fits in int64, or Nil when it doesn't.
     #
-    # When safe-coord rejects either coord, we log + skip the update.
-    # The parent layout re-passes coords every frame, and most spesh
+    # When safe-coord rejects either coord, we emit a structured
+    # diagnostic via `!corruption-note` and skip the update. The
+    # parent layout re-passes coords every frame, and most spesh
     # corruption is local to a hot frame — clean values usually
-    # arrive on the next render. Worst case is stale position + log
-    # spam (which is itself useful: a recurring log line is the
-    # surest signal we have that upstream spesh is misbehaving and
-    # should be repro'd for an upstream report).
+    # arrive on the next render. The diagnostic captures both
+    # coords' bit widths plus the parent's coord widths so a
+    # multi-occurrence trace can distinguish single-event from
+    # accumulator from cascade — the data we need to chase the
+    # arithmetic site upstream of the gate (see the v1-blocker
+    # entry in TODO/Selkie.md for the standalone-repro plan).
     my $safe-y = safe-coord($abs-y);
     my $safe-x = safe-coord($abs-x);
     unless $safe-y.defined && $safe-x.defined {
-        note "Selkie::Widget.set-viewport: skipping corrupt coord "
-           ~ "(bigint exceeds int64); will retry next frame";
+        note self!corruption-note($abs-y, $abs-x);
         return;
     }
 
@@ -457,6 +459,41 @@ sub position-changed(Int $new-y, Int $new-x, Int $old-y, Int $old-x --> Bool) {
     $new-y != $old-y || $new-x != $old-x;
 }
 
+# Diagnostic emitted to STDERR when safe-coord rejects a coord. Goal
+# is to capture enough state on each rare in-the-wild occurrence that
+# a width-distribution + cascade pattern emerges over a handful of
+# events, distinguishing among:
+#
+#   - single multiplicative event (always-the-same width across
+#     occurrences) → look for one site producing the value
+#   - per-frame accumulator (growing width across frames within a
+#     session) → look for a `*=` or `**` in a frame-driven path
+#   - cascade (corrupt parent abs-y propagates via `parent-abs-y +
+#     cy` in VBox.layout-children) → corruption entered upstream;
+#     parent's bit width also non-zero confirms it
+#
+# We capture: widget class + id (which widget hit the gate); both
+# coord widths (was abs-x corrupt simultaneously, or just abs-y as in
+# the original report?); parent class + parent's coord widths if
+# present (cascade detection). All extracted via nqp ops or simple
+# attribute reads — no method dispatch on the corrupt value, no
+# Backtrace allocation that could itself crash on a fragile frame.
+method !corruption-note(Int $abs-y, Int $abs-x --> Str) {
+    my $y-bits = coord-bit-width($abs-y);
+    my $x-bits = coord-bit-width($abs-x);
+    my $widget = "self={self.^name} id={$!widget-id}";
+    my $coords = "y-bits=$y-bits x-bits=$x-bits";
+    my $parent-part = "";
+    if $!parent.defined {
+        my $py = coord-bit-width($!parent.abs-y);
+        my $px = coord-bit-width($!parent.abs-x);
+        $parent-part = " parent={$!parent.^name}"
+                     ~ " parent-y-bits=$py parent-x-bits=$px";
+    }
+    "Selkie::Widget.set-viewport: skipping corrupt coord; will retry "
+        ~ "next frame [$widget $coords$parent-part]";
+}
+
 # Bounds-via-bigint-width gate. Returns a freshly-reboxed clean Int
 # when the value fits in int64 (so the subsequent attribute STORE in
 # `set-viewport` operates on a value spesh hasn't mis-specialised),
@@ -470,6 +507,21 @@ sub safe-coord(Int $n) {
     nqp::isbig_I($d)
         ?? Nil
         !! nqp::box_i(nqp::unbox_i($d), Int);
+}
+
+# Bit width of a corruption-class bigint, or 0 if the value fits in
+# int64 (i.e. is not a bigint at all). Goes through nqp::base_I +
+# nqp::chars to avoid any boxed-Int dispatch — calling `.base(2)` or
+# `.Str` on a corrupt Int could trip the same Scalar.STORE inlined
+# unbox that `safe-coord` is gating against. Used by the diagnostic
+# note in `set-viewport` to capture the width sequence over multiple
+# occurrences — the data point that distinguishes a single
+# multiplicative event (constant width) from a per-frame accumulator
+# (growing width) when chasing the upstream MoarVM spesh bug.
+sub coord-bit-width(Int $n --> Int) {
+    my $d := nqp::decont($n);
+    return 0 unless nqp::isbig_I($d);
+    nqp::chars(nqp::base_I($d, 2));
 }
 
 #|( The effective theme for this widget. Walks up the parent chain until

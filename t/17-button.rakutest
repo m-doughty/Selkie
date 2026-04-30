@@ -6,7 +6,7 @@ use Selkie::Event;
 use Selkie::Test::Keys;
 use Notcurses::Native::Types;
 
-plan 8;
+plan 11;
 
 subtest "construction" => {
     plan 3;
@@ -74,4 +74,68 @@ subtest "keybind on button works" => {
     $b.on-key: 'ctrl+q', -> $ { $called = True };
     $b.handle-event(key-event(id => 'q'.ord, modifiers => Set(Mod-Ctrl)));
     ok $called, "keybind fires";
+};
+
+# --- Arrow-key focus cycling -----------------------------------------------
+#
+# Modal action rows lay buttons out horizontally. Tab/Shift+Tab work
+# globally, but most users reach for arrow keys first. Left/Right
+# dispatch the same focus events App's global Tab keybinds use, so
+# the focus-cycle semantics stay identical (same focusable order,
+# modal traps, etc.). These subtests verify the dispatch happens
+# only when focused and only with no modifiers held.
+
+use Selkie::Store;
+
+subtest "right arrow dispatches ui/focus-next when focused" => {
+    plan 2;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    my $store = Selkie::Store.new;
+    $b.set-store($store);
+    $b.set-focused(True);
+
+    my $fired = False;
+    $store.register-handler('ui/focus-next', -> $st, %ev {
+        $fired = True;
+        ();
+    });
+
+    my $consumed = $b.handle-event(key-event(id => NCKEY_RIGHT));
+    $store.tick;
+    ok $consumed, 'event consumed';
+    ok $fired, 'ui/focus-next dispatched';
+};
+
+subtest "left arrow dispatches ui/focus-prev when focused" => {
+    plan 2;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    my $store = Selkie::Store.new;
+    $b.set-store($store);
+    $b.set-focused(True);
+
+    my $fired = False;
+    $store.register-handler('ui/focus-prev', -> $st, %ev {
+        $fired = True;
+        ();
+    });
+
+    my $consumed = $b.handle-event(key-event(id => NCKEY_LEFT));
+    $store.tick;
+    ok $consumed, 'event consumed';
+    ok $fired, 'ui/focus-prev dispatched';
+};
+
+subtest "modifier-held arrow keys are not consumed" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    my $store = Selkie::Store.new;
+    $b.set-store($store);
+    $b.set-focused(True);
+
+    # Shift+Right should NOT trigger focus-next — that's some other
+    # widget's binding (text-input word-jump etc.) and Button must
+    # not eat it. The bare-arrow case is a Button affordance; with
+    # any modifier held the event bubbles up.
+    nok $b.handle-event(key-event(id => NCKEY_RIGHT, modifiers => Set(Mod-Shift))),
+        'Shift+Right not consumed by Button';
 };

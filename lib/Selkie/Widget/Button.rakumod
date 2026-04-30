@@ -128,6 +128,22 @@ method handle-event(Selkie::Event $ev --> Bool) {
             $!press-supplier.emit(True);
             return True;
         }
+        # Left / Right cycle focus the same way Tab / Shift-Tab do.
+        # Buttons in a modal's action row sit horizontally — most
+        # users reach for the arrow keys before they reach for Tab,
+        # and stranding focus on a single button until they discover
+        # Tab is bad UX. Dispatch the same store events App's
+        # global Tab keybinds use, so the focus chain semantics
+        # stay identical (focusable-descendants order, modal focus
+        # traps, etc.).
+        if $ev.id == NCKEY_LEFT && !$ev.modifiers.elems {
+            self.dispatch('ui/focus-prev');
+            return True;
+        }
+        if $ev.id == NCKEY_RIGHT && !$ev.modifiers.elems {
+            self.dispatch('ui/focus-next');
+            return True;
+        }
     }
 
     self!check-keybinds($ev);

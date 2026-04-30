@@ -9,7 +9,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 24;
+plan 27;
 
 subtest "empty store" => {
     plan 2;
@@ -382,4 +382,90 @@ subtest "multiple idle ticks do not re-fire primed subscription" => {
     $s.tick;  # idle
     $s.tick;  # idle
     is $fire-count, 1, "callback fires exactly once across idle ticks";
+};
+
+# --- Subscription mutation safety ----------------------------------------
+#
+# Regression coverage for the "Type check failed in binding to parameter
+# '%sub'" crash that fired when a subscription callback called
+# `unsubscribe` mid-tick. `Hash.kv` iterates lazily; without an `:exists`
+# guard the next pair-bind hits Nil and fails the Associative check.
+# Fixed in 0.5.3 — these subtests pin the new contract: callbacks may
+# unsubscribe themselves or any sibling without crashing the iteration.
+
+subtest "callback unsubscribing itself does not crash mid-tick" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    my $fired = 0;
+    $s.register-handler('bump', -> $st, %ev {
+        (db => { n => ($st.get-in('n') // 0) + 1 },);
+    });
+
+    $s.subscribe-with-callback('self-killer',
+        -> $store { $store.get-in('n') // 0 },
+        -> $v {
+            $fired++;
+            $s.unsubscribe('self-killer');
+        },
+        $w);
+
+    $s.dispatch('bump');
+    lives-ok { $s.tick }, "tick survives self-unsubscribing callback";
+    is $fired, 1, "callback fired exactly once before unsubscribing";
+};
+
+subtest "callback unsubscribing a sibling does not crash mid-tick" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.register-handler('bump', -> $st, %ev {
+        (db => { n => ($st.get-in('n') // 0) + 1 },);
+    });
+
+    my $sibling-fired = 0;
+    $s.subscribe-with-callback('sibling',
+        -> $store { $store.get-in('n') // 0 },
+        -> $v { $sibling-fired++ },
+        $w);
+
+    my $killer-fired = 0;
+    $s.subscribe-with-callback('killer',
+        -> $store { $store.get-in('n') // 0 },
+        -> $v {
+            $killer-fired++;
+            $s.unsubscribe('sibling');
+        },
+        $w);
+
+    $s.dispatch('bump');
+    lives-ok { $s.tick }, "tick survives sibling-unsubscribing callback";
+    ok $killer-fired >= 1, "killer callback fired";
+};
+
+subtest "many sibling subs killed in one callback do not crash" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $w = TestWidget.new;
+    $s.register-handler('bump', -> $st, %ev {
+        (db => { n => ($st.get-in('n') // 0) + 1 },);
+    });
+
+    # Register 20 dummy subs and one mass-killer that nukes them all
+    # from a single callback firing — exercises the worst case where
+    # most of the snapshot-keys list points at deleted entries by the
+    # time we get to them.
+    for ^20 -> $i {
+        $s.subscribe-with-callback("dummy-$i",
+            -> $store { $store.get-in('n') // 0 },
+            -> $v { },
+            $w);
+    }
+    $s.subscribe-with-callback('mass-killer',
+        -> $store { $store.get-in('n') // 0 },
+        -> $v { $s.unsubscribe("dummy-$_") for ^20 },
+        $w);
+
+    $s.dispatch('bump');
+    lives-ok { $s.tick }, "tick survives mass-unsubscribe in one callback";
 };

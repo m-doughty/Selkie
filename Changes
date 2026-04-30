@@ -2,6 +2,55 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.5.4  2026-04-30T13:11:17+01:00
+    - `Widget::Button` now treats Left / Right arrow as focus
+      cycle, mirroring Tab / Shift-Tab. Buttons in a modal's
+      action row sit horizontally — most users reach for arrow
+      keys before Tab, and stranding focus on a single button
+      until they discover Tab is poor UX. Implementation
+      dispatches the same `ui/focus-prev` / `ui/focus-next`
+      store events as the global Tab keybinds, so the focus-chain
+      semantics (focusable-descendants order, modal focus traps)
+      stay identical. Modifier-held arrow keys (e.g. Shift+Right
+      for word-jump in a text input) are deliberately NOT
+      consumed by Button — only the bare-arrow case is. Three
+      new subtests in `t/17-button.rakutest` pin the contract:
+      bare-Right dispatches focus-next, bare-Left dispatches
+      focus-prev, modifier-held arrow falls through.
+
+    - `Widget.set-viewport`: the corruption-rejection note is now
+      structured with bit-width diagnostics. When `safe-coord`
+      rejects, we emit `[self=<class> id=<n> y-bits=<n> x-bits=<n>
+      parent=<class> parent-y-bits=<n> parent-x-bits=<n>]` instead
+      of the generic "skipping corrupt coord" line. Captures the
+      data needed across multiple in-the-wild occurrences to
+      distinguish a single multiplicative event (constant width
+      across runs) from a per-frame accumulator (growing width)
+      from a cascade (parent's slot already corrupt). New file-
+      local helper `coord-bit-width` uses `nqp::base_I` +
+      `nqp::chars` so it stays in the bigint domain — calling
+      `.base(2)` directly on the corrupt Int would re-trip the
+      Scalar.STORE inlined unbox the gate is protecting against.
+      No new public API surface; the v1-blocker upstream filing
+      tracks removing this whole machinery once a fixed MoarVM
+      ships (see TODO/Selkie.md).
+
+    - `Selkie::Store.tick` is now safe against subscriptions whose
+      callbacks call `unsubscribe` (their own id, or any sibling).
+      `check-subscriptions` previously did `for %!subscriptions.kv ->
+      $id, %sub` — `Hash.kv` resolves values lazily, so a callback
+      that deleted another sub mid-tick caused the next pair-bind
+      to typecheck-fail with "expected Associative but got Mu". The
+      practical hit was App::ImageTagger's modal-lifecycle
+      subscriptions: a callback that called `$!app.close-modal`
+      destroyed the modal's widget tree → cascading
+      `unsubscribe-widget` calls → next tick crashed
+      non-deterministically. Now snapshots `%!subscriptions.keys`
+      up front and `:exists`-guards each lookup, mirroring the
+      pattern already used in `flush-push-subs`. Three new subtests
+      in `t/19-store.rakutest` pin the contract: self-unsubscribe,
+      sibling-unsubscribe, mass-unsubscribe-of-many.
+
 0.5.3  2026-04-30T02:49:37+01:00
     - `Widget.set-viewport`: hardened against the long-standing
       MoarVM spesh corruption that intermittently crashed the
