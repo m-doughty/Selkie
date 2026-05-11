@@ -59,3 +59,63 @@ SEE ALSO
 
   * [Selkie::Widget::RadioGroup](Selkie--Widget--RadioGroup.md) — similar UI but for one-of-many selection
 
+### method items
+
+```raku
+method items() returns List
+```
+
+The current items as a List.
+
+### method cursor
+
+```raku
+method cursor() returns UInt
+```
+
+Index of the cursor (the highlighted row). Always 0 when the list is empty.
+
+### method selected
+
+```raku
+method selected() returns Str
+```
+
+The string at the cursor, or the `Str` type object when empty.
+
+### method on-select
+
+```raku
+method on-select() returns Supply
+```
+
+Supply that emits the selected string whenever the cursor moves (Up / Down / mouse click / `select-index`). Fires once on `set-items` if the new list is non-empty.
+
+### method on-activate
+
+```raku
+method on-activate() returns Supply
+```
+
+Supply that emits the selected string when the user activates a row (Enter, Space, double-click). `on-select` fires for cursor movement; `on-activate` only fires for explicit activation.
+
+### method set-items
+
+```raku
+method set-items(
+    @new-items
+) returns Mu
+```
+
+Replace the items. The cursor tracks the previously-selected string if it's still present in the new list (so a list refresh doesn't jump the user back to row 0); otherwise clamps to the new bounds. Emits on `on-select` when the resulting list is non-empty.
+
+### method select-index
+
+```raku
+method select-index(
+    Int $idx where { ... }
+) returns Mu
+```
+
+Move the cursor to `$idx` (clamped to the last item) and emit on `on-select`. No-op when the list is empty.
+

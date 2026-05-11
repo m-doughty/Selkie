@@ -81,3 +81,14 @@ method render() returns Mu
 
 Perform layout and render each child. Called automatically by the render cycle. The layout pass allocates rows according to every child's `Sizing`: fixed first, then percent, then flex shares the rest.
 
+### method handle-resize
+
+```raku
+method handle-resize(
+    Int $rows where { ... },
+    Int $cols where { ... }
+) returns Mu
+```
+
+Re-layout children when the parent resizes. Re-runs the same fixed → percent → flex allocation as the initial layout, so children's relative sizing is preserved across resizes. Idempotent on no-size changes.
+

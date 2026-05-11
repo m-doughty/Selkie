@@ -146,7 +146,7 @@ This README covers the framework's concepts, lifecycle, and common patterns. For
 EXAMPLES
 ========
 
-The `examples/` directory has eight runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
+The `examples/` directory has nine runnable apps that together demonstrate every widget and store pattern in the framework. Each is self-contained and heavily commented — read them in this order:
 
   * `counter.raku` — The smallest correct-pattern app. VBox, Text, Button, store handler returning `(db =` ...)>, path subscription, global keybind. Start here.
 
@@ -159,6 +159,8 @@ The `examples/` directory has eight runnable apps that together demonstrate ever
   * `job-runner.raku` — ProgressBar (both determinate and indeterminate), TextStream log, async store effect for background work, dispatch-effect chaining, frame callback driving animation.
 
   * `chat.raku` — CardList of variable-height RichText cards, MultiLineInput compose, Border auto-focus highlight, Toast, runtime theme toggle (Ctrl+T).
+
+  * `viewported-card-list.raku` — ViewportedCardList with row scrolling, separate card selection, and a card subtree containing an Image child.
 
   * `dashboard.raku` — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, CommandPalette bound to Ctrl+P, and an inline Sparkline column on the Servers tab rendering each row's recent latency history.
 
@@ -793,6 +795,29 @@ $app.on-frame: { $spinner.tick };
 
 Built-in frame sets: `BRAILLE` (default), `DOTS`, `LINE`, `CIRCLE`, `ARROW`. Or pass a custom array of strings via `frames`.
 
+Selkie::Widget::PasswordStrength
+--------------------------------
+
+Non-focusable strength meter that subscribes to a `TextInput`'s `on-change` Supply and renders a five-level bar (weak / fair / good / strong / very strong). Scoring is a length-plus-character-class heuristic — long enough for "password1" to look weak and a passphrase to look strong, without a dictionary or external dependency.
+
+```raku
+my $pw = Selkie::Widget::TextInput.new(
+    sizing      => Sizing.fixed(1),
+    placeholder => 'Enter password...',
+    mask-char   => '*',
+);
+
+my $meter = Selkie::Widget::PasswordStrength.new(
+    sizing => Sizing.fixed(1),
+    input  => $pw,
+);
+
+$vbox.add($pw);
+$vbox.add($meter);
+```
+
+For real strength analysis use `zxcvbn`; the built-in heuristic is meant to give users directional feedback while they type.
+
 Selkie::Widget::TabBar
 ----------------------
 
@@ -833,6 +858,24 @@ $app.on-key('ctrl+p', -> $ {
     $app.focus($palette.focusable-widget);
 });
 ```
+
+Selkie::Widget::HelpOverlay
+---------------------------
+
+Modal listing reachable keybinds for the focused widget chain. Walks the focused widget and each ancestor up to the screen root, collects any `on-key` binds that carry a `:description`, and renders a centred overlay grouped by widget class. Binds without a description are treated as internal plumbing and skipped — authors opt their shortcuts in by passing `:description` when registering them.
+
+```raku
+# Bind globally on the screen root:
+$root.on-key: 'ctrl+h', -> $ {
+    my $help = Selkie::Widget::HelpOverlay.new(
+        app             => $app,
+        focused-widget  => $app.focused,
+    );
+    $app.show-modal($help.build);
+};
+```
+
+The overlay's modal sets `dismiss-on-click-outside =E<gt> True` by default — clicking anywhere outside the help panel closes it; Esc and the embedded Close button still work. See **MOUSE SUPPORT** above for how the dismiss-on-click-outside flag fits into modal isolation.
 
 Selkie::Widget::Table
 ---------------------

@@ -305,6 +305,7 @@ use Selkie::Style;
 use Selkie::Theme;
 use Selkie::Event;
 use Selkie::Sizing;
+use Selkie::EffectiveBounds;
 
 my atomicint $next-widget-id = 0;
 
@@ -323,7 +324,6 @@ has Bool $!owns-plane = True;
 has Selkie::Widget $.parent is rw;
 
 has Bool $!dirty = True;
-has Bool $!mounted = False;
 has UInt $!rows = 0;
 has UInt $!cols = 0;
 has UInt $!y = 0;
@@ -347,6 +347,21 @@ has Sizing $.sizing = Sizing.flex;
 #|         callwith(|%args);
 #|     }
 has Bool $.focusable = False;
+
+#|( When True (the default), this widget's L<Selkie::EffectiveBounds> is
+    computed as the intersection of its plane with every ancestor's
+    plane and the terminal viewport. Sprixel-bearing widgets
+    (L<Selkie::Widget::Image> and any custom widget that allocates its
+    own blit plane) use this to size their blit-plane to the visible
+    region only — pixels never paint outside an ancestor's bounds,
+    even though notcurses doesn't enforce that itself.
+
+    Set False on a widget that intentionally paints outside its
+    parent's visible area (e.g. a popup / dropdown / portal-style
+    overlay that escapes its container's footprint). The
+    intersection-with-terminal-viewport step still applies — pixels
+    never paint past the terminal's edge regardless. )
+has Bool $.clip-to-ancestors is rw = True;
 
 has Selkie::Theme $!theme;
 has @!keybinds;
@@ -388,6 +403,58 @@ method viewport-rows(--> UInt) { $!viewport-rows }
 
 #| Number of columns actually visible on screen. See C<viewport-rows>.
 method viewport-cols(--> UInt) { $!viewport-cols }
+
+#|( Compute this widget's L<Selkie::EffectiveBounds> — the rectangular
+    intersection of its plane with every ancestor's plane and the
+    terminal viewport. This is the on-screen rectangle into which the
+    widget may safely paint pixels; anything outside would bleed past
+    an ancestor's visible region (notcurses doesn't clip child planes
+    to parents).
+
+    When C<$!clip-to-ancestors> is False, the ancestor walk is skipped
+    and only the terminal-viewport intersection applies — useful for
+    portal-style overlays that intentionally escape their container.
+
+    Cheap by construction: O(depth) attribute reads + intersections,
+    no allocations beyond the returned value class. Called per frame
+    by L<Selkie::Widget::Image>'s blit-plane sizing path. )
+method effective-bounds(--> Selkie::EffectiveBounds) {
+    my Int  $cur-y     = self.abs-y;
+    my Int  $cur-x     = self.abs-x;
+    my UInt $cur-h     = self.rows;
+    my UInt $cur-w     = self.cols;
+    my UInt $clip-top  = 0;
+    my UInt $clip-left = 0;
+
+    if $!clip-to-ancestors {
+        my $ancestor = self.parent;
+        while $ancestor.defined && !($cur-h == 0 || $cur-w == 0) {
+            my $eb = intersect-rect(
+                ay => $cur-y, ax => $cur-x, ah => $cur-h, aw => $cur-w,
+                by => $ancestor.abs-y, bx => $ancestor.abs-x,
+                bh => $ancestor.rows,  bw => $ancestor.cols,
+                :$clip-top, :$clip-left,
+            );
+            $cur-y     = $eb.abs-y;
+            $cur-x     = $eb.abs-x;
+            $cur-h     = $eb.rows;
+            $cur-w     = $eb.cols;
+            $clip-top  = $eb.clip-top;
+            $clip-left = $eb.clip-left;
+            $ancestor  = $ancestor.parent;
+        }
+    }
+
+    # Final intersection against the terminal viewport. Subsumes the
+    # old SprixelManager.is-off-viewport check.
+    my ($vp-rows, $vp-cols) = terminal-viewport();
+    intersect-rect(
+        ay => $cur-y, ax => $cur-x, ah => $cur-h, aw => $cur-w,
+        by => 0, bx => 0,
+        bh => $vp-rows.UInt, bw => $vp-cols.UInt,
+        :$clip-top, :$clip-left,
+    );
+}
 
 #|( Called by parent layouts during layout. Propagates absolute screen
     position and visible bounds to this widget. You don't call this
@@ -870,8 +937,30 @@ method render() { ... }
 
     Containers should override to recurse: park self + each
     descendant. )
+#| Off-screen Y coordinate used by C<park> to clip a widget's plane
+#| out of the visible terminal. Notcurses clips planes whose origin
+#| falls beyond the rendered bounds, so any sufficiently large value
+#| works; we standardise on 10,000 across Container, CardList, and any
+#| custom container override so the parked-Y is greppable and
+#| predictable in snapshot tests. Implemented as a method (rather than
+#| an `our constant`) because Raku doesn't allow `our`-scoped symbols
+#| inside a role — the role is parametric, so there's no single package
+#| to install the symbol in.
+method park-y(--> Int) { 10_000 }
+
 method park() {
-    self.reposition(10_000, 0) if $!plane;
+    self.reposition(self.park-y, 0) if $!plane;
+}
+
+#|( Park each widget in C<@kids>. Used by C<Container.park> and
+    C<Selkie::Widget::CardList.park> — both walk a list of child
+    widgets calling C<.park> on each, but they store their children
+    differently (Container in C<@!children>, CardList in C<@!items>),
+    so the iteration is the only thing they share. Private to the
+    Widget role; consumers compose Widget so they can call
+    C<self!park-children(@kids)>. )
+method !park-children(@kids --> Nil) {
+    .park for @kids;
 }
 
 #|( Register a keybind for this widget. Fires when the widget has
@@ -1076,9 +1165,36 @@ method !check-keybinds(Selkie::Event $ev --> Bool) {
     everything else.
 
     Override to implement cursor movement, character input, or
-    widget-specific click handling. Overrides that want to keep the
-    registration-API behaviour can call C<self!dispatch-mouse-handlers($ev)>
-    explicitly and use its return value as the consume decision. )
+    widget-specific click handling. Overrides typically split the
+    event into Mouse and non-Mouse branches:
+
+    =begin code :lang<raku>
+
+    method handle-event(Selkie::Event $ev --> Bool) {
+        if $ev.event-type ~~ MouseEvent {
+            return True if self!dispatch-mouse-handlers($ev);
+            return False;
+        }
+        return False unless $!focused;
+        # ...keyboard handling...
+    }
+
+    =end code
+
+    That call to C<self!dispatch-mouse-handlers> reuses the same
+    registration API the base uses (handlers registered via
+    C<on-click>, C<on-scroll>, C<on-drag>, C<on-mouse-down>,
+    C<on-mouse-up>); your override doesn't need to re-implement
+    mouse-event classification. Override only the keyboard branch.
+
+    A note on C<nextsame>: it does B<not> work for delegating Mouse
+    handling back to this default. C<Selkie::Widget> is a role, and
+    Raku flattens role methods into the consuming class — so a
+    subclass override of C<handle-event> shadows the role version
+    rather than inheriting it as a separate dispatch candidate, and
+    C<nextsame> from the override has no role-supplied candidate to
+    fall through to. Always call C<self!dispatch-mouse-handlers($ev)>
+    explicitly when you need the registration-API behaviour. )
 method handle-event(Selkie::Event $ev --> Bool) {
     return True if $ev.event-type ~~ MouseEvent
                 && self!dispatch-mouse-handlers($ev);

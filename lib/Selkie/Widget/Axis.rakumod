@@ -131,7 +131,7 @@ $stack.add: $bottom, sizing => Sizing.fixed($bottom.reserved-rows);
 
 =item L<Selkie::Plot::Scaler> — the value→cell mapping the axis uses
 =item L<Selkie::Plot::Ticks> — the nice-number tick generation
-=item L<Selkie::Charts> — overview of the chart family
+=item L<Selkie::Widget::LineChart>, L<Selkie::Widget::BarChart>, L<Selkie::Widget::ScatterPlot>, L<Selkie::Widget::Histogram>, L<Selkie::Widget::Heatmap> — chart widgets that compose this axis
 
 =end pod
 

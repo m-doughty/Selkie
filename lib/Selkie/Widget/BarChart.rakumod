@@ -200,6 +200,9 @@ submethod TWEAK {
     }
 }
 
+#| Hook called when the widget is attached to a store. Wires up a
+#| subscription against the chart's C<:store-path> so it re-renders
+#| whenever the underlying state changes. No-op in C<:data> mode.
 method on-store-attached($store) {
     return unless @!store-path.elems > 0;
     self.once-subscribe(
@@ -208,6 +211,10 @@ method on-store-attached($store) {
     );
 }
 
+#| Replace the chart's data with a new array of bars / grouped bars.
+#| Throws when the chart was constructed in C<:store-path> mode — pick
+#| one feed source up front (data array vs. store path) and stick with
+#| it for the lifetime of the widget.
 method set-data(@new) {
     die "Selkie::Widget::BarChart.set-data: only valid in :data mode"
         if @!store-path.elems > 0;

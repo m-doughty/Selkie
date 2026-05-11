@@ -60,6 +60,16 @@ ATTRIBUTES
 
   * `show-label` — include the "weak"/"fair"/etc. label beside the bar. Default True.
 
+### method new
+
+```raku
+method new(
+    *%args
+) returns Selkie::Widget::PasswordStrength
+```
+
+Constructor. Defaults `focusable` to False (the meter is purely display). Required: `:input` — the `TextInput` to subscribe to. Optional: `:show-label` (default True) toggles the textual level beside the bar.
+
 ### method score
 
 ```raku

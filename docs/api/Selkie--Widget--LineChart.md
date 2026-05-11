@@ -172,3 +172,13 @@ Approximate tick count for the Y axis.
 
 Message rendered when there are no samples. The default is the expected startup state for monitoring dashboards. Set to the empty string to suppress.
 
+### method set-series
+
+```raku
+method set-series(
+    @new
+) returns Mu
+```
+
+Replace the chart's series array. Each series' values are realised into an Array up-front because callers often pass Seqs from `.map` chains, and a TUI re-renders every frame — an exhausted Seq would produce an empty line on subsequent renders. Throws when the chart was constructed in `:store-path-fn` mode.
+

@@ -150,6 +150,10 @@ method render() {
     self.clear-dirty;
 }
 
+#| Re-layout the two panes and the divider when the parent resizes.
+#| The split ratio is honoured exactly — first pane gets
+#| C<floor(total * ratio)>, the divider takes 1 cell, the second gets
+#| the remainder. Idempotent on no-size-change calls.
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
@@ -241,6 +245,10 @@ method children(--> List) {
     ($!first, $!second).grep(*.defined).List;
 }
 
+#| Focusable descendants in stable left-to-right (or top-to-bottom)
+#| order — Tab cycles through everything in the first pane, then
+#| everything in the second pane. Omits the divider (which is
+#| chrome).
 method focusable-descendants(--> Seq) {
     gather {
         if $!first {
@@ -258,6 +266,7 @@ method focusable-descendants(--> Seq) {
     }
 }
 
+#| Destroy both panes, the divider plane, and the split's own plane.
 method destroy() {
     $!first.destroy if $!first;
     $!second.destroy if $!second;

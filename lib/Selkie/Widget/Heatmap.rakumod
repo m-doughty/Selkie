@@ -173,6 +173,11 @@ submethod TWEAK {
     @!data = @!data.map({ .list.Array }) if @!data.elems > 0;
 }
 
+#| Replace the heatmap's grid with a new array-of-rows. Each row is
+#| realised into an Array up-front because callers often pass Seqs
+#| from C<.map> chains, and a long-lived TUI re-renders every frame —
+#| an exhausted Seq would produce an empty grid on subsequent renders.
+#| Throws when constructed in C<:store-path> mode.
 method set-data(@new) {
     die "Selkie::Widget::Heatmap.set-data: only valid in :data mode"
         if @!store-path.elems > 0;
@@ -180,6 +185,9 @@ method set-data(@new) {
     self.mark-dirty;
 }
 
+#| Hook called when the widget is attached to a store. Subscribes to
+#| C<:store-path> so the heatmap re-renders on state changes. No-op
+#| in C<:data> mode.
 method on-store-attached($store) {
     return unless @!store-path.elems > 0;
     self.once-subscribe(

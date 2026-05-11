@@ -81,6 +81,63 @@ SEE ALSO
 
 When True (default), the Border subscribes to `ui.focused-widget` and its `render` re-derives `$!has-focus` from the store on every frame — the normal "highlight when any descendant is focused" pattern. When False, the Border treats `set-has-focus` as the single source of truth: no subscription, no render-time override. This is the right mode for Borders whose focus state is managed by a parent container that has richer selection semantics than "focused descendant" — `CardList` being the canonical case, where the *selected* card's border should stay highlighted regardless of whether keyboard focus has moved out to another widget.
 
+### method content
+
+```raku
+method content() returns Selkie::Widget
+```
+
+The current content widget, or the `Selkie::Widget` type object when no content is set.
+
+### method set-content
+
+```raku
+method set-content(
+    Selkie::Widget $w,
+    Bool :$destroy = Bool::True
+) returns Mu
+```
+
+Install `$w` as the wrapped content. Re-callable to swap content (e.g. for a Border that cycles through several views). `:destroy` (default True) destroys the outgoing widget — the common case when content isn't reused. Pass `:!destroy` to keep the outgoing widget alive (its plane is parked far off-screen so its last-rendered cells don't bleed through behind the new content); reinstall it later with another `set-content` call.
+
+### method set-title
+
+```raku
+method set-title(
+    Str:D $t
+) returns Mu
+```
+
+Update the border's title text. Mark-dirties only; no event emit.
+
+### method set-has-focus
+
+```raku
+method set-has-focus(
+    Bool $f
+) returns Mu
+```
+
+Set the border's focus state explicitly. Idempotent on no-ops. Used by containers (notably `CardList`) that drive border highlighting from their own selection rather than the framework's keyboard-focus tracking — pair with `focus-from-store = False` in those cases.
+
+### method has-focus
+
+```raku
+method has-focus() returns Bool
+```
+
+Whether the border is currently rendered in its focused style.
+
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Auto-subscribes #| to the focused-widget path when `focus-from-store` is True (the #| default) so the border highlights itself whenever the keyboard #| focus is one of its descendants. `once-*` variants are idempotent #| — reparenting and repeated set-store calls won't create duplicate #| subscriptions. Skipped entirely when `focus-from-store` is False #| (see attribute docs).
+
 ### method handle-resize
 
 ```raku
@@ -91,4 +148,20 @@ method handle-resize(
 ```
 
 Resize own plane. Content is sized inside `render` (after the inner-top / inner-rows / inner-cols computation that accounts for hide-top/bottom-border). No cascade here — one layout pass per frame, top-down via render.
+
+### method focusable-descendants
+
+```raku
+method focusable-descendants() returns Seq
+```
+
+Focusable descendants of the wrapped content subtree. Used by `Selkie::App`'s Tab cycle to skip the Border itself (which is chrome) and reach the inner widget.
+
+### method destroy
+
+```raku
+method destroy() returns Mu
+```
+
+Destroy the wrapped content and the border's own plane. Always destroys the content unconditionally — for "swap and keep alive" flows, use `set-content(:!destroy)` instead.
 

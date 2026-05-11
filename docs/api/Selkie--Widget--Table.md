@@ -241,3 +241,13 @@ method clear-sort() returns Mu
 
 Clear any active sort and restore insertion order.
 
+### method select-index
+
+```raku
+method select-index(
+    Int $idx where { ... }
+) returns Mu
+```
+
+Move the cursor to row `$idx` (clamped to the last row in the current sort view). Emits on `on-row-selected` when the cursor actually moves; idempotent on no-ops. No-op when the table is empty.
+

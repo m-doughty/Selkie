@@ -112,7 +112,6 @@ method render() {
 unit role Selkie::Container;
 
 use Selkie::Widget;
-use Selkie::Event;
 
 also does Selkie::Widget;
 
@@ -203,10 +202,8 @@ method !render-children() {
     isn't tied to their parent's plane position (e.g. Image's sprixel,
     Modal's bg-plane) keep showing on terminal. )
 method park() {
-    self.reposition(10_000, 0) if self.plane;
-    for @!children -> $child {
-        $child.park;
-    }
+    self.reposition(self.park-y, 0) if self.plane;
+    self!park-children(@!children);
     if self.can('content') && self.content.defined {
         self.content.park;
     }

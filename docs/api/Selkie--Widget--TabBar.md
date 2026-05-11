@@ -176,3 +176,21 @@ method sync-to-app(
 
 Install a store subscription that keeps this TabBar's active tab synced to `$app.screen-manager.active-screen`. Makes the bar self-consistent: if you call `$app.switch-screen(...)` elsewhere, the bar's highlight follows along.
 
+### method set-focused
+
+```raku
+method set-focused(
+    Bool $f
+) returns Mu
+```
+
+Set the bar's focus state. Called by `Selkie::App`'s focus dispatcher; apps don't usually call this directly. The focus prefix (`▶` in front of the active tab) is rendered only when focused.
+
+### method is-focused
+
+```raku
+method is-focused() returns Bool
+```
+
+Whether the bar currently has keyboard focus.
+

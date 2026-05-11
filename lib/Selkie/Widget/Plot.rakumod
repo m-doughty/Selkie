@@ -217,6 +217,10 @@ submethod TWEAK {
         unless $!min-y < $!max-y;
 }
 
+#| Hook called when the widget is attached to a store. Subscribes
+#| against C<:store-path> so new samples appended to the path are
+#| pushed into the native ring buffer on each tick. No-op when no
+#| C<:store-path> was given (caller drives via C<push-sample>).
 method on-store-attached($store) {
     return unless @!store-path.elems > 0;
     self.once-subscribe(
@@ -381,11 +385,18 @@ method !on-resize() {
     # Handle will be recreated on next render at the new dims.
 }
 
+#| Park the plot. Tears down the native plot handle (which retains
+#| its own pixel resources outside the standard plane) before parking
+#| the widget plane. Sample buffer and the C<:store-path> subscription
+#| survive — on the next render after unpark, the handle is recreated
+#| and the buffered samples are flushed in.
 method park() {
     self!destroy-handle;
     callsame;
 }
 
+#| Tear down both the native plot handle and the widget plane. Called
+#| by C<Selkie::App.shutdown>.
 method destroy() {
     self!destroy-handle;
     self!destroy-plane;

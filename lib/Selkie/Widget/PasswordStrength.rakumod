@@ -89,6 +89,10 @@ my constant @LEVELS =
     { threshold =>  80, label => 'very strong', colour => 0x40E080 },
 ;
 
+#| Constructor. Defaults C<focusable> to False (the meter is purely
+#| display). Required: C<:input> — the C<TextInput> to subscribe to.
+#| Optional: C<:show-label> (default True) toggles the textual
+#| level beside the bar.
 method new(*%args --> Selkie::Widget::PasswordStrength) {
     %args<focusable> //= False;
     callwith(|%args);

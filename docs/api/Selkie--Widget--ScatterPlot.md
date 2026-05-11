@@ -140,6 +140,26 @@ How to handle cells where multiple series have dots. Currently only `z-order` is
 
 Message rendered when there are no points. The default is the expected startup state for monitoring dashboards. Set to the empty string to suppress.
 
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Wires up a subscription against `:store-path` so the chart re-renders on state changes. No-op in `:series` mode.
+
+### method set-series
+
+```raku
+method set-series(
+    @new
+) returns Mu
+```
+
+Replace the chart's series array. Each series' points are realised into an Array up-front because callers often pass Seqs from `.map` chains, and a TUI re-renders every frame — an exhausted Seq would produce an empty plot on subsequent renders. Throws when constructed in `:store-path` mode.
+
 ### method braille-glyph
 
 ```raku

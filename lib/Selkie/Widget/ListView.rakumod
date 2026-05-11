@@ -70,10 +70,11 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::ListView does Selkie::Widget;
+unit class Selkie::Widget::ListView does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!items;
 has UInt $!cursor = 0;
@@ -82,10 +83,6 @@ has Bool $.show-scrollbar = True;
 has Supplier $!select-supplier = Supplier.new;
 has Supplier $!activate-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::ListView) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Single-click moves the cursor to the row under the pointer (same
@@ -116,13 +113,30 @@ submethod TWEAK() {
     };
 }
 
+#| The current items as a List.
 method items(--> List) { @!items.List }
+
+#| Index of the cursor (the highlighted row). Always 0 when the list
+#| is empty.
 method cursor(--> UInt) { $!cursor }
+
+#| The string at the cursor, or the C<Str> type object when empty.
 method selected(--> Str) { @!items[$!cursor] // Str }
 
+#| Supply that emits the selected string whenever the cursor moves
+#| (Up / Down / mouse click / C<select-index>). Fires once on
+#| C<set-items> if the new list is non-empty.
 method on-select(--> Supply) { $!select-supplier.Supply }
+
+#| Supply that emits the selected string when the user activates a
+#| row (Enter, Space, double-click). C<on-select> fires for cursor
+#| movement; C<on-activate> only fires for explicit activation.
 method on-activate(--> Supply) { $!activate-supplier.Supply }
 
+#| Replace the items. The cursor tracks the previously-selected string
+#| if it's still present in the new list (so a list refresh doesn't
+#| jump the user back to row 0); otherwise clamps to the new bounds.
+#| Emits on C<on-select> when the resulting list is non-empty.
 method set-items(@new-items) {
     # Preserve the cursor's relative position when possible. If the
     # previously-selected string is still in the new list, move the cursor
@@ -148,6 +162,8 @@ method set-items(@new-items) {
     $!select-supplier.emit(self.selected) if @!items;
 }
 
+#| Move the cursor to C<$idx> (clamped to the last item) and emit on
+#| C<on-select>. No-op when the list is empty.
 method select-index(UInt $idx) {
     return unless @!items;
     $!cursor = $idx min (@!items.elems - 1);

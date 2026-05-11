@@ -68,6 +68,15 @@ Each item is registered with:
 =item C<:root> — the outermost container for the card (usually a Border wrapping the inner widget)
 =item C<:height> — the card's logical height in rows
 =item C<:border> — optional Border for focus-highlight integration
+=item C<:min-display-height> — smallest C<display-h> at which a partial render of this card is still
+      meaningful. Non-selected cards whose visible height would fall below this threshold are
+      parked rather than rendered as a sliver. Defaults to C<1> (any positive sliver renders, the
+      pre-existing behaviour). Useful for cards with structural minimums — e.g. a chat card with a
+      fixed-height avatar plus a name row plus a border edge needs at least C<avatar-rows + 2> rows
+      before its partial render reads as "the bottom of a message" instead of "merged into the
+      neighbour". The selected card is always exempt from this check; if it can't fully fit, the
+      list relies on its own internal scrolling (e.g. a wrapped C<ScrollView>) to handle the
+      overflow.
 
 =head1 EXAMPLES
 
@@ -102,48 +111,18 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Widget::Border;
 use Selkie::Event;
 use Selkie::Sizing;
 
-unit class Selkie::Widget::CardList does Selkie::Widget;
+unit class Selkie::Widget::CardList does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!items;        # Array of hashes: { widget, root, height, border? }
 has Int $!selected = 0;
 has Int $!scroll-top = 0;
 has Supplier $!select-supplier = Supplier.new;
 
-#|( State carried across renders so we can detect any layout shift
-    that would otherwise rely on Image's per-Image cache invalidation
-    to be 100% reliable — which it isn't in practice. Sprixel
-    cleanup goes via the terminal wire as an escape sequence; rapid
-    sprite churn on scroll / resize occasionally lets the new blit
-    land before the old remove has flushed, leaving ghost avatars at
-    the previous positions. Detecting state changes here lets us
-    park every card before the normal layout pass, which forces a
-    fresh sprixel ID on every visible card and sidesteps the
-    incremental-update reliability question entirely.
-
-    C<@!last-heights> tracks per-item heights across renders so a
-    streaming-token-driven height growth (~1% of tokens, when a
-    rendered line wraps and the card grows by a row) is treated as
-    a layout shift. Most streaming tokens don't change card height,
-    so the snapshot comparison stays cheap and the park-all only
-    fires on wraps.
-
-    C<$!last-selected> catches selection-only changes that shift
-    card positions without moving scroll-top — clicking a card
-    that's already on screen recomputes C<$top-clip> in render
-    based on the new selected-index, which can push every visible
-    card's row offset up or down by a few cells. Without this in
-    the trigger set, those clicks would re-render at a new
-    geometry without first parking the avatar planes, and notcurses
-    would emit the new sprixels alongside the old ghosts. )
-has Int $!last-scroll-top = -1;
-has Int $!last-selected = -1;
-has UInt $!last-vh = 0;
-has UInt $!last-vw = 0;
-has @!last-heights;
 
 #|( When True and the rendered cards (from C<scroll-top> through the
     last item) sum to less than the viewport height, render shifts
@@ -157,11 +136,6 @@ has @!last-heights;
     / file-browser / pickers (e.g. AvatarList) where empty space
     below the last item is the right behaviour. )
 has Bool $.bottom-anchor = False;
-
-method new(*%args) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Click selects the card under the cursor. Card heights are
@@ -191,8 +165,18 @@ method !card-index-at-row(UInt $row --> Int) {
     -1;
 }
 
+#| Supply that emits the new selected index whenever the selection
+#| moves (Up / Down / mouse click / C<select-index> / C<select-first>
+#| / C<select-last>). Does B<not> fire on C<add-item> or
+#| C<clear-items> — those only mark-dirty.
 method on-select(--> Supply) { $!select-supplier.Supply }
+
+#| Index of the selected card. Stable across resizes / rebuilds. Returns
+#| 0 when the list is empty (selection is conventionally at index 0
+#| for empty lists; pair with C<count> if you need to disambiguate).
 method selected(--> Int) { $!selected }
+
+#| Number of cards in the list.
 method count(--> Int) { @!items.elems }
 
 #|( Resize own plane only. Cards are sized / positioned / parked in
@@ -217,12 +201,13 @@ method handle-resize(UInt $rows, UInt $cols) {
     cards keep painting on the terminal at their last screen
     position. )
 method park() {
-    self.reposition(10_000, 0) if self.plane;
-    for @!items -> %item {
-        %item<root>.park if %item<root>.plane;
-    }
+    self.reposition(self.park-y, 0) if self.plane;
+    self!park-children(@!items.map(*.<root>));
 }
 
+#| The inner widget of the selected card (the C<$widget> argument
+#| passed to C<add-item>), or C<Nil> when the list is empty / index
+#| is out of range.
 method selected-item() {
     return Nil unless $!selected >= 0 && $!selected < @!items.elems;
     @!items[$!selected]<widget>;
@@ -244,7 +229,32 @@ method children(--> List) {
 
 # --- Item management ---
 
-method add-item($widget, :$root!, :$height!, :$border) {
+#|( Append a card. The four parameters describe the card's structure:
+#|
+#| C<$widget> — the inner widget the card represents. Returned by
+#| C<selected-item>. Usually a C<RichText>, C<Text>, or custom widget;
+#| does not need to manage its own plane (the C<:root> handles that).
+#|
+#| C<:root!> — the widget that gets a plane and is rendered. Often a
+#| C<Border> wrapping the inner widget, or the inner widget itself if
+#| no border is wanted. CardList drives reposition / resize / park on
+#| this root each frame.
+#|
+#| C<:height!> — the card's logical height in cells. CardList uses
+#| this to lay out cards stacked top-to-bottom and decide which fit
+#| in the viewport. Variable-height cards are the whole point — every
+#| card can have its own height.
+#|
+#| C<:border> — optional. When provided, CardList drives this widget's
+#| C<set-has-focus> per render so the border highlights the selected
+#| card regardless of where keyboard focus actually lives. Pass the
+#| same Border instance you used as C<:root> to wire the highlight.
+#|
+#| C<:min-display-height> — when a card is partially clipped at the
+#| top or bottom edge of the viewport, this is the minimum visible
+#| height before CardList parks the card entirely instead of showing
+#| a sliver. Default 1. )
+method add-item($widget, :$root!, :$height!, :$border, UInt :$min-display-height = 1) {
     # Selection is a CardList concern, not a "focused descendant"
     # question: the selected card stays highlighted even when keyboard
     # focus moves out of the list. Disable the Border's store-driven
@@ -264,10 +274,15 @@ method add-item($widget, :$root!, :$height!, :$border) {
     $root.parent   = self if $root.defined   && !$root.parent.defined;
     $border.parent = self if $border.defined && !$border.parent.defined;
 
-    @!items.push({ :$widget, :$root, :$height, :$border });
+    @!items.push({ :$widget, :$root, :$height, :$border, :$min-display-height });
     self.mark-dirty;
 }
 
+#| Destroy every card and reset selection / scroll. Calls C<destroy>
+#| on each card's root, so any subscriptions or sprixels owned by
+#| cards are cleaned up. Use before rebuilding the list to avoid
+#| leaks; for incremental updates, prefer C<set-item-height> +
+#| selective C<add-item>.
 method clear-items() {
     for @!items -> %item {
         %item<root>.destroy if %item<root>.plane;
@@ -278,6 +293,9 @@ method clear-items() {
     self.mark-dirty;
 }
 
+#| Update an existing card's logical height (e.g. when its content
+#| reflows after a viewport resize). No-op when C<$idx> is out of
+#| range. Triggers re-layout on the next render.
 method set-item-height(Int $idx, Int $height) {
     return unless $idx >= 0 && $idx < @!items.elems;
     @!items[$idx]<height> = $height;
@@ -286,6 +304,8 @@ method set-item-height(Int $idx, Int $height) {
 
 # --- Selection ---
 
+#| Move the selection to C<$idx> (clamped to the valid range). Emits
+#| on C<on-select>. No-op when the list is empty.
 method select-index(Int $idx) {
     return unless @!items;
     $!selected = ($idx max 0) min @!items.end;
@@ -294,6 +314,10 @@ method select-index(Int $idx) {
     $!select-supplier.emit($!selected);
 }
 
+#| Jump selection to the last card. Useful after appending content in
+#| chat-style consumers where the user wants to track the latest
+#| message. Does B<not> emit on C<on-select> — symmetry with
+#| C<select-first>.
 method select-last() {
     return unless @!items;
     $!selected = @!items.end;
@@ -301,6 +325,7 @@ method select-last() {
     self.mark-dirty;
 }
 
+#| Jump selection to the first card. Does B<not> emit on C<on-select>.
 method select-first() {
     return unless @!items;
     $!selected = 0;
@@ -308,7 +333,12 @@ method select-first() {
     self.mark-dirty;
 }
 
+#| Move selection one card up. Alias for the internal C<!select-prev>
+#| so external callers can advance the cursor without registering a
+#| keybind.
 method scroll-up()   { self!select-prev }
+
+#| Move selection one card down. See C<scroll-up>.
 method scroll-down() { self!select-next }
 
 # --- Rendering ---
@@ -323,47 +353,13 @@ method render() {
 
     self!recalc-scroll;
 
-    # Defense in depth for sprixel ghosting. When scroll-top, viewport
-    # dims, item count, or any item's height changes between renders,
-    # cards are about to shift and Image's incremental sprixel-update
-    # path can leak ghosts (terminal wire drops the remove half of a
-    # remove+emit pair under rapid churn). Park every item up front so
-    # visible cards re-init from a clean plane state on the layout
-    # pass below, forcing fresh sprixel IDs; off-screen cards stay
-    # parked.
-    #
-    # Per-item-height tracking deliberately fires on streaming wraps
-    # (the ~1% of tokens that grow a card by a row) but stays silent
-    # on tokens that just append text within an existing row. Most
-    # streaming frames hit the cheap "no shift" path; only the
-    # rare-but-disruptive layout shifts get the heavy cleanup. This
-    # keeps streaming visually clean without per-token churn.
-    my @current-heights = @!items.map(*<height>);
-    my Bool $heights-changed = False;
-    if @current-heights.elems != @!last-heights.elems {
-        $heights-changed = True;
-    } else {
-        for ^@current-heights.elems -> $i {
-            if @current-heights[$i] != @!last-heights[$i] {
-                $heights-changed = True;
-                last;
-            }
-        }
-    }
-    if $!scroll-top != $!last-scroll-top
-       || $!selected   != $!last-selected
-       || $vh != $!last-vh
-       || $vw != $!last-vw
-       || $heights-changed {
-        for @!items -> %item {
-            %item<root>.park if %item<root>.plane;
-        }
-    }
-    $!last-scroll-top = $!scroll-top;
-    $!last-selected   = $!selected;
-    $!last-vh = $vh;
-    $!last-vw = $vw;
-    @!last-heights = @current-heights;
+    # Sprixel ghost-prevention is the framework's responsibility now:
+    # the post-render walk in L<Selkie::App> snapshots every
+    # blit-plane-bearing widget (L<Selkie::Widget::Image> and any
+    # custom equivalent) in the tree and drives the destroy → flush →
+    # re-blit cycle for any whose snapshot changed. CardList just
+    # lays out cards; the framework picks up any shifts from this
+    # render's reposition / resize calls below.
 
     # Calculate top clip offset
     my $total-to-selected = 0;
@@ -372,27 +368,64 @@ method render() {
     }
     my $top-clip = ($total-to-selected - $vh) max 0;
 
-    # Bottom anchor: when the visible items (scroll-top through end)
-    # don't fill the viewport, push them down so the last item lands
-    # at the bottom edge instead of leaving empty space below. The
-    # only legal scroll-top here is one where the whole tail fits;
-    # if it didn't, recalc-scroll would have advanced scroll-top
+    # Leading park pre-pass: walk forward from scroll-top toward the
+    # selected card and park any item whose post-clip remaining height
+    # is below its declared min-display-height. Parking compacts the
+    # layout — every parked card's full height is absorbed back into
+    # the effective top-clip, so the cards that DO render slide upward
+    # into the freed space rather than leaving a gap. Without this,
+    # a card with display-h < min would render as a confusing sliver
+    # (avatar + body bleeding through with no top border, "merging"
+    # into the neighbour beneath); with it, the row range stays empty
+    # and the visual separation between cards is preserved.
+    #
+    # Selection state is render-invariant: $!scroll-top is the
+    # authoritative scroll position for navigation, and we never mutate
+    # it from here. The pre-pass uses a render-local pair of effective
+    # values that the rest of the layout pass reads from instead.
+    my $effective-scroll-top = $!scroll-top;
+    my $effective-top-clip   = $top-clip;
+    while $effective-scroll-top < $!selected {
+        my %item = @!items[$effective-scroll-top];
+        my $h = %item<height>;
+        my $remaining = $h - $effective-top-clip;
+        my $min-h = %item<min-display-height> // 1;
+        # Threshold is min(min-h, h): a card whose full height is
+        # below its declared min-display-height (degenerate config —
+        # e.g. a 5-row card declaring it needs 7 rows to be useful)
+        # should still render at its full height rather than be
+        # parked entirely. Practical cases — Cantina chat cards at
+        # 8+ rows with min-h=7, system messages at 1+ rows with
+        # min-h=1 — collapse to threshold = min-h.
+        my $threshold = $min-h min $h;
+        last if $remaining >= $threshold;
+        my $root = %item<root>;
+        $root.park if $root.plane;
+        $effective-top-clip = ($effective-top-clip - $h) max 0;
+        $effective-scroll-top++;
+    }
+
+    # Bottom anchor: when the visible items (effective-scroll-top
+    # through end) don't fill the viewport, push them down so the last
+    # item lands at the bottom edge instead of leaving empty space
+    # below. The only legal scroll-top here is one where the whole tail
+    # fits; if it didn't, recalc-scroll would have advanced scroll-top
     # already and total-from-scroll would equal the viewport.
     my $bottom-shift = 0;
     if $!bottom-anchor {
         my $total-from-scroll = 0;
-        for $!scroll-top ..^ @!items.elems -> $i {
+        for $effective-scroll-top ..^ @!items.elems -> $i {
             $total-from-scroll += @!items[$i]<height>;
         }
         $bottom-shift = ($vh - $total-from-scroll) max 0;
     }
 
     # Render items
-    my Int $y = $bottom-shift - $top-clip;
-    my Int $first = $!scroll-top;
-    my Int $last = $!scroll-top - 1;
+    my Int $y = $bottom-shift - $effective-top-clip;
+    my Int $first = $effective-scroll-top;
+    my Int $last = $effective-scroll-top - 1;
 
-    for $!scroll-top ..^ @!items.elems -> $i {
+    for $effective-scroll-top ..^ @!items.elems -> $i {
         my %item = @!items[$i];
         my $h = %item<height>;
         last if $y >= $vh;
@@ -402,6 +435,24 @@ method render() {
         my $display-h = $visible-bot - $visible-top;
 
         if $display-h <= 0 {
+            $y += $h;
+            next;
+        }
+
+        # Trailing park: a non-selected card past the focused row that
+        # would render below its min-display-height threshold is parked
+        # rather than drawn as a sliver. The selected card is always
+        # exempt — recalc-scroll guarantees it fully fits unless it's
+        # taller than the viewport, in which case both borders get
+        # hidden and the wrapped ScrollView handles internal scrolling.
+        # Threshold capped at the card's full height so a card too
+        # short to ever satisfy its min-display-height still renders
+        # in full (see leading pre-pass for the rationale).
+        my $min-h = %item<min-display-height> // 1;
+        my $threshold = $min-h min $h;
+        if $i != $!selected && $display-h < $threshold {
+            my $park-root = %item<root>;
+            $park-root.park if $park-root.plane;
             $y += $h;
             next;
         }

@@ -228,6 +228,11 @@ submethod TWEAK {
     });
 }
 
+#| Replace the chart's series array. Each series' values are realised
+#| into an Array up-front because callers often pass Seqs from C<.map>
+#| chains, and a TUI re-renders every frame — an exhausted Seq would
+#| produce an empty line on subsequent renders. Throws when the chart
+#| was constructed in C<:store-path-fn> mode.
 method set-series(@new) {
     die "Selkie::Widget::LineChart.set-series: only valid in :series mode"
         if &!store-path-fn.defined;

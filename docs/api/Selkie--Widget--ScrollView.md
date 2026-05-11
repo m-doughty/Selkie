@@ -54,6 +54,30 @@ Persistent tail-follow state, only meaningful when `follow-bottom` is True. Comp
 
 Auto-pin to the bottom of content as it grows. When True, each render checks whether the scroll offset was at `max-offset` just before `update-content-height` ran; if so, it snaps the new offset to the new `max-offset`. Streaming additions stay visible without manual scrolling. When False, scroll position is preserved across content changes (with clamping).
 
+### method scroll-offset
+
+```raku
+method scroll-offset() returns UInt
+```
+
+Current scroll offset in rows from the top of the content. 0 means scrolled all the way up; `max-offset` means scrolled to bottom.
+
+### method content-height
+
+```raku
+method content-height() returns UInt
+```
+
+Total content height (sum of all children's logical heights), as measured on the most recent render. Stale between content changes and the next render — call `scroll-by(0)` + render if you need a fresh value before the next natural redraw.
+
+### method viewport-height
+
+```raku
+method viewport-height() returns UInt
+```
+
+Visible viewport height in rows. Alias for `self.rows` — exposed for callers that prefer the semantically clearer name when working with scroll math.
+
 ### method follow-active
 
 ```raku
@@ -61,6 +85,26 @@ method follow-active() returns Bool
 ```
 
 Read-only view of the persistent tail-follow flag. True when `follow-bottom` is enabled and the user is currently at (or has been clamped to) `max-offset`. Useful for app code that wants to surface a "follow-mode" indicator in the UI, and for tests to verify follow transitions without driving a full render. Always True for views constructed with `follow-bottom =` False> — the flag is simply unused.
+
+### method scroll-to
+
+```raku
+method scroll-to(
+    Int $row where { ... }
+) returns Mu
+```
+
+Set the scroll offset to `$row` (clamped to `max-offset`). All scroll mutators (scroll-by, scroll-page-by, scroll-to-start, scroll-to-end, mouse wheel, scrollbar drag) funnel through here so the `follow-active` latch updates in exactly one place.
+
+### method scroll-by
+
+```raku
+method scroll-by(
+    Int $delta
+) returns Mu
+```
+
+Scroll by `$delta` rows (positive = down, negative = up). Clamped at the top edge; the bottom is clamped inside `scroll-to`. Updates the `follow-active` latch so callers know whether the user has scrolled away from "live tail" mode.
 
 ### method scroll-page-by
 
@@ -71,6 +115,30 @@ method scroll-page-by(
 ```
 
 Scroll by one viewport-height in the given `$direction` (typically `+1` for PgDown, `-1` for PgUp). Centralises the "what does a page mean" decision in the ScrollView itself — callers don't need to query viewport-height first.
+
+### method scroll-to-start
+
+```raku
+method scroll-to-start() returns Mu
+```
+
+Scroll to the very top.
+
+### method scroll-to-end
+
+```raku
+method scroll-to-end() returns Mu
+```
+
+Scroll to the very bottom (re-engages tail-follow when `follow-bottom` is set).
+
+### method at-end
+
+```raku
+method at-end() returns Bool
+```
+
+True when the view is scrolled to the bottom of its content. Useful for "auto-scroll only when already at bottom" logic in streaming consumers.
 
 ### method content-width
 

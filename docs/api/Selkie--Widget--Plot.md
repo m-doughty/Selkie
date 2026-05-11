@@ -168,6 +168,16 @@ Optional reactive binding — store path to a list of `($x, $y)` pairs. The widg
 
 Message rendered when no samples have been received yet. The default is the expected startup state for monitoring dashboards. Set to the empty string to suppress (the plot will show a blank pane until the first sample arrives).
 
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Subscribes against `:store-path` so new samples appended to the path are pushed into the native ring buffer on each tick. No-op when no `:store-path` was given (caller drives via `push-sample`).
+
 ### method push-sample
 
 ```raku
@@ -189,6 +199,22 @@ method set-sample(
 ```
 
 Set (overwrite) the sample at slot `$x`. Same semantics as notcurses' `ncuplot_set_sample` / `ncdplot_set_sample`: replaces rather than accumulating. No-op if the handle hasn't been created yet — use `push-sample` for buffer-aware writes.
+
+### method park
+
+```raku
+method park() returns Mu
+```
+
+Park the plot. Tears down the native plot handle (which retains its own pixel resources outside the standard plane) before parking the widget plane. Sample buffer and the `:store-path` subscription survive — on the next render after unpark, the handle is recreated and the buffered samples are flushed in.
+
+### method destroy
+
+```raku
+method destroy() returns Mu
+```
+
+Tear down both the native plot handle and the widget plane. Called by `Selkie::App.shutdown`.
 
 ### method has-handle
 

@@ -2,6 +2,220 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.7.0  2026-05-12T00:43:46+01:00
+    - Selkie::EffectiveBounds: value class returned by
+      `Widget.effective-bounds` representing the on-screen rectangle a
+      widget may safely paint into, computed as the intersection of its
+      plane with every ancestor's plane and the terminal viewport. Lets
+      sprixel-bearing widgets like Image size their blit-plane to the
+      visible region only, preventing pixel overflow past ancestor
+      borders.
+    - Selkie::Tree: framework-level tree-walking helpers
+      (`mark-widgets-in-rect-dirty`, `current-active-modal`) that bridge
+      widgets with the wider tree without requiring a circular import
+      on Selkie::App. Selkie::App registers provider closures at init
+      so widgets can reach live tree roots + modal state via free subs.
+    - Selkie::Layout::Allocate: shared three-pass sizing algorithm
+      (fixed → percent → flex) extracted from VBox + HBox. Layout
+      math now lives in one place; per-container code only handles
+      positioning along the cross axis.
+    - Selkie::Widget::FocusableByDefault: composable role that defaults
+      `focusable` to True at construction. Replaces the repeated
+      three-line `new` override in Button, Checkbox, TextInput,
+      ListView, RadioGroup, MultiLineInput, CardList, and the new
+      ViewportedCardList.
+    - Selkie::Widget::ViewportedCardList: row-scrolled selectable list
+      of cards where the viewport can start mid-card. Unlike CardList
+      (which scrolls in card-sized steps), this scrolls by individual
+      rows via PgUp/PgDown/wheel while Up/Down still walks selection
+      one card at a time. Designed for tall mixed-height content with
+      Image children that need partial-clip rendering as cards slide
+      past the viewport edge.
+    - Selkie::Widget: added `clip-to-ancestors` attribute (default
+      True) controlling whether `effective-bounds` includes ancestor
+      clipping or only terminal-viewport clipping — portal-style
+      overlays can set it False to escape container bounds. Added
+      `effective-bounds()` method returning a Selkie::EffectiveBounds
+      for safe sprixel-painting regions. Added `park-y()` (returns
+      10_000) standardising off-screen positioning across all widgets.
+      Added `!park-children(@kids)` helper consolidating park
+      iteration for Container and CardList.
+    - Selkie::App: integrated app-level coordination services for
+      sprixel cleanup and modal occlusion. `!collect-tree-roots`
+      exposes the live widget tree (active screen + modal stack +
+      toast) for `mark-widgets-in-rect-dirty`. `!mark-all-images-dirty`
+      propagates modal mount/unmount/toast state so `Image.render`'s
+      occlusion check fires reliably. `!park-images-in-rect` pushes
+      Images underneath the toast strip off-viewport to prevent
+      sprixel bleed-through. `!capture-tty-state` /
+      `!restore-tty-state` snapshot+restore terminal TTY state as a
+      backstop when notcurses shutdown can't (signal-killed runs).
+      Registers provider closures with Selkie::Tree and
+      Selkie::EffectiveBounds during init. Crash-restore taps on
+      SIGABRT/SIGTERM/SIGHUP/SIGQUIT ensure the terminal is cleaned
+      up before process exit on fatal signals.
+    - Selkie::Store: added `:deep-equality-check` flag (default False)
+      on all subscribe variants. When set, change detection uses
+      structural `eqv` rather than the fast `===` identity check, and
+      values are snapshotted (deep-cloned for nested Hashes/Arrays) at
+      every fire. Fixes the silent-suppression trap when assoc-in
+      mutates a Hash in place — the reference stays the same across
+      the write, so the `===` check fires no listener. Opt-in: enable
+      only for subscriptions watching mutable containers updated
+      in-place. Leaf values and fresh-per-call computes don't need it.
+    - Selkie::Widget::CardList: major refactor. New
+      `:min-display-height` parameter on `add-item` (default 1)
+      controls the minimum visible height before a non-selected
+      partially-clipped card is parked entirely instead of shown as
+      a sliver. Selected cards always render regardless of height.
+      Park decisions now run in a pre-pass before layout so the
+      planes that won't fit are off-screen by the time render runs,
+      eliminating sprixel-ghost churn from rapid scroll. Removed
+      per-Image cache invalidation; sprixel reliability now comes
+      from deterministic parking + fresh blits. Replaced boilerplate
+      `focusable` override with the FocusableByDefault role.
+    - Selkie::Widget::Image: full rewrite of the rendering model and
+      its Pod6. Visibility is now driven purely by notcurses-queried
+      plane positions and ancestor-intersection checks via
+      Selkie::EffectiveBounds, never the Widget-level position cache
+      (which can desync from notcurses across Container.park cascades
+      and direct ncplane_move_yx calls). Sprixel is emitted only when
+      the plane is fully contained in every ancestor and the terminal
+      viewport; otherwise the blit-plane is destroyed and the render
+      skips. Adds a `clip-only` mode that pre-scales the visual to
+      cell-aligned natural dims and uses an additive
+      `render-viewport-crop` API for partial-clip rendering inside
+      row-scrolling containers. Adds file-target debug logging via
+      `SELKIE_IMAGE_DEBUG` env var. The new Pod6 explains the
+      rendering model, the notcurses-vs-Widget-cache divergence, park
+      semantics, pixel-bleed protection, and the Sixel vertical
+      granularity workaround in detail.
+    - Selkie::Widget::Border: render path for small borders (< 3×3)
+      properly resizes the content plane even when the border edges
+      can't be drawn, preventing cell bleed past the border into
+      adjacent siblings. Added explicit Pod6 for `set-content`,
+      `set-title`, `set-has-focus`, `has-focus`.
+    - Selkie::Widget::Modal: documented `set-content`'s `:destroy`
+      flag and the park-on-swap-without-destroy pattern. Added Pod6
+      for `on-close`, `focusable-descendants`, `handle-resize`, and
+      `destroy`.
+    - Selkie::Widget::ListView: applied FocusableByDefault role.
+      Expanded Pod6 for `items`, `cursor`, `selected`, `on-select`,
+      `on-activate`, `set-items`, `select-index`.
+    - Selkie::Widget::MultiLineInput: applied FocusableByDefault role.
+      Expanded Pod6 for `text`, `set-text`, `set-text-silent`,
+      `clear`, `on-submit`, `on-change`, `set-focused`, `is-focused`,
+      `desired-height`, `line-count`, `cursor-row`, `cursor-col`.
+      Documented `on-copy` / `on-cut` supply semantics.
+    - Selkie::Container: park() now uses `!park-children` and the
+      shared `park-y` method, eliminating the hardcoded 10_000
+      literals scattered through the codebase.
+    - Selkie::Layout::VBox / Selkie::Layout::HBox: refactored to call
+      `allocate-along-axis` from Selkie::Layout::Allocate, removing
+      ~50 lines of duplicated three-pass allocation math each.
+      Children that collapse to zero rows/cols are now parked
+      off-viewport so their previous-size planes don't paint stale
+      cells over adjacent siblings.
+    - Selkie::Layout::Split: added Pod6 for `handle-resize`,
+      `focusable-descendants`, and `destroy`.
+    - Selkie::ScreenManager: clarified Pod6 for the App-level
+      forwarding methods (`add-screen` / `switch-screen` /
+      `screen-names`) so it's obvious which call paths each invokes.
+    - Selkie::Widget::Toast / Select / RadioGroup / TextInput /
+      Checkbox / TabBar / Table: doc-only Pod6 expansions covering
+      methods that already existed but weren't fully documented.
+    - Image.render: when `clip-only` is True, defer the blit entirely
+      to render-viewport-crop instead of running emit-blit. emit-blit
+      creates the sprixel as a child of Image's own plane, which sits
+      in the row-scrolling container's backing chain and gets parked
+      off-screen at end-of-frame. render-viewport-crop creates a
+      different sprixel as a child of the container's own plane —
+      so the two planes live in different parent chains, and the
+      destroy in render-viewport-crop's prologue would target a
+      stale `$!blit-plane` rather than the live one. The leftover
+      sprixel survives in notcurses's tracking, moves with the
+      backing chain as it parks, and emits a one-row ghost over
+      the container's bottom border the moment the card scrolls
+      fully off the top of the viewport. With clip-only set,
+      render-viewport-crop is the single canonical blit pathway.
+    - Image.destroy-blit-plane: capture the blit plane's screen
+      rectangle before destroying and call
+      Selkie::Tree::mark-widgets-in-rect-dirty so widgets owning
+      cells under the destroyed sprixel get re-rendered. Documented
+      in Selkie::Tree as the expected pattern for sprixel-bearing
+      widgets; was missing from Image.
+    - t/61-effective-bounds.rakutest (new): unit tests for
+      Widget.effective-bounds — single and multi-ancestor clipping,
+      clip-to-ancestors=False overrides, terminal viewport
+      intersection.
+    - t/62-tree-helpers.rakutest (new): tests for
+      Selkie::Tree::mark-widgets-in-rect-dirty's tree walk —
+      widgets in/out of the marked rectangle are dirtied correctly
+      and the walk respects children/content patterns.
+    - t/63-deep-equality-check.rakutest (new): exercises Store's
+      `:deep-equality-check` flag across all four subscribe
+      variants. Verifies in-place Hash mutation is detected when the
+      flag is set and suppressed when it's off (the default).
+    - t/64-layout-allocate.rakutest (new): unit tests for
+      `allocate-along-axis` fixed / percent / flex passes, rounding
+      remainder handling, and edge cases (empty list, single item,
+      total fixed exceeds available, etc.).
+    - t/65-viewported-card-list.rakutest (new): ViewportedCardList
+      selection movement, row scrolling, mouse-wheel interaction,
+      PgUp/PgDown handling.
+    - t/68-image-clip-only-math.rakutest (new): pure-function tests
+      for clip-only source scaling and sub-region math
+      (compute-clip-only-blit).
+    - t/69-image-clip-only-blit.rakutest (new): integration test
+      driving compute-clip-only-blit + ncvisual_blit end-to-end on
+      a synthetic 8×8 gradient and asserting the rendered cells
+      correspond to the requested source sub-region. Pairs with the
+      Notcurses-Native 0.2.7 patch (ncvisual_blit_internal
+      pre-cropping) — together they fix ViewportedCardList rendering
+      wrong rows when an image is partially clipped at the top of
+      the viewport. Bumps minimum Notcurses-Native version to 0.2.7
+      implicitly via the BINARY_TAG bump
+      (binaries-notcurses-3.0.17-r3).
+    - t/23-card-list.rakutest: expanded with three new subtests —
+      add-item parameter signature check, min-display-height
+      clipping scenarios, and park iteration covering every card
+      root via !park-children.
+    - t/fixtures/test-4x4.png (new): tiny PNG fixture mirrored from
+      Notcurses-Native for use in image-pipeline tests that need a
+      real file path. Selkie tests do not get %?RESOURCES access to
+      sibling distributions' resources, so the file is bundled here.
+    - xt/snapshots/29-cardlist-min-height-leading-park.raku +
+      golden/29-…: CardList with three heterogeneous-height cards
+      where the selected middle card can't fit fully in the
+      viewport. The leading card's min-display-height exceeds its
+      partial-visible height; parking pre-pass folds it entirely so
+      layout compacts upward without producing broken slivers.
+    - xt/snapshots/30-cardlist-min-height-trailing-park.raku +
+      golden/30-…: symmetric test parking the trailing card.
+    - xt/snapshots/31-cardlist-min-height-default-renders-sliver.raku +
+      golden/31-…: cards with default min-display-height=1 still
+      render positive slivers (preserves pre-existing behaviour).
+    - xt/snapshots/32-cardlist-min-height-selected-exempt.raku +
+      golden/32-…: selected card always renders regardless of
+      min-display-height (selected cards are never parked by the
+      threshold check).
+    - xt/snapshots/33-viewported-cardlist-row-scroll.raku +
+      golden/33-…: ViewportedCardList with tall content cards,
+      demonstrating row-level scrolling, selection staying
+      independent of scroll, and Image children rendering safely at
+      partial-clip boundaries.
+    - examples/viewported-card-list.raku (new): comprehensive
+      ViewportedCardList demo with row scrolling, independent
+      selection movement, and Image cards interspersed with text
+      cards inside scrollable layouts.
+    - META6.json: registered new modules — Selkie::EffectiveBounds,
+      Selkie::Tree, Selkie::Layout::Allocate,
+      Selkie::Widget::FocusableByDefault,
+      Selkie::Widget::ViewportedCardList.
+    - README: updated example count (8 → 9); added
+      ViewportedCardList demo and HelpOverlay / PasswordStrength
+      widget descriptions to the widget-by-widget reference.
+
 0.6.0  2026-04-30T17:03:19+01:00
     - First-class mouse support across the whole framework. Selkie::App
       enables button + drag events on construction (via

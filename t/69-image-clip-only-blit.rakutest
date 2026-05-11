@@ -1,0 +1,266 @@
+use Test;
+use lib 'lib';
+use NativeCall;
+use Notcurses::Native;
+use Notcurses::Native::Types;
+use Notcurses::Native::Cell;
+use Notcurses::Native::Plane;
+use Notcurses::Native::Channel;
+use Notcurses::Native::Visual;
+
+use Selkie::Widget::Image;  # exports compute-clip-only-blit
+
+=begin pod
+Integration test for the source-region cropping pipeline that
+ViewportedCardList drives when an Image partially overlaps the viewport.
+
+C<compute-clip-only-blit> is exercised in isolation by
+F<t/68-image-clip-only-math.rakutest>. This file proves that its output —
+fed through C<NcvisualOptions.begy/begx/leny/lenx> into
+C<ncvisual_blit> — survives the round trip through notcurses and lands
+in the rendered cells exactly as computed.
+
+Notcurses 3.0.17 silently dropped C<begy / begx> for any blit path that
+resized the source (sprixel blitters consume from data[0]; cell
+blitters mixed input-space offsets with output-space buffers). The
+patched build in this monorepo pre-crops the source ncvisual once at
+the entry to C<ncvisual_blit_internal>, so every downstream blitter
+sees a region-exact buffer. The Notcurses-Native xt/17 visual suite
+proves the C-side fix; this file proves that Selkie's expected client
+of the fix gets the right rendering.
+
+Strategy:
+=item Construct an 8×8 ncvisual via C<ncvisual_from_rgba> filled with a
+    distinct per-pixel gradient C<(y * 32, x * 32, 64)>.
+=item Pre-scale it to cell-aligned natural dims (every image cell row
+    is exactly C<cell-px-y> source pixels tall) so
+    C<compute-clip-only-blit> can be applied with integer-exact math —
+    the same setup C<Image.render-viewport-crop>'s clip-only branch
+    performs in production.
+=item For each scroll position, compute crop params via
+    C<compute-clip-only-blit>, blit with C<NCSCALE_STRETCH +
+    NCBLIT_1x1>, and assert the rendered cells correspond to the
+    expected source pixels.
+=end pod
+
+plan 6;
+
+unless $*ERR.t || %*ENV<NOTCURSES_FORCE>.so {
+    # ncvisual_blit needs a notcurses context. Skip gracefully when
+    # there's no terminal (matches the existing pattern at
+    # Notcurses-Native/xt/17-visual.rakutest).
+    skip 'No terminal available', 6;
+    exit 0;
+}
+
+sub fopen(Str, Str --> Pointer) is native { * }
+my $devnull = fopen($*KERNEL.name.lc ~~ /win/ ?? 'NUL' !! '/dev/null', 'w');
+my $opts = NotcursesOptions.new(
+    :loglevel(NCLOGLEVEL_SILENT),
+    :flags(NCOPTION_SUPPRESS_BANNERS
+        +| NCOPTION_NO_ALTERNATE_SCREEN
+        +| NCOPTION_INHIBIT_SETLOCALE),
+);
+my $nc = notcurses_init($opts, $devnull);
+unless $nc.defined {
+    skip 'notcurses_init failed (no usable terminal)', 6;
+    exit 0;
+}
+LEAVE { notcurses_stop($nc) if $nc.defined }
+
+# 8×8 RGBA gradient. The same pixel encoding the Notcurses-Native
+# cropped-blit tests use — confirmed in xt/17 that ncvisual_from_rgba
+# stores these bytes such that ncchannels_bg_rgb8 returns (R, G, B).
+sub make-gradient-visual(--> NcvisualHandle) {
+    my $pixels = CArray[uint32].allocate(64);
+    for ^8 -> $y {
+        for ^8 -> $x {
+            my uint32 $r = $y * 32;
+            my uint32 $g = $x * 32;
+            my uint32 $b = 64;
+            my uint32 $a = 255;
+            $pixels[$y * 8 + $x] =
+                ($a +< 24) +| ($b +< 16) +| ($g +< 8) +| $r;
+        }
+    }
+    my $ptr = nativecast(Pointer, $pixels);
+    ncvisual_from_rgba($ptr, 8, 32, 8);
+}
+
+sub cell-bg-rgb($plane, Int $y, Int $x) {
+    my $cell = Nccell.new;
+    ncplane_at_yx_cell($plane, $y, $x, $cell);
+    my uint32 $r; my uint32 $g; my uint32 $b;
+    ncchannels_bg_rgb8($cell.channels, $r, $g, $b);
+    nccell_release($plane, $cell);
+    ($r.Int, $g.Int, $b.Int);
+}
+
+sub expected-pixel(Int $src-y, Int $src-x) {
+    ($src-y * 32, $src-x * 32, 64);
+}
+
+# Render the gradient at the requested viewport-crop parameters via
+# the exact path Image.render-viewport-crop's clip-only branch takes:
+# pre-scale to cell-aligned dims, compute begy/begx/leny/lenx with
+# compute-clip-only-blit, then blit with NCSCALE_STRETCH + NCBLIT_1x1.
+# Returns the blit plane handle (caller is responsible for destroy).
+sub blit-clip-only(
+    Int :$source-row!,  Int :$source-col!,
+    UInt :$rows!,       UInt :$cols!,
+    Int :$widget-rows = 8, Int :$widget-cols = 8,
+    --> NcplaneHandle
+) {
+    my $v = make-gradient-visual();
+    # Cell pixel geometry: for NCBLIT_1x1 each cell is 1×1 pixels, so
+    # the clip-only invariant "every image cell row is exactly
+    # cell-px-y source pixels tall" is satisfied at the source's
+    # natural dims (8 cells × 1 pixel = 8 pixels — matches pixy=8).
+    my UInt $cell-px-y = 1;
+    my UInt $cell-px-x = 1;
+    my UInt $rcelly    = 8;
+    my UInt $rcellx    = 8;
+
+    my %r = compute-clip-only-blit(
+        self-rows  => $widget-rows.UInt,
+        self-cols  => $widget-cols.UInt,
+        cell-px-y  => $cell-px-y,
+        cell-px-x  => $cell-px-x,
+        rcelly     => $rcelly,
+        rcellx     => $rcellx,
+        dest-y     => 0,
+        dest-x     => 0,
+        source-row => $source-row,
+        source-col => $source-col,
+        rows       => $rows,
+        cols       => $cols,
+    );
+    unless %r {
+        ncvisual_destroy($v);
+        return NcplaneHandle;
+    }
+
+    my $std = notcurses_stdplane($nc);
+    my $opts = NcplaneOptions.new(
+        y    => %r<blit-dest-y>.Int,  x    => %r<blit-dest-x>.Int,
+        rows => %r<blit-rows>.UInt,   cols => %r<blit-cols>.UInt,
+    );
+    my $blit-plane = ncplane_create($std, $opts);
+
+    my UInt $begy = %r<begy>;
+    my UInt $begx = %r<begx>;
+    my UInt $leny = %r<leny>;
+    my UInt $lenx = %r<lenx>;
+    my $vopts = NcvisualOptions.new(
+        scaling => NCSCALE_STRETCH,
+        blitter => NCBLIT_1x1,
+        :$begy, :$begx, :$leny, :$lenx,
+    );
+    $vopts.set-plane($blit-plane);
+    ncvisual_blit($nc, $v, $vopts);
+    ncvisual_destroy($v);
+    $blit-plane;
+}
+
+subtest 'fully-visible image renders all source pixels' => {
+    plan 4;
+    # Widget = 8×8, image natural rcell = 8×8, source-row=0, rows=8:
+    # everything is on-screen. Blit plane = 8×8 cells, cell (y, x)
+    # shows source pixel (y, x).
+    my $p = blit-clip-only(
+        :source-row(0), :source-col(0), :rows(8), :cols(8),
+    );
+    ok $p.defined, 'blit returned a plane';
+    is-deeply cell-bg-rgb($p, 0, 0), expected-pixel(0, 0),
+        'top-left cell = source pixel (0, 0)';
+    is-deeply cell-bg-rgb($p, 7, 7), expected-pixel(7, 7),
+        'bottom-right cell = source pixel (7, 7)';
+    is-deeply cell-bg-rgb($p, 3, 4), expected-pixel(3, 4),
+        'middle cell = source pixel (3, 4)';
+    ncplane_destroy($p);
+};
+
+subtest 'top-clipped — scrolled up so image top is off-screen' => {
+    plan 4;
+    # Scroll up so the first 3 image rows are above the viewport.
+    # source-row=3 means cell (0, x) of the OUTPUT corresponds to
+    # image row 3. Five rows of the image remain visible (rows=5).
+    # Before the notcurses patch this rendered source rows 0..4
+    # (the TOP) because begy was silently dropped — exactly the bug
+    # the user reported when avatars at the top of the chat list
+    # scrolled "wrong rows" into view.
+    my $p = blit-clip-only(
+        :source-row(3), :source-col(0), :rows(5), :cols(8),
+    );
+    ok $p.defined, 'blit returned a plane';
+    is-deeply cell-bg-rgb($p, 0, 0), expected-pixel(3, 0),
+        'cell (0, 0) shows source pixel (3, 0) — top of visible region';
+    is-deeply cell-bg-rgb($p, 4, 7), expected-pixel(7, 7),
+        'cell (4, 7) shows source pixel (7, 7) — bottom-right of visible';
+    is-deeply cell-bg-rgb($p, 2, 3), expected-pixel(5, 3),
+        'middle of visible region matches its source pixel';
+    ncplane_destroy($p);
+};
+
+subtest 'bottom-clipped — scrolled down so image bottom is off-screen' => {
+    plan 3;
+    # Image visible rows 0..4 only; rows 5..7 off-screen below the
+    # viewport. source-row=0, rows=5. With the begy=0 case this
+    # path always worked — regression guard.
+    my $p = blit-clip-only(
+        :source-row(0), :source-col(0), :rows(5), :cols(8),
+    );
+    ok $p.defined, 'blit returned a plane';
+    is-deeply cell-bg-rgb($p, 0, 0), expected-pixel(0, 0),
+        'cell (0, 0) shows source pixel (0, 0)';
+    is-deeply cell-bg-rgb($p, 4, 7), expected-pixel(4, 7),
+        'cell (4, 7) shows source pixel (4, 7)';
+    ncplane_destroy($p);
+};
+
+subtest 'both top- and bottom-clipped — image taller than viewport' => {
+    plan 3;
+    # Image spans rows 2..5 of an 8-row widget (img-top-cell=0,
+    # img-cell-rows=8, but source-row=2 and rows=4 → visible window
+    # is image rows 2..5).
+    my $p = blit-clip-only(
+        :source-row(2), :source-col(0), :rows(4), :cols(8),
+    );
+    ok $p.defined, 'blit returned a plane';
+    is-deeply cell-bg-rgb($p, 0, 0), expected-pixel(2, 0),
+        'cell (0, 0) shows source pixel (2, 0)';
+    is-deeply cell-bg-rgb($p, 3, 0), expected-pixel(5, 0),
+        'cell (3, 0) shows source pixel (5, 0)';
+    ncplane_destroy($p);
+};
+
+subtest 'left-clipped — horizontal crop honors source-col' => {
+    plan 3;
+    # source-col=2, cols=6 → output is 8 cells tall × 6 wide.
+    # cell (y, 0) of the output corresponds to image pixel (y, 2).
+    my $p = blit-clip-only(
+        :source-row(0), :source-col(2), :rows(8), :cols(6),
+    );
+    ok $p.defined, 'blit returned a plane';
+    is-deeply cell-bg-rgb($p, 0, 0), expected-pixel(0, 2),
+        'cell (0, 0) shows source pixel (0, 2) — left edge of crop';
+    is-deeply cell-bg-rgb($p, 7, 5), expected-pixel(7, 7),
+        'cell (7, 5) shows source pixel (7, 7) — bottom-right of crop';
+    ncplane_destroy($p);
+};
+
+subtest 'entirely off-screen — compute-clip-only-blit yields no blit' => {
+    plan 1;
+    # source-row=20 is outside the image (which spans cell rows 0..7
+    # within the widget). compute-clip-only-blit returns an empty
+    # hash, so blit-clip-only returns an undefined plane handle —
+    # the same path Image.render-viewport-crop takes when the
+    # image is fully scrolled off.
+    my $p = blit-clip-only(
+        :source-row(20), :source-col(0), :rows(4), :cols(8),
+    );
+    nok $p.defined,
+        'no plane emitted when the image has scrolled past the viewport';
+};
+
+done-testing;

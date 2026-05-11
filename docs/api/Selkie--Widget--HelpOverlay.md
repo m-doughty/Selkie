@@ -13,7 +13,7 @@ use Selkie::Widget::HelpOverlay;
 $root.on-key: 'ctrl+h', -> $ {
     my $help = Selkie::Widget::HelpOverlay.new(
         app             => $app,
-        focused-widget  => $app.focused-widget,
+        focused-widget  => $app.focused,
     );
     $app.show-modal($help.build);
 };
@@ -42,6 +42,22 @@ App reference. Untyped so snapshot-test stubs can stand in.
 ### has Selkie::Widget $.focused-widget
 
 The widget that currently has focus. The overlay walks upward from here through its `.parent` chain to gather all reachable keybinds.
+
+### method modal
+
+```raku
+method modal() returns Selkie::Widget::Modal
+```
+
+The underlying Modal, available after `build` has been called. Use this to attach extra `on-close` taps or to pass to `$app.show-modal`.
+
+### method build
+
+```raku
+method build() returns Selkie::Widget::Modal
+```
+
+Build the help modal: walk the focus chain, group reachable keybinds by widget class, and produce a centered Modal listing them. Returns the Modal so the caller can pass it to `$app.show-modal`. Re-callable to refresh; replaces any prior modal this overlay built.
 
 ### method collect-groups
 

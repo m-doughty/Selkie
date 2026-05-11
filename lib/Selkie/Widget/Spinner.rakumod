@@ -138,6 +138,9 @@ has Selkie::Style $.style;
 has UInt $!frame-idx = 0;
 has Instant $!last-advance;
 
+#| Constructor. Defaults C<focusable> to False (the spinner is
+#| display-only). Common attributes: C<:frames> (override the frame
+#| set), C<:interval> (advance throttle, default 0.1s), C<:style>.
 method new(*%args --> Selkie::Widget::Spinner) {
     %args<focusable> //= False;
     callwith(|%args);

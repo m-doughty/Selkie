@@ -35,15 +35,21 @@ The framework itself is organised into several subnamespaces:
 
   * **Layouts** — [Selkie::Layout::VBox](Selkie--Layout--VBox.md), [Selkie::Layout::HBox](Selkie--Layout--HBox.md), [Selkie::Layout::Split](Selkie--Layout--Split.md)
 
-  * **Display widgets** — [Selkie::Widget::Text](Selkie--Widget--Text.md), [Selkie::Widget::RichText](Selkie--Widget--RichText.md), [Selkie::Widget::TextStream](Selkie--Widget--TextStream.md), [Selkie::Widget::Image](Selkie--Widget--Image.md), [Selkie::Widget::ProgressBar](Selkie--Widget--ProgressBar.md)
+  * **Display widgets** — [Selkie::Widget::Text](Selkie--Widget--Text.md), [Selkie::Widget::RichText](Selkie--Widget--RichText.md), [Selkie::Widget::TextStream](Selkie--Widget--TextStream.md), [Selkie::Widget::Image](Selkie--Widget--Image.md), [Selkie::Widget::ProgressBar](Selkie--Widget--ProgressBar.md), [Selkie::Widget::Spinner](Selkie--Widget--Spinner.md), [Selkie::Widget::PasswordStrength](Selkie--Widget--PasswordStrength.md)
 
   * **Input widgets** — [Selkie::Widget::TextInput](Selkie--Widget--TextInput.md), [Selkie::Widget::MultiLineInput](Selkie--Widget--MultiLineInput.md), [Selkie::Widget::Button](Selkie--Widget--Button.md), [Selkie::Widget::Checkbox](Selkie--Widget--Checkbox.md), [Selkie::Widget::RadioGroup](Selkie--Widget--RadioGroup.md), [Selkie::Widget::Select](Selkie--Widget--Select.md)
 
-  * **List widgets** — [Selkie::Widget::ListView](Selkie--Widget--ListView.md), [Selkie::Widget::CardList](Selkie--Widget--CardList.md), [Selkie::Widget::ScrollView](Selkie--Widget--ScrollView.md)
+  * **List / table widgets** — [Selkie::Widget::ListView](Selkie--Widget--ListView.md), [Selkie::Widget::CardList](Selkie--Widget--CardList.md), [Selkie::Widget::ScrollView](Selkie--Widget--ScrollView.md), [Selkie::Widget::Table](Selkie--Widget--Table.md)
 
-  * **Chrome widgets** — [Selkie::Widget::Border](Selkie--Widget--Border.md), [Selkie::Widget::Modal](Selkie--Widget--Modal.md), [Selkie::Widget::ConfirmModal](Selkie--Widget--ConfirmModal.md), [Selkie::Widget::FileBrowser](Selkie--Widget--FileBrowser.md), [Selkie::Widget::Toast](Selkie--Widget--Toast.md)
+  * **Chrome widgets** — [Selkie::Widget::Border](Selkie--Widget--Border.md), [Selkie::Widget::Modal](Selkie--Widget--Modal.md), [Selkie::Widget::ConfirmModal](Selkie--Widget--ConfirmModal.md), [Selkie::Widget::FileBrowser](Selkie--Widget--FileBrowser.md), [Selkie::Widget::Toast](Selkie--Widget--Toast.md), [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md)
+
+  * **Navigation** — [Selkie::Widget::TabBar](Selkie--Widget--TabBar.md), [Selkie::Widget::CommandPalette](Selkie--Widget--CommandPalette.md)
+
+  * **Chart widgets (opt-in)** — [Selkie::Widget::Sparkline](Selkie--Widget--Sparkline.md), [Selkie::Widget::Plot](Selkie--Widget--Plot.md), [Selkie::Widget::BarChart](Selkie--Widget--BarChart.md), [Selkie::Widget::Histogram](Selkie--Widget--Histogram.md), [Selkie::Widget::Heatmap](Selkie--Widget--Heatmap.md), [Selkie::Widget::ScatterPlot](Selkie--Widget--ScatterPlot.md), [Selkie::Widget::LineChart](Selkie--Widget--LineChart.md), [Selkie::Widget::Axis](Selkie--Widget--Axis.md), [Selkie::Widget::Legend](Selkie--Widget--Legend.md), plus the [Selkie::Plot::Palette](Selkie--Plot--Palette.md), [Selkie::Plot::Scaler](Selkie--Plot--Scaler.md), [Selkie::Plot::Ticks](Selkie--Plot--Ticks.md) primitives
 
 Start with [Selkie::App](Selkie--App.md) for the big picture, [Selkie::Widget](Selkie--Widget.md) if you want to write your own widgets, and [Selkie::Store](Selkie--Store.md) for the reactive state model. Every module has runnable examples in its Pod.
+
+The chart widgets and their plot primitives are not pulled in by `use Selkie` (they have heavier dependencies and aren't needed by most apps) — import them explicitly when you reach for them, e.g. `use Selkie::Widget::LineChart;`.
 
 MOUSE SUPPORT
 =============

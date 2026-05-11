@@ -4,91 +4,66 @@ use lib 'lib';
 use Selkie::Widget::Image;
 use Selkie::Sizing;
 
-# Unit tests for Image's blit-plane cache invalidation. The full render
-# path needs a live notcurses plane and a real sprixel-capable terminal,
-# which doesn't fit a headless test harness — but the invalidation
-# contract (when the cache persists vs. when it resets) is pure state
-# we can exercise via `populate-blit-cache-for-test` + the observable
-# `blit-cache-valid` accessor.
-#
-# These tests guard against regressions in the cache-invalidation paths
-# that manifest as ghost sprixels: if park() ever stops calling
-# !destroy-blit-plane, or if a future refactor changes how the cache is
-# reset, it'll show up here.
+# Image's blit-plane lifecycle is now self-contained inside its render
+# method. This file exercises the contract Image exposes to apps —
+# set-file / clear-image / park / has-blit-plane / destroy — without
+# touching a live notcurses plane (the full blit path needs a sprixel-
+# capable terminal, which doesn't fit a headless test).
 
 plan 6;
 
-sub seed-cache($img) {
-    $img.populate-blit-cache-for-test(
-        rows  => 5,
-        cols  => 14,
-        abs-y => 7,
-        abs-x => 3,
-        file  => '/some/avatar.png',
-    );
-}
-
-subtest 'fresh Image starts with no cached blit' => {
+subtest 'fresh Image has no live blit-plane' => {
     plan 1;
     my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    nok $img.blit-cache-valid,
-        'a freshly-constructed Image has no cache';
+    nok $img.has-blit-plane,
+        'no blit-plane on a freshly-constructed Image';
 };
 
-subtest 'seeding populates the cache' => {
+subtest 'set-file updates .file but does not eagerly create a blit' => {
     plan 2;
     my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    nok $img.blit-cache-valid, 'precondition: empty';
-    seed-cache($img);
-    ok $img.blit-cache-valid, 'cache reports valid after seeding';
+    $img.set-file('/foo.png');
+    is  $img.file, '/foo.png',  'file accessor reflects the new path';
+    nok $img.has-blit-plane,
+        'set-file does not eagerly create or destroy a blit-plane';
 };
 
-subtest 'park() invalidates the cache' => {
+subtest 'clear-image clears .file but leaves blit-plane state alone' => {
     plan 2;
-    # park() is the canonical "this Image is going off-screen" signal.
-    # Must destroy the blit-plane (sprixel removal) AND reset the
-    # cache so a later re-install re-blits cleanly at the new position.
     my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    seed-cache($img);
-    ok $img.blit-cache-valid, 'precondition: cache populated';
-    $img.park;
-    nok $img.blit-cache-valid,
-        'park() clears the cache so the next render re-blits';
-};
-
-subtest 'set-file does NOT eagerly clear the cache' => {
-    plan 2;
-    # Deliberate: cache invalidation on file change happens on the
-    # next render (when the cache check compares $!file to $!last-file
-    # and falls through to !destroy-blit-plane). Changing set-file's
-    # semantics to eagerly destroy the blit-plane would produce a
-    # visible one-frame gap where the old sprixel is gone but the new
-    # one hasn't been blitted yet.
-    my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    seed-cache($img);
-    ok $img.blit-cache-valid, 'precondition: cache populated';
-    $img.set-file('/other/avatar.png');
-    ok $img.blit-cache-valid,
-        'set-file leaves the cache in place — render compares and resets';
-};
-
-subtest 'clear-image does NOT eagerly clear the cache' => {
-    plan 2;
-    # Same rationale as set-file.
-    my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    seed-cache($img);
-    ok $img.blit-cache-valid, 'precondition: cache populated';
+    $img.set-file('/foo.png');
     $img.clear-image;
-    ok $img.blit-cache-valid,
-        'clear-image leaves the cache in place — render compares and resets';
+    is  $img.file, Str,         'file is cleared';
+    nok $img.has-blit-plane,
+        'clear-image does not flip the blit-plane state on its own';
 };
 
-subtest 'park() is idempotent on an already-empty cache' => {
+subtest 'destroy-blit-plane is idempotent' => {
+    plan 1;
+    my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
+    lives-ok { $img.destroy-blit-plane; $img.destroy-blit-plane },
+        'destroy-blit-plane on an already-empty Image is safe';
+};
+
+subtest 'park is idempotent on an unattached widget' => {
+    plan 2;
+    # park is called by container widgets (CardList off-screen items)
+    # to push an Image past the terminal viewport. On an unattached
+    # widget (no parent, no plane) it must early-return cleanly.
+    my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
+    lives-ok { $img.park; $img.park; $img.park },
+        'park on an unattached widget is safe to call repeatedly';
+    nok $img.has-blit-plane,
+        'no blit-plane after park';
+};
+
+subtest 'set-file twice with the same path is a no-op' => {
     plan 2;
     my $img = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
-    nok $img.blit-cache-valid, 'precondition: empty';
-    lives-ok { $img.park; $img.park; $img.park },
-        'park() on an empty cache is safe to call repeatedly';
+    $img.set-file('/foo.png');
+    $img.set-file('/foo.png');
+    is  $img.file, '/foo.png', 'file unchanged';
+    nok $img.has-blit-plane,   'still no blit (no plane attached)';
 };
 
 done-testing;

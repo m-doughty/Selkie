@@ -147,3 +147,23 @@ Optional explicit upper bound. Auto-derived from data when unset.
 
 Message rendered when there is no data. This is the expected startup state for monitoring dashboards. Set to the empty string to suppress.
 
+### method set-data
+
+```raku
+method set-data(
+    @new
+) returns Mu
+```
+
+Replace the heatmap's grid with a new array-of-rows. Each row is realised into an Array up-front because callers often pass Seqs from `.map` chains, and a long-lived TUI re-renders every frame — an exhausted Seq would produce an empty grid on subsequent renders. Throws when constructed in `:store-path` mode.
+
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Subscribes to `:store-path` so the heatmap re-renders on state changes. No-op in `:data` mode.
+

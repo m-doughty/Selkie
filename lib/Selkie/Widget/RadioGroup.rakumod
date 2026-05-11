@@ -65,10 +65,11 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::RadioGroup does Selkie::Widget;
+unit class Selkie::Widget::RadioGroup does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!items;
 has UInt $!cursor = 0;
@@ -77,10 +78,6 @@ has UInt $!scroll-offset = 0;
 has Bool $.show-scrollbar = True;
 has Supplier $!change-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::RadioGroup) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Primary click on a row commits that row as the new selection
@@ -97,13 +94,33 @@ submethod TWEAK() {
     };
 }
 
+#| The current option labels as a List.
 method items(--> List) { @!items.List }
+
+#| Index of the cursor (the row Up / Down has navigated to). The
+#| cursor and the selection are tracked separately — moving the cursor
+#| with arrow keys does not change the selection until the user
+#| presses Enter or Space.
 method cursor(--> UInt) { $!cursor }
+
+#| Index of the currently-selected option. Stable across cursor
+#| movement; only changes on commit (Enter / Space / mouse click).
 method selected(--> UInt) { $!selected }
+
+#| Label of the currently-selected option, or the C<Str> type object
+#| if there are no items.
 method selected-label(--> Str) { @!items[$!selected] // Str }
 
+#| Supply that emits the new selected index whenever the selection
+#| changes. Does not fire on cursor-only movement.
 method on-change(--> Supply) { $!change-supplier.Supply }
 
+#| Replace the option labels. Preserves the current selection by label
+#| if it's still present in the new list (so a re-build of the same
+#| options doesn't snap selection back to 0); otherwise clamps to the
+#| new bounds. Does B<not> emit on C<on-change> — the selection is
+#| considered unchanged from the user's perspective when the same label
+#| is still selected. Mark-dirties only.
 method set-items(@new-items) {
     # Preserve the currently-selected option by label if it's still present
     # in the new items. Falls back to clamp on index. Keeps the cursor on
@@ -126,6 +143,10 @@ method set-items(@new-items) {
     self.mark-dirty;
 }
 
+#| Commit a new selection. C<$idx> is clamped to the last item; the
+#| cursor jumps to match. Emits on C<on-change> only when the selection
+#| actually changed (idempotent on no-ops). No-op when the list is
+#| empty.
 method select-index(UInt $idx) {
     return unless @!items;
     my UInt $clamped = $idx min (@!items.elems - 1);

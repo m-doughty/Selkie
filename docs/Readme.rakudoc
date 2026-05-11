@@ -154,7 +154,7 @@ the code by construction.
 
 =head1 EXAMPLES
 
-The C<examples/> directory has eight runnable apps that together demonstrate
+The C<examples/> directory has nine runnable apps that together demonstrate
 every widget and store pattern in the framework. Each is self-contained and
 heavily commented — read them in this order:
 
@@ -164,6 +164,7 @@ heavily commented — read them in this order:
 =item C<tasks.raku> — Todo list with ListView, TextInput, Checkbox filter, ConfirmModal for deletion, Toast notifications, and ScreenManager (list ↔ stats screen).
 =item C<job-runner.raku> — ProgressBar (both determinate and indeterminate), TextStream log, async store effect for background work, dispatch-effect chaining, frame callback driving animation.
 =item C<chat.raku> — CardList of variable-height RichText cards, MultiLineInput compose, Border auto-focus highlight, Toast, runtime theme toggle (Ctrl+T).
+=item C<viewported-card-list.raku> — ViewportedCardList with row scrolling, separate card selection, and a card subtree containing an Image child.
 =item C<dashboard.raku> — Tabbed status board showing off the newer widgets: TabBar across three tabs (Servers / Tasks / Logs), Table with sortable columns and custom cell renderers, Spinner in the footer, CommandPalette bound to Ctrl+P, and an inline Sparkline column on the Servers tab rendering each row's recent latency history.
 =item C<charts.raku> — Showcase of the chart family: Sparkline reactively bound to a store path, LineChart updated via a subscribe-with-callback (live p50 / p99 latencies), BarChart + Histogram + Heatmap + ScatterPlot demonstrating the static archetypes, and a streaming Plot pushing samples into its own native ring buffer.
 
@@ -880,6 +881,35 @@ $app.on-frame: { $spinner.tick };
 Built-in frame sets: C<BRAILLE> (default), C<DOTS>, C<LINE>, C<CIRCLE>,
 C<ARROW>. Or pass a custom array of strings via C<frames>.
 
+=head2 Selkie::Widget::PasswordStrength
+
+Non-focusable strength meter that subscribes to a C<TextInput>'s
+C<on-change> Supply and renders a five-level bar (weak / fair / good /
+strong / very strong). Scoring is a length-plus-character-class
+heuristic — long enough for "password1" to look weak and a passphrase
+to look strong, without a dictionary or external dependency.
+
+=begin code :lang<raku>
+
+my $pw = Selkie::Widget::TextInput.new(
+    sizing      => Sizing.fixed(1),
+    placeholder => 'Enter password...',
+    mask-char   => '*',
+);
+
+my $meter = Selkie::Widget::PasswordStrength.new(
+    sizing => Sizing.fixed(1),
+    input  => $pw,
+);
+
+$vbox.add($pw);
+$vbox.add($meter);
+
+=end code
+
+For real strength analysis use C<zxcvbn>; the built-in heuristic is
+meant to give users directional feedback while they type.
+
 =head2 Selkie::Widget::TabBar
 
 Horizontal tab strip with keyboard navigation. Focusable — Left/Right
@@ -927,6 +957,33 @@ $app.on-key('ctrl+p', -> $ {
 });
 
 =end code
+
+=head2 Selkie::Widget::HelpOverlay
+
+Modal listing reachable keybinds for the focused widget chain. Walks
+the focused widget and each ancestor up to the screen root, collects
+any C<on-key> binds that carry a C<:description>, and renders a
+centred overlay grouped by widget class. Binds without a description
+are treated as internal plumbing and skipped — authors opt their
+shortcuts in by passing C<:description> when registering them.
+
+=begin code :lang<raku>
+
+# Bind globally on the screen root:
+$root.on-key: 'ctrl+h', -> $ {
+    my $help = Selkie::Widget::HelpOverlay.new(
+        app             => $app,
+        focused-widget  => $app.focused,
+    );
+    $app.show-modal($help.build);
+};
+
+=end code
+
+The overlay's modal sets C<dismiss-on-click-outside =E<gt> True> by
+default — clicking anywhere outside the help panel closes it; Esc and
+the embedded Close button still work. See B<MOUSE SUPPORT> above for
+how the dismiss-on-click-outside flag fits into modal isolation.
 
 =head2 Selkie::Widget::Table
 

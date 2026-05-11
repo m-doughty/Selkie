@@ -76,9 +76,11 @@ has NcplaneHandle $!toast-plane;
 has UInt $!screen-rows = 0;
 has UInt $!screen-cols = 0;
 
-# Called by App in place of init-plane. We don't adopt a full-screen plane
-# of our own — we just keep a reference to the parent we'll attach our
-# toast-plane to.
+#| Attach to the standard plane. Called once by C<Selkie::App> in
+#| place of the usual C<init-plane> — Toast lives outside the widget
+#| tree (so it can paint on top of any screen and any modal) so it
+#| doesn't adopt a plane of its own; the toast-plane is created lazily
+#| in C<render> on first show.
 method attach(NcplaneHandle $parent-plane, UInt :$rows, UInt :$cols) {
     $!parent-plane = $parent-plane;
     $!screen-rows = $rows;
@@ -99,6 +101,10 @@ method resize-screen(UInt $rows, UInt $cols) {
     self.handle-resize($rows, $cols);
 }
 
+#| Show a toast message for C<:duration> seconds. Re-callable while a
+#| toast is already showing — the new message replaces the old and
+#| the duration restarts from now. Apps don't usually call this
+#| directly; prefer C<$app.toast(...)> which routes here.
 method show(Str:D $message, Num :$duration = 2e0,
             Selkie::Style :$style = Selkie::Style.new(fg => 0xFFFFFF, bg => 0x4A4A8A, bold => True)) {
     $!message = $message;
@@ -109,6 +115,8 @@ method show(Str:D $message, Num :$duration = 2e0,
     self.mark-dirty;
 }
 
+#| True while a toast is currently being shown (between C<show> and
+#| the next C<tick> that observes the duration has expired).
 method is-visible(--> Bool) { $!visible }
 
 #|( Advance the toast's lifetime clock. Called once per frame by
@@ -172,6 +180,8 @@ method !destroy-toast-plane() {
     }
 }
 
+#| Tear down the toast plane. Called by C<Selkie::App.shutdown>; apps
+#| don't usually call this directly.
 method destroy() {
     self!destroy-toast-plane;
 }

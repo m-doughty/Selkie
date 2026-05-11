@@ -104,6 +104,10 @@ has UInt $!frame-count = 0;
 #| comfortable animation at 60fps.
 has UInt $.frames-per-step = 4;
 
+#| Constructor. Defaults C<focusable> to False (the bar is display-only).
+#| Pass C<:indeterminate => True> for the bouncing-animation mode (no
+#| value tracking; drive via the frame callback). Common: C<:sizing>,
+#| C<:label>, C<:show-percent>.
 method new(*%args --> Selkie::Widget::ProgressBar) {
     %args<focusable> //= False;
     callwith(|%args);

@@ -91,8 +91,16 @@ has Bool $!show-dotfiles;
 has @!dir-entries;     # unfiltered entries for current directory
 has Supplier $!select-supplier = Supplier.new;
 
+#| Supply that emits the selected absolute path (Str) when the user
+#| activates a file. Esc cancels and never emits — handle close-on-Esc
+#| via the Modal's standard dismissal.
 method on-select(--> Supply) { $!select-supplier.Supply }
 
+#| Build the file picker modal. Returns the underlying Modal so the
+#| caller can pass it directly to C<$app.show-modal>. C<:extensions>
+#| filters by suffix (case-insensitive); empty array shows all files.
+#| C<:show-dotfiles> includes hidden files. Re-callable to rebuild
+#| at a different start directory.
 method build(
     Str :$start-dir = $*HOME.Str,
     :@extensions,
@@ -160,8 +168,17 @@ method build(
     $!modal;
 }
 
+#| The widget to pass to C<$app.focus> after C<show-modal>. Returns
+#| the path TextInput — typing filters the list, Tab autocompletes,
+#| Up/Down navigate, Enter selects.
 method focusable-widget(--> Selkie::Widget::TextInput) { $!path-input }
+
+#| The internal ListView, exposed for callers that want to override
+#| selection logic or read the visible items.
 method list(--> Selkie::Widget::ListView) { $!list }
+
+#| The internal path TextInput, exposed for callers that want to
+#| pre-fill it or attach extra C<on-key> handlers.
 method path-input(--> Selkie::Widget::TextInput) { $!path-input }
 
 # --- Internal ---

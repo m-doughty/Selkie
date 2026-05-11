@@ -97,6 +97,124 @@ method clear-selection() returns Mu
 
 Clear the active selection without moving the caret.
 
+### method on-copy
+
+```raku
+method on-copy() returns Supply
+```
+
+Supply emitting the currently-selected text on Ctrl+C. Selkie does not own the system clipboard — apps wire this up themselves via OSC 52 or notcurses paste-buffer. Fires only when there's an active selection.
+
+### method on-cut
+
+```raku
+method on-cut() returns Supply
+```
+
+Supply emitting on Ctrl+X. Like `on-copy` but the selection is also deleted from the buffer.
+
+### method text
+
+```raku
+method text() returns Str
+```
+
+The full buffer contents joined with `\n`. (The buffer is stored as an array of logical lines; this assembly is O(N) in total character count — cache the result if calling per frame.)
+
+### method set-text
+
+```raku
+method set-text(
+    Str:D $t
+) returns Mu
+```
+
+Replace the buffer contents and place the caret at the end. Emits on `on-change`. Use this for user-driven updates; for programmatic syncs from a store path use `set-text-silent` instead to avoid feedback loops.
+
+### method set-text-silent
+
+```raku
+method set-text-silent(
+    Str:D $t
+) returns Mu
+```
+
+Silent variant of `set-text` — updates the buffer without emitting on `on-change`. Wire this into store subscriptions that mirror external state into the input, so the input update doesn't dispatch an event that loops back through the store and re-fires the subscription.
+
+### method clear
+
+```raku
+method clear() returns Mu
+```
+
+Empty the buffer. Equivalent to `set-text('')`.
+
+### method on-submit
+
+```raku
+method on-submit() returns Supply
+```
+
+Supply that emits the current buffer when the user presses Ctrl+Enter (Enter inserts a newline). Apps that want plain Enter as submit register their own keybind and call `text` directly.
+
+### method on-change
+
+```raku
+method on-change() returns Supply
+```
+
+Supply that emits the new buffer contents on every user-driven edit (typing, paste, delete, cut, `set-text`). Does not fire for `set-text-silent`.
+
+### method set-focused
+
+```raku
+method set-focused(
+    Bool $f
+) returns Mu
+```
+
+Set the input's focus state. Called by `Selkie::App`'s focus dispatcher. The caret is only painted while focused.
+
+### method is-focused
+
+```raku
+method is-focused() returns Bool
+```
+
+Whether the widget currently has focus.
+
+### method desired-height
+
+```raku
+method desired-height() returns UInt
+```
+
+The natural visual height for the buffer in cells, accounting for soft-wrap at the current width. Clamped to `max-lines`. Used by autosize containers (e.g. a chat compose area) to grow the input with its content.
+
+### method line-count
+
+```raku
+method line-count() returns UInt
+```
+
+Number of logical lines in the buffer (counts hard newlines, not soft-wraps). Always at least 1 — an empty buffer counts as one empty line.
+
+### method cursor-row
+
+```raku
+method cursor-row() returns UInt
+```
+
+Caret row in logical-line coordinates (0-based; counts hard newlines, not soft-wraps).
+
+### method cursor-col
+
+```raku
+method cursor-col() returns UInt
+```
+
+Caret column on the current logical line (0-based; counts characters, not visual cells).
+
 ### method visual-rows
 
 ```raku

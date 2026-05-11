@@ -153,3 +153,14 @@ method clear() returns Mu
 
 Empty the buffer and reset to the top.
 
+### method render-region
+
+```raku
+method render-region(
+    Int :$offset where { ... },
+    Int :$height where { ... }
+) returns Mu
+```
+
+Region-render hook for compatibility with `ScrollView`'s viewport protocol. `TextStream` manages its own scroll offset and renders its full visible region in `render`, so the `:offset` / `:height` arguments are accepted but ignored — pass-through to `render`.
+

@@ -6,9 +6,11 @@ Selkie::ScreenManager - Named multi-screen management
 
 =head1 SYNOPSIS
 
-You rarely use C<ScreenManager> directly — L<Selkie::App>'s C<add-screen>,
-C<switch-screen>, and C<screen-manager> methods forward to it. When you
-do need the underlying object (e.g. to enumerate screen names):
+You rarely use C<ScreenManager> directly — L<Selkie::App>'s C<add-screen>
+and C<switch-screen> methods forward to its C<add-screen> and C<switch-to>
+methods (the App-level name is C<switch-screen>; the ScreenManager-level
+name is C<switch-to>). When you do need the underlying object directly
+(e.g. to enumerate screen names), reach it via C<$app.screen-manager>:
 
 =begin code :lang<raku>
 

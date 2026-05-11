@@ -105,6 +105,14 @@ Find the position of the start of the previous word at or before `$pos` in `$s`.
 
 Selection anchor offset. -1 means "no selection" — the cursor is a bare caret. When >= 0, the selection covers the half-open range from `min(anchor, cursor)` to `max(anchor, cursor)`. The cursor is the movable end; the anchor stays put while extending.
 
+### method text
+
+```raku
+method text() returns Str
+```
+
+The current buffer contents.
+
 ### method has-selection
 
 ```raku
@@ -152,6 +160,60 @@ method on-cut() returns Supply
 ```
 
 Supply emitting on Ctrl+X. Like on-copy but the selection is also deleted from the buffer.
+
+### method set-text
+
+```raku
+method set-text(
+    Str:D $t
+) returns Mu
+```
+
+Replace the buffer's contents and place the caret at the end. Emits on `on-change`. Use this for user-driven updates (e.g. a "load from history" button); for programmatic syncs from a store path use `set-text-silent` instead to avoid feedback loops.
+
+### method set-text-silent
+
+```raku
+method set-text-silent(
+    Str:D $t
+) returns Mu
+```
+
+Silent variant of `set-text` — updates the buffer without emitting on `on-change`. Wire this into store subscriptions that mirror external state into the input, so the input update doesn't dispatch an event that loops back through the store and re-fires the subscription.
+
+### method clear
+
+```raku
+method clear() returns Mu
+```
+
+Empty the buffer. Equivalent to `set-text('')` — emits on `on-change`.
+
+### method on-submit
+
+```raku
+method on-submit() returns Supply
+```
+
+Supply emitting the current buffer contents when the user presses Enter.
+
+### method on-change
+
+```raku
+method on-change() returns Supply
+```
+
+Supply emitting the new buffer contents on every user-driven edit (typing, paste, delete, cut, `set-text`). Does not fire for `set-text-silent` — the silent variant is intended exactly to break the change-supplier ↔ store feedback loop.
+
+### method set-focused
+
+```raku
+method set-focused(
+    Bool $f
+) returns Mu
+```
+
+Set the input's focus state. Called by `Selkie::App`'s focus dispatcher. The caret is only painted while focused.
 
 ### method insert-text
 

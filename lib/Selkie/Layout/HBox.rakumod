@@ -66,6 +66,7 @@ use Notcurses::Native::Types;
 use Selkie::Widget;
 use Selkie::Container;
 use Selkie::Sizing;
+use Selkie::Layout::Allocate;
 
 unit class Selkie::Layout::HBox does Selkie::Container;
 
@@ -91,57 +92,26 @@ method !layout-children() {
     my @kids = self.children;
     return unless @kids;
 
-    my UInt $available = self.cols;
     my UInt $height = self.rows;
+    my @allocs = allocate-along-axis(@kids, self.cols);
 
-    # Pass 1: allocate fixed and percent
-    my @allocs = @kids.map({ 0 });
-    my Numeric $total-flex = 0;
-
-    for @kids.kv -> $i, $child {
-        given $child.sizing.mode {
-            when SizeFixed {
-                @allocs[$i] = $child.sizing.value.UInt min $available;
-                $available -= @allocs[$i];
-            }
-            when SizePercent {
-                @allocs[$i] = (self.cols * $child.sizing.value / 100).floor.UInt min $available;
-                $available -= @allocs[$i];
-            }
-            when SizeFlex {
-                $total-flex += $child.sizing.value;
-            }
-        }
-    }
-
-    # Pass 2: distribute remaining to flex
-    if $total-flex > 0 && $available > 0 {
-        my UInt $remaining = $available;
-        for @kids.kv -> $i, $child {
-            if $child.sizing.mode ~~ SizeFlex {
-                my $share = ($available * $child.sizing.value / $total-flex).floor.UInt;
-                $share = $share min $remaining;
-                @allocs[$i] = $share;
-                $remaining -= $share;
-            }
-        }
-        if $remaining > 0 {
-            for @kids.kv.reverse -> $child, $i {
-                if $child.sizing.mode ~~ SizeFlex {
-                    @allocs[$i] += $remaining;
-                    last;
-                }
-            }
-        }
-    }
-
-    # Pass 3: position and resize children, propagate viewport
+    # Position and resize children, propagate viewport
     my UInt $cx = 0;
     my Int $parent-abs-y = self.abs-y;
     my Int $parent-abs-x = self.abs-x;
     for @kids.kv -> $i, $child {
         my UInt $w = @allocs[$i];
-        next unless $w > 0;
+        if $w == 0 {
+            # Zero-col allocation. See VBox for the full rationale —
+            # a child collapsing from non-zero to zero allocation
+            # leaves its plane at the previous size + position, which
+            # can fall outside our bounds and paint stale cells over
+            # adjacent siblings. Park to render harmlessly off-viewport;
+            # the next non-zero allocation reposition + resizes via
+            # the standard path.
+            $child.park if $child.plane;
+            next;
+        }
 
         if $child.plane {
             $child.reposition(0, $cx);

@@ -251,6 +251,10 @@ method render() {
     self.clear-dirty;
 }
 
+#| Region-render hook for compatibility with C<ScrollView>'s viewport
+#| protocol. C<TextStream> manages its own scroll offset and renders
+#| its full visible region in C<render>, so the C<:offset> / C<:height>
+#| arguments are accepted but ignored — pass-through to C<render>.
 method render-region(UInt :$offset, UInt :$height) {
     self.render;
 }

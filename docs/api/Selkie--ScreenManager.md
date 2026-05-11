@@ -6,7 +6,7 @@ Selkie::ScreenManager - Named multi-screen management
 SYNOPSIS
 ========
 
-You rarely use `ScreenManager` directly — [Selkie::App](Selkie--App.md)'s `add-screen`, `switch-screen`, and `screen-manager` methods forward to it. When you do need the underlying object (e.g. to enumerate screen names):
+You rarely use `ScreenManager` directly — [Selkie::App](Selkie--App.md)'s `add-screen` and `switch-screen` methods forward to its `add-screen` and `switch-to` methods (the App-level name is `switch-screen`; the ScreenManager-level name is `switch-to`). When you do need the underlying object directly (e.g. to enumerate screen names), reach it via `$app.screen-manager`:
 
 ```raku
 my $sm = $app.screen-manager;

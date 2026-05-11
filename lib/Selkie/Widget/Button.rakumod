@@ -57,10 +57,11 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::Button does Selkie::Widget;
+unit class Selkie::Widget::Button does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 #| The text shown on the button. Required at construction; use
 #| C<set-label> to change afterwards (e.g. for counters).
@@ -68,11 +69,6 @@ has Str $.label is required;
 
 has Bool $!focused = False;
 has Supplier $!press-supplier = Supplier.new;
-
-method new(*%args --> Selkie::Widget::Button) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Mouse press fires the same activate path as Enter / Space. App's

@@ -36,7 +36,7 @@ sub add-stub($cl, Int :$height = 5) {
     $widget;
 }
 
-plan 24;
+plan 27;
 
 subtest "construction defaults" => {
     plan 3;
@@ -301,6 +301,50 @@ subtest "bottom-anchor flag" => {
     is $anchored.selected, 2, "selection still tracks last item under bottom-anchor";
 };
 
+subtest "add-item accepts :min-display-height" => {
+    plan 2;
+    # Belt-and-suspenders signature check — the new parameter on
+    # add-item shouldn't disturb callers that omit it (default = 1,
+    # preserving the pre-existing "render any positive sliver"
+    # behaviour) and shouldn't reject callers that pass it.
+    my $cl = Selkie::Widget::CardList.new;
+    my $w  = StubWidget.new;
+    my $r  = Selkie::Layout::VBox.new(sizing => Sizing.fixed(8));
+    lives-ok { $cl.add-item($w, root => $r, height => 8) },
+        "default min-display-height accepted";
+
+    my $cl2 = Selkie::Widget::CardList.new;
+    my $w2  = StubWidget.new;
+    my $r2  = Selkie::Layout::VBox.new(sizing => Sizing.fixed(8));
+    lives-ok {
+        $cl2.add-item($w2, root => $r2, height => 8, min-display-height => 7)
+    }, "explicit min-display-height accepted";
+};
+
+subtest "selected card stays clamped within bounds after parking would otherwise empty the list" => {
+    plan 2;
+    # Pure-bookkeeping regression guard for the parking pre-pass.
+    # Render exercises the parking branch via xt/snapshots/; here we
+    # just confirm that having every non-selected card declare a
+    # min-display-height that exceeds its own height (degenerate
+    # config) doesn't break selection invariants. The pre-pass uses
+    # `min-h min h` for its threshold so the cards still satisfy it
+    # and the list stays navigable.
+    my $cl = Selkie::Widget::CardList.new;
+    my $w1 = StubWidget.new;
+    my $r1 = Selkie::Layout::VBox.new(sizing => Sizing.fixed(3));
+    $cl.add-item($w1, root => $r1, height => 3, min-display-height => 99);
+
+    my $w2 = StubWidget.new;
+    my $r2 = Selkie::Layout::VBox.new(sizing => Sizing.fixed(3));
+    $cl.add-item($w2, root => $r2, height => 3, min-display-height => 99);
+
+    $cl.select-last;
+    is $cl.selected, 1, "selection still tracks the last item";
+    $cl.select-first;
+    is $cl.selected, 0, "selection still tracks the first item";
+};
+
 subtest "click on a deep card descendant bubbles up to CardList" => {
     plan 3;
     my $cl = Selkie::Widget::CardList.new;
@@ -341,4 +385,38 @@ subtest "click on a deep card descendant bubbles up to CardList" => {
     }
     ok $handled, 'click eventually consumed somewhere up the chain';
     is $cl.selected, 1, 'CardList reacted to the bubbled click and selected the second card';
+};
+
+subtest "park reaches every card root via !park-children helper" => {
+    plan 4;
+    # CardList stores its cards in @!items as { :widget, :root, ... }
+    # hashes rather than via Container.children, so the standard
+    # Container.park doesn't know how to walk them. Verify that
+    # CardList.park calls .park on every card's root, regardless of
+    # whether the card has a plane (a parked widget should be
+    # idempotent — repeated park is a no-op).
+
+    # Spy class: records that .park was called. The base Widget.park
+    # short-circuits when no plane exists, so we override to force
+    # the spy to fire even when called on a plane-less stub.
+    my class ParkSpy does Selkie::Widget {
+        has Int $.park-count = 0;
+        method render() { self.clear-dirty }
+        method park() { $!park-count++ }
+    }
+
+    my $cl = Selkie::Widget::CardList.new;
+    my @roots;
+    for ^3 -> $i {
+        my $root = ParkSpy.new(sizing => Sizing.fixed(5));
+        my $widget = StubWidget.new;
+        $cl.add-item($widget, :$root, :height(5));
+        @roots.push($root);
+    }
+
+    is @roots[0].park-count, 0, "precondition: roots not parked yet";
+    $cl.park;
+    is @roots[0].park-count, 1, "first card root parked";
+    is @roots[1].park-count, 1, "middle card root parked";
+    is @roots[2].park-count, 1, "last card root parked";
 };

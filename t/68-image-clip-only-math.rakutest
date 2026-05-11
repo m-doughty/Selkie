@@ -1,0 +1,217 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget::Image;  # exports compute-clip-only-blit
+
+plan 8;
+
+# A square image whose natural rendering is a SUBSET of the widget cell
+# rect (rcellx < self-cols). This is the atma case: 256×256 source,
+# 24×9 widget, cell-px (13, 29) → rcellx=21, rcelly=9.
+my %atma-base =
+    self-rows  => 9,  self-cols  => 24,
+    cell-px-y  => 29, cell-px-x  => 13,
+    rcelly     => 9,  rcellx     => 21,
+    dest-y     => 6,  dest-x     => 1,
+    source-col => 0,  cols       => 24,
+;
+
+# A wide image whose natural rendering covers the widget's full width
+# but with VERTICAL margin (rcelly < self-rows). The spaceship case:
+# 835×384 source, 24×8 widget, cell-px (13, 29) → rcellx=24, rcelly=5.
+my %spaceship-base =
+    self-rows  => 8,  self-cols  => 24,
+    cell-px-y  => 29, cell-px-x  => 13,
+    rcelly     => 5,  rcellx     => 24,
+    dest-y     => 0,  dest-x     => 1,
+    source-col => 0,  cols       => 24,
+;
+
+subtest "fully visible — full source crop, plane = image cell rect" => {
+    plan 8;
+    # atma fully visible: image at widget rows 0..8, cols 1..21.
+    my %r = compute-clip-only-blit(
+        |%atma-base, source-row => 0, rows => 9,
+    );
+    ok %r, "renders a blit";
+    is %r<begy>,  0,            "begy = 0 (top of source)";
+    is %r<leny>,  9 * 29,       "leny = full rcelly × cell-px-y";
+    is %r<begx>,  0,            "begx = 0";
+    is %r<lenx>,  21 * 13,      "lenx = full rcellx × cell-px-x";
+    is %r<blit-rows>, 9,        "blit-rows = rcelly";
+    is %r<blit-cols>, 21,       "blit-cols = rcellx";
+    is %r<blit-dest-x>, 1 + 1,
+        "blit-dest-x offset by img-left-cell (= (24-21)/2 = 1)";
+};
+
+subtest "top clipped (scrolling down) — source crop is BOTTOM of image" => {
+    plan 6;
+    # atma top 3 cells clipped: source-row=3, rows=6 visible.
+    # Image top is at img-top-cell=0, so 3 image rows are clipped from top.
+    my %r = compute-clip-only-blit(
+        |%atma-base, source-row => 3, rows => 6,
+    );
+    ok %r, "renders a blit";
+    is %r<begy>,  3 * 29,
+        "begy = 3 rows × cell-px-y (skipping the clipped top)";
+    is %r<leny>,  6 * 29,
+        "leny = visible row count × cell-px-y";
+    is %r<blit-rows>, 6,        "blit-rows = visible cell count";
+    is %r<blit-cols>, 21,
+        "blit-cols UNCHANGED (no horizontal scaling per scroll)";
+    is %r<lenx>,  21 * 13,
+        "lenx UNCHANGED (no horizontal source-crop scaling)";
+};
+
+subtest "bottom clipped (scrolling up) — source crop is TOP of image" => {
+    plan 6;
+    # atma bottom 3 cells clipped: source-row=0, only top 6 widget rows
+    # are visible. Image's top is at widget row 0, so 6 image rows visible.
+    my %r = compute-clip-only-blit(
+        |%atma-base, source-row => 0, rows => 6,
+    );
+    ok %r, "renders a blit";
+    is %r<begy>,  0,                 "begy = 0 (start at top of source)";
+    is %r<leny>,  6 * 29,            "leny = visible row count × cell-px-y";
+    is %r<blit-rows>, 6,             "blit-rows = visible cell count";
+    is %r<blit-cols>, 21,            "blit-cols UNCHANGED";
+    is %r<lenx>,  21 * 13,           "lenx UNCHANGED";
+};
+
+subtest "image entirely outside viewport — empty hash" => {
+    plan 3;
+    # source-row past the image's bottom edge.
+    my %r1 = compute-clip-only-blit(
+        |%atma-base, source-row => 100, rows => 5,
+    );
+    nok %r1, "scroll way past bottom → no blit";
+
+    # rows=0 — viewport has zero height.
+    my %r2 = compute-clip-only-blit(
+        |%atma-base, source-row => 0, rows => 0,
+    );
+    nok %r2, "zero visible rows → no blit";
+
+    # vertical scroll past the image's top edge by enough that
+    # vis-cell-y-end <= vis-cell-y-start.
+    my %r3 = compute-clip-only-blit(
+        |%atma-base, source-row => 9, rows => 5,
+    );
+    nok %r3, "scroll exactly past bottom edge → no blit";
+};
+
+subtest "image with vertical margin (spaceship) clipped" => {
+    plan 8;
+    # spaceship natural: rcelly=5, rcellx=24, in 8-row widget.
+    # img-top-cell = (8-5)/2 = 1.
+
+    # Fully visible card: source-row=0, rows=8. Visible image cells =
+    # [max(1,0) .. min(6, 8)) = [1, 6) = 5 cells.
+    my %full = compute-clip-only-blit(
+        |%spaceship-base, source-row => 0, rows => 8,
+    );
+    ok %full, "fully-visible: renders";
+    is %full<blit-rows>, 5,           "blit-rows = full rcelly";
+    is %full<blit-dest-y>, 0 + 1,     "dest-y offset by img-top-cell";
+    is %full<begy>, 0,                "begy = 0";
+
+    # Clip top by 3 of the widget rows (source-row=3, rows=5).
+    # Visible image cells = [max(1,3) .. min(6, 8)) = [3, 6) = 3 cells.
+    # Image-local row range = [3-1, 6-1) = [2, 5).
+    my %tc = compute-clip-only-blit(
+        |%spaceship-base, source-row => 3, rows => 5,
+    );
+    ok %tc, "top-clipped: renders";
+    is %tc<begy>, 2 * 29,
+        "begy = (image-local first visible row) × cell-px-y";
+    is %tc<leny>, 3 * 29,             "leny = 3 cells × cell-px-y";
+    is %tc<blit-rows>, 3,             "blit-rows = visible cells";
+};
+
+subtest "width invariance across every vertical scroll position" => {
+    # The plan's central guarantee: for atma in a 9-row widget, blit-cols
+    # and lenx stay constant for every source-row that produces a blit.
+    my $expected-cols = 21;
+    my $expected-lenx = 21 * 13;
+    my @seen-cols;
+    my @seen-lenx;
+    for 0 .. 8 -> $sr {
+        for 1 .. (9 - $sr) -> $rows {
+            my %r = compute-clip-only-blit(
+                |%atma-base, source-row => $sr, rows => $rows,
+            );
+            next unless %r;
+            @seen-cols.push(%r<blit-cols>);
+            @seen-lenx.push(%r<lenx>);
+        }
+    }
+    plan 2;
+    is @seen-cols.unique, ($expected-cols,),
+        "blit-cols is always $expected-cols across all vertical scroll positions";
+    is @seen-lenx.unique, ($expected-lenx,),
+        "lenx is always $expected-lenx across all vertical scroll positions";
+};
+
+subtest "blit-dest-y tracks visible-image-top relative to viewport" => {
+    plan 4;
+    # For an image at img-top-cell = 1 (spaceship), scrolling such that
+    # source-row=0 (image's top still visible): blit-dest-y = dest-y + 1
+    # (image starts 1 cell below the viewport top).
+    my %r1 = compute-clip-only-blit(
+        |%spaceship-base, source-row => 0, rows => 8, dest-y => 7,
+    );
+    is %r1<blit-dest-y>, 7 + 1,
+        "image at top of viewport: dest-y + img-top-cell";
+
+    # source-row=3: top 3 widget rows clipped, image's top (cell 1) is
+    # clipped too. Image's first visible cell is widget row 3 → image-local
+    # row 2. blit-dest-y = dest-y + (3 - 3) = dest-y.
+    my %r2 = compute-clip-only-blit(
+        |%spaceship-base, source-row => 3, rows => 5, dest-y => 0,
+    );
+    is %r2<blit-dest-y>, 0,
+        "top-clipped past img-top-cell: dest-y + 0";
+
+    # source-row=1: image's top at widget cell 1, source-row at 1 means
+    # widget row 0 is clipped (BUT not part of image — img-top-cell=1).
+    # vis-cell-y-start = max(1, 1) = 1. blit-dest-y = dest-y + 0.
+    my %r3 = compute-clip-only-blit(
+        |%spaceship-base, source-row => 1, rows => 7, dest-y => 0,
+    );
+    is %r3<blit-dest-y>, 0,
+        "source-row exactly at img-top-cell: dest-y + 0";
+
+    # source-row=2 with image at top-cell=1: vis-cell-y-start = 2,
+    # image-local row 1. blit-dest-y = dest-y + (2-2) = dest-y.
+    my %r4 = compute-clip-only-blit(
+        |%spaceship-base, source-row => 2, rows => 6, dest-y => 0,
+    );
+    is %r4<blit-dest-y>, 0,
+        "source-row past img-top-cell by 1: dest-y + 0";
+};
+
+subtest "horizontal source-col clipping is symmetric" => {
+    plan 5;
+    # Build a wide-source case where img-left-cell > 0. atma is the
+    # natural fit: rcellx=21 in self-cols=24 → img-left-cell = 1.
+
+    # Clip 2 widget cells from the left (source-col=2). The image's
+    # left edge is at widget col 1, so source-col=2 cuts into the image.
+    # Visible image cols = [max(1,2) .. min(22, 2+22)) = [2, 22) = 20.
+    # Image-local col range = [2-1, 22-1) = [1, 21).
+    my %r = compute-clip-only-blit(
+        |%atma-base, source-row => 0, rows => 9,
+        source-col => 2, cols => 22,
+    );
+    ok %r, "horizontal clip renders";
+    is %r<begx>, 1 * 13,         "begx = image-local first col × cell-px-x";
+    is %r<lenx>, 20 * 13,        "lenx = visible-img-col-count × cell-px-x";
+    is %r<blit-cols>, 20,        "blit-cols = visible-img-col-count";
+
+    # Fully clip from left: source-col such that no image cols visible.
+    my %r2 = compute-clip-only-blit(
+        |%atma-base, source-row => 0, rows => 9,
+        source-col => 25, cols => 5,
+    );
+    nok %r2, "scroll past image's right edge horizontally: no blit";
+};

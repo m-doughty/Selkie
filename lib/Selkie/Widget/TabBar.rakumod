@@ -94,20 +94,17 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::TabBar does Selkie::Widget;
+unit class Selkie::Widget::TabBar does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!tabs;                 # Array of { name => Str, label => Str }
 has UInt $!active-idx = 0;
 has Bool $!focused = False;
 has Supplier $!select-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::TabBar) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Primary mouse click activates the tab under the cursor (and
@@ -239,11 +236,15 @@ method sync-to-app($app) {
     );
 }
 
+#| Set the bar's focus state. Called by C<Selkie::App>'s focus
+#| dispatcher; apps don't usually call this directly. The focus prefix
+#| (C<▶> in front of the active tab) is rendered only when focused.
 method set-focused(Bool $f) {
     $!focused = $f;
     self.mark-dirty;
 }
 
+#| Whether the bar currently has keyboard focus.
 method is-focused(--> Bool) { $!focused }
 
 method render() {

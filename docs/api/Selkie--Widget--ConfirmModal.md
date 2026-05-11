@@ -71,3 +71,42 @@ SEE ALSO
 
   * [Selkie::Widget::FileBrowser](Selkie--Widget--FileBrowser.md) — similar wrapper pattern for file picking
 
+### method on-result
+
+```raku
+method on-result() returns Supply
+```
+
+Supply that emits a `Bool` when the user picks a button or presses Esc. `True` for Yes, `False` for No or Esc. The dialog stays open after emit — the caller is expected to close the modal in the tap (see SYNOPSIS).
+
+### method build
+
+```raku
+method build(
+    Str :$title = "Confirm",
+    Str :$message = "Are you sure?",
+    Str :$yes-label = "Yes",
+    Str :$no-label = "No",
+    Rat :$width-ratio = 0.4,
+    Rat :$height-ratio = 0.3
+) returns Selkie::Widget::Modal
+```
+
+Build the dialog. Returns the underlying Modal so the caller can pass it directly to `$app.show-modal`. Re-callable to rebuild with new labels (e.g. for a series of similar prompts).
+
+### method yes-button
+
+```raku
+method yes-button() returns Selkie::Widget::Button
+```
+
+The Yes button widget. Pass to `$app.focus` to make Yes the default.
+
+### method no-button
+
+```raku
+method no-button() returns Selkie::Widget::Button
+```
+
+The No button widget. Pass to `$app.focus` to make No the default (the safer choice for destructive confirmations).
+

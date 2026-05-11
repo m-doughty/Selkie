@@ -112,6 +112,17 @@ method logical-height() returns UInt
 
 Number of wrapped lines at the current width. Used by ScrollView.
 
+### method render-region
+
+```raku
+method render-region(
+    Int :$offset where { ... },
+    Int :$height where { ... }
+) returns Mu
+```
+
+Render only a slice of the wrapped-line array, starting at #| `:offset` for `:height` rows. Used by `ScrollView` when #| `RichText` is the scrolled child — the parent decides which #| logical-line range is visible and asks the widget to paint that #| slice. Always rewraps before painting so the slice math sees the #| current wrap state.
+
 ### method wrap-spans
 
 ```raku

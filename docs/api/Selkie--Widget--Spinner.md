@@ -101,6 +101,16 @@ Minimum wall-clock interval between frame advances, in seconds. Default 0.1 = 10
 
 Optional style override for the rendered character. If undefined, the theme's `text-highlight` slot is used.
 
+### method new
+
+```raku
+method new(
+    *%args
+) returns Selkie::Widget::Spinner
+```
+
+Constructor. Defaults `focusable` to False (the spinner is display-only). Common attributes: `:frames` (override the frame set), `:interval` (advance throttle, default 0.1s), `:style`.
+
 ### method tick
 
 ```raku

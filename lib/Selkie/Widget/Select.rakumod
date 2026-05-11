@@ -73,10 +73,11 @@ use Notcurses::Native::Plane;
 use Notcurses::Native::Channel;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::Select does Selkie::Widget;
+unit class Selkie::Widget::Select does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!items;
 has UInt $!selected = 0;
@@ -89,10 +90,6 @@ has Bool $!focused = False;
 has NcplaneHandle $!dropdown-plane;
 has Supplier $!change-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::Select) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Click on the closed-display row (y == abs-y) toggles the dropdown.
@@ -138,13 +135,30 @@ method claims-overlay-at(Int $y, Int $x --> Bool) {
       && $x >= self.abs-x && $x < self.abs-x + $w;
 }
 
+#| The current option labels as a List.
 method items(--> List) { @!items.List }
+
+#| Index of the committed selection.
 method selected(--> UInt) { $!selected }
+
+#| Label of the committed selection, or the C<Str> type object when
+#| no items are set.
 method selected-value(--> Str) { @!items[$!selected] // Str }
+
+#| Whether the dropdown is currently open.
 method is-open(--> Bool) { $!open }
 
+#| Supply that emits the new selected index whenever the selection
+#| changes (Enter / Space / mouse pick / C<select-index> /
+#| C<select-by-value>). Cursor-only movement inside the open dropdown
+#| does not emit until the user commits.
 method on-change(--> Supply) { $!change-supplier.Supply }
 
+#| Replace the option labels. Preserves the current selection by label
+#| if it's still present in the new list (so a re-build of the same
+#| options doesn't snap selection back to 0); otherwise clamps to the
+#| new bounds. Closes the dropdown if it was open. Mark-dirties only
+#| — does not emit on C<on-change>.
 method set-items(@new-items) {
     # Preserve the currently-selected value by label if it's still present.
     # Otherwise clamp to bounds.
@@ -166,6 +180,9 @@ method set-items(@new-items) {
     self.mark-dirty;
 }
 
+#| Commit the option at C<$idx> as the new selection (clamped to the
+#| last item). Emits on C<on-change> only when the selection actually
+#| changes (idempotent on no-ops). No-op when the list is empty.
 method select-index(UInt $idx) {
     return unless @!items;
     my UInt $clamped = $idx min (@!items.elems - 1);
@@ -186,14 +203,21 @@ method select-by-value(Str:D $value) {
     self.select-index($idx.UInt);
 }
 
+#| Set the input's focus state. Losing focus auto-closes any open
+#| dropdown — Select is a local focus trap while open, so leaving
+#| focus shouldn't strand the dropdown on screen.
 method set-focused(Bool $f) {
     $!focused = $f;
     self!close-dropdown unless $f;
     self.mark-dirty;
 }
 
+#| Whether the widget currently has focus.
 method is-focused(--> Bool) { $!focused }
 
+#| Open the dropdown. No-op when already open or when there are no
+#| items. Resets the dropdown cursor to the committed selection so
+#| the highlight starts there. Does not emit on C<on-change>.
 method open() {
     return unless @!items;
     return if $!open;
@@ -204,6 +228,9 @@ method open() {
     self.mark-dirty;
 }
 
+#| Close the dropdown without committing the cursor. Used by Esc and
+#| by C<set-focused(False)>; programmatic callers that want to commit
+#| should call C<select-index> first.
 method close() {
     self!close-dropdown;
 }
@@ -429,6 +456,8 @@ method !handle-open-event(Selkie::Event $ev --> Bool) {
     return True;
 }
 
+#| Tear down the dropdown plane and the widget's own plane. Called on
+#| app shutdown.
 method destroy() {
     if $!dropdown-plane {
         ncplane_destroy($!dropdown-plane);

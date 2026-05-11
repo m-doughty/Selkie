@@ -160,6 +160,12 @@ method render() {
     self.clear-dirty;
 }
 
+#|( Render only a slice of the wrapped-line array, starting at
+#| C<:offset> for C<:height> rows. Used by C<ScrollView> when
+#| C<RichText> is the scrolled child — the parent decides which
+#| logical-line range is visible and asks the widget to paint that
+#| slice. Always rewraps before painting so the slice math sees the
+#| current wrap state. )
 method render-region(UInt :$offset, UInt :$height) {
     return without self.plane;
     self!rewrap;

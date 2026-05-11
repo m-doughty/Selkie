@@ -36,14 +36,21 @@ The framework itself is organised into several subnamespaces:
 =item B<Core> — L<Selkie::App>, L<Selkie::Widget>, L<Selkie::Container>, L<Selkie::Store>, L<Selkie::ScreenManager>
 =item B<Support types> — L<Selkie::Sizing>, L<Selkie::Style>, L<Selkie::Theme>, L<Selkie::Event>
 =item B<Layouts> — L<Selkie::Layout::VBox>, L<Selkie::Layout::HBox>, L<Selkie::Layout::Split>
-=item B<Display widgets> — L<Selkie::Widget::Text>, L<Selkie::Widget::RichText>, L<Selkie::Widget::TextStream>, L<Selkie::Widget::Image>, L<Selkie::Widget::ProgressBar>
+=item B<Display widgets> — L<Selkie::Widget::Text>, L<Selkie::Widget::RichText>, L<Selkie::Widget::TextStream>, L<Selkie::Widget::Image>, L<Selkie::Widget::ProgressBar>, L<Selkie::Widget::Spinner>, L<Selkie::Widget::PasswordStrength>
 =item B<Input widgets> — L<Selkie::Widget::TextInput>, L<Selkie::Widget::MultiLineInput>, L<Selkie::Widget::Button>, L<Selkie::Widget::Checkbox>, L<Selkie::Widget::RadioGroup>, L<Selkie::Widget::Select>
-=item B<List widgets> — L<Selkie::Widget::ListView>, L<Selkie::Widget::CardList>, L<Selkie::Widget::ScrollView>
-=item B<Chrome widgets> — L<Selkie::Widget::Border>, L<Selkie::Widget::Modal>, L<Selkie::Widget::ConfirmModal>, L<Selkie::Widget::FileBrowser>, L<Selkie::Widget::Toast>
+=item B<List / table widgets> — L<Selkie::Widget::ListView>, L<Selkie::Widget::CardList>, L<Selkie::Widget::ScrollView>, L<Selkie::Widget::Table>
+=item B<Chrome widgets> — L<Selkie::Widget::Border>, L<Selkie::Widget::Modal>, L<Selkie::Widget::ConfirmModal>, L<Selkie::Widget::FileBrowser>, L<Selkie::Widget::Toast>, L<Selkie::Widget::HelpOverlay>
+=item B<Navigation> — L<Selkie::Widget::TabBar>, L<Selkie::Widget::CommandPalette>
+=item B<Chart widgets (opt-in)> — L<Selkie::Widget::Sparkline>, L<Selkie::Widget::Plot>, L<Selkie::Widget::BarChart>, L<Selkie::Widget::Histogram>, L<Selkie::Widget::Heatmap>, L<Selkie::Widget::ScatterPlot>, L<Selkie::Widget::LineChart>, L<Selkie::Widget::Axis>, L<Selkie::Widget::Legend>, plus the L<Selkie::Plot::Palette>, L<Selkie::Plot::Scaler>, L<Selkie::Plot::Ticks> primitives
 
 Start with L<Selkie::App> for the big picture, L<Selkie::Widget> if you
 want to write your own widgets, and L<Selkie::Store> for the reactive
 state model. Every module has runnable examples in its Pod.
+
+The chart widgets and their plot primitives are not pulled in by
+C<use Selkie> (they have heavier dependencies and aren't needed by
+most apps) — import them explicitly when you reach for them, e.g.
+C<use Selkie::Widget::LineChart;>.
 
 =head1 MOUSE SUPPORT
 
@@ -168,6 +175,7 @@ use Selkie::Widget::Button;
 use Selkie::Widget::Checkbox;
 use Selkie::Widget::ConfirmModal;
 use Selkie::Widget::CardList;
+use Selkie::Widget::ViewportedCardList;
 use Selkie::Widget::ProgressBar;
 use Selkie::Widget::RadioGroup;
 use Selkie::Widget::Select;
@@ -178,3 +186,5 @@ use Selkie::Widget::Table;
 use Selkie::Store;
 use Selkie::Widget::Toast;
 use Selkie::Widget::FileBrowser;
+use Selkie::Widget::HelpOverlay;
+use Selkie::Widget::PasswordStrength;

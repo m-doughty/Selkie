@@ -1,0 +1,119 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Sizing;
+use Selkie::Layout::Allocate;
+
+# Concrete stub that exposes only what allocate-along-axis cares about.
+# We can't reuse TestWidget alone because allocate-along-axis reads
+# `.sizing.mode` and `.sizing.value`, both of which Sizing already
+# provides — TestWidget's constructor accepts `:sizing` via Widget's
+# attribute, so we get the pass-through for free.
+class StubKid does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+plan 7;
+
+subtest "all-fixed children fit exactly" => {
+    plan 4;
+    my @kids = (
+        StubKid.new(sizing => Sizing.fixed(3)),
+        StubKid.new(sizing => Sizing.fixed(4)),
+        StubKid.new(sizing => Sizing.fixed(3)),
+    );
+    my @a = allocate-along-axis(@kids, 10);
+    is @a.elems, 3, "one allocation per child";
+    is @a[0], 3, "first child gets 3";
+    is @a[1], 4, "second child gets 4";
+    is @a[2], 3, "third child gets 3";
+};
+
+subtest "all-fixed children overflow → trailing children clipped to 0" => {
+    plan 4;
+    # Fixed children consume in order; once $available hits 0 the rest
+    # silently get 0, mirroring CSS overflow behaviour. The parent does
+    # NOT try to redistribute.
+    my @kids = (
+        StubKid.new(sizing => Sizing.fixed(6)),
+        StubKid.new(sizing => Sizing.fixed(8)),
+        StubKid.new(sizing => Sizing.fixed(4)),
+    );
+    my @a = allocate-along-axis(@kids, 10);
+    is @a[0], 6, "first child gets full request";
+    is @a[1], 4, "second child clipped to remaining 4";
+    is @a[2], 0, "third child clipped to 0";
+    is sum(@a),10, "total allocation equals available space";
+};
+
+subtest "fixed + percent + flex compose" => {
+    plan 5;
+    my @kids = (
+        StubKid.new(sizing => Sizing.fixed(2)),    # 2 cells
+        StubKid.new(sizing => Sizing.percent(20)), # 20% of 50 = 10 cells
+        StubKid.new(sizing => Sizing.flex(1)),     # rest: (50-12)/2 = 19
+        StubKid.new(sizing => Sizing.flex(1)),     # rest: 19
+    );
+    my @a = allocate-along-axis(@kids, 50);
+    is @a[0], 2,  "fixed child unchanged";
+    is @a[1], 10, "percent child takes 20% of 50 = 10";
+    is @a[2], 19, "first flex child takes half of remaining 38";
+    is @a[3], 19, "second flex child takes the other half";
+    is sum(@a),50, "total equals available";
+};
+
+subtest "rounding remainder goes to last (highest-index) flex child" => {
+    plan 4;
+    # 10 cells / 3 flex children = 3.33 each. Floor → 3, 3, 3 with
+    # 1 remaining; the last flex child should pick it up.
+    my @kids = (
+        StubKid.new(sizing => Sizing.flex(1)),
+        StubKid.new(sizing => Sizing.flex(1)),
+        StubKid.new(sizing => Sizing.flex(1)),
+    );
+    my @a = allocate-along-axis(@kids, 10);
+    is @a[0], 3, "first flex floored to 3";
+    is @a[1], 3, "middle flex floored to 3";
+    is @a[2], 4, "last flex absorbs rounding remainder";
+    is sum(@a),10, "total equals available";
+};
+
+subtest "equal flex weights → equal split when divisible" => {
+    plan 3;
+    my @kids = (
+        StubKid.new(sizing => Sizing.flex(1)),
+        StubKid.new(sizing => Sizing.flex(1)),
+    );
+    my @a = allocate-along-axis(@kids, 12);
+    is @a[0], 6, "first flex = half";
+    is @a[1], 6, "second flex = half";
+    is sum(@a),12, "total equals available";
+};
+
+subtest "weighted flex children get proportional shares" => {
+    plan 3;
+    # flex(2) gets twice flex(1)'s share. 12 cells split 1:2 → 4 + 8.
+    my @kids = (
+        StubKid.new(sizing => Sizing.flex(1)),
+        StubKid.new(sizing => Sizing.flex(2)),
+    );
+    my @a = allocate-along-axis(@kids, 12);
+    is @a[0], 4,  "flex(1) gets 1/3 of 12";
+    is @a[1], 8,  "flex(2) gets 2/3 of 12";
+    is sum(@a),12, "total equals available";
+};
+
+subtest "zero available → all allocations zero" => {
+    plan 4;
+    my @kids = (
+        StubKid.new(sizing => Sizing.fixed(3)),
+        StubKid.new(sizing => Sizing.percent(50)),
+        StubKid.new(sizing => Sizing.flex(1)),
+    );
+    my @a = allocate-along-axis(@kids, 0);
+    is @a[0], 0, "fixed gets nothing when nothing's available";
+    is @a[1], 0, "percent gets nothing";
+    is @a[2], 0, "flex gets nothing";
+    is sum(@a),0, "total is zero";
+};

@@ -235,6 +235,57 @@ if that fails. C<eqv> does deep comparison on arrays and hashes, so
 subscriptions that return the same content in a fresh array instance
 don't fire spuriously.
 
+=head2 Mutable nested data and C<:deep-equality-check>
+
+The default C<===>-then-C<eqv> equality has a subtle trap when a
+subscription watches a mutable container that callers update I<in
+place>. The canonical case: a subscription on path C<a>, and a
+caller doing C<$store.assoc-in('a', 'b', 'c', :value(42))>.
+C<assoc-in> walks into the live nested Hash and mutates the leaf in
+place. The Hash at C<a> is the same in-memory object before and after
+the write, so:
+
+=item The subscription's C<last-value> still holds a reference to the same Hash.
+=item The fresh C<get-in('a')> at fire time returns the same reference.
+=item C<===> matches → the fire is silently suppressed.
+
+This is the right behaviour for immutable values (Strings, Ints, type
+objects) but wrong for mutable Hashes / Arrays. The framework can't
+detect the trap automatically — distinguishing "caller mutated in
+place" from "caller installed an unchanged value" requires a structural
+compare every time, which is the cost we're avoiding by short-circuiting
+on identity in the first place.
+
+The opt-in fix is C<:deep-equality-check> on the C<subscribe*> methods.
+When set, the framework:
+
+=item Skips the C<===> shortcut, going straight to the C<eqv> path.
+=item Snapshots the value (deep clone of nested Hashes / Arrays; scalar leaves passed through) at every fire so subsequent in-place mutations don't compare equal to the captured snapshot.
+
+=begin code :lang<raku>
+
+# Watch a mutable nested hash. Without :deep-equality-check, deep
+# assoc-in writes under <prefs> would not fire this subscription.
+$store.subscribe('prefs-changed', <prefs>, $widget,
+    :deep-equality-check);
+
+# Writes that would have been suppressed without the flag:
+$store.assoc-in('prefs', 'theme', :value('dark'));   # fires
+$store.assoc-in('prefs', 'lang',  :value('en'));     # fires
+
+=end code
+
+The flag is off by default because deep cloning every value on every
+fire is materially more expensive than a pointer compare. Turn it on
+only for subscriptions on paths whose value is a mutable container
+that callers update in place. Subscriptions over leaves (Strings,
+Ints, Bools), or computes that already produce a fresh value per call
+(C<.gist>, derived counts, freshly-constructed summary Hashes), do not
+need the flag — the default fast path is correct for them.
+
+The same flag exists on C<subscribe>, C<subscribe-path-callback>,
+C<subscribe-computed>, and C<subscribe-with-callback>.
+
 =head1 SEE ALSO
 
 =item L<Selkie::Widget> — widgets receive subscriptions and dispatch events
@@ -309,7 +360,7 @@ method disable-debug() {
 method !debug-log-enabled(--> Bool) { $!debug-log.defined }
 
 method !log-line(Str:D $line) {
-    return unless $!debug-log.defined;
+    return without $!debug-log;
     my $ts = now.Rat.fmt('%.3f');
     $!debug-log.say("[$ts] $line");
 }
@@ -445,21 +496,39 @@ our sub key-path(Str $key --> List) {
     see the push-sub dispatch block at the top of the file). Idle
     ticks with no writes do zero work per subscription. Initial prime
     (marking the widget dirty so its first render happens) runs
-    synchronously here. )
-method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
+    synchronously here.
+
+    C<:deep-equality-check> opts the change-gate into a structural
+    C<eqv> compare instead of the default fast C<===> identity check.
+    Default off because C<eqv> over a deep tree is significantly more
+    expensive than a pointer compare. Turn it on when the path's value
+    is a mutable container (Hash / Array) that callers update in place
+    via C<assoc-in> on a deep child — without this flag, the ancestor's
+    Hash reference is unchanged across the write, the C<===> shortcut
+    matches, and the subscription is silently suppressed. The
+    "subscribe to C<a>, fire on any write under C<a>" pattern requires
+    this flag whenever C<a> is a mutable container. See B<MUTABLE NESTED
+    DATA> in this module's Pod. )
+method subscribe(Str:D $id, @path, Selkie::Widget $widget,
+                 Bool :$deep-equality-check = False) {
     %!subscriptions{$id} = {
         type       => 'path',
         path       => @path.List,
         last-value => $UNSET,
         widget     => $widget,
+        deep       => $deep-equality-check,
     };
     self!index-push-sub($id, @path);
     # Prime synchronously: mark the widget dirty so it renders with
     # its initial bound value without needing a synthetic event.
     $widget.mark-dirty if $widget.defined;
     # Record the initial value so the first actual write only fires
-    # if it represents a real change.
-    %!subscriptions{$id}<last-value> = self.get-in(|@path);
+    # if it represents a real change. When :deep-equality-check is set
+    # and the value is a mutable container, snapshot it so subsequent
+    # in-place mutations don't compare equal to a still-live reference.
+    my $current = self.get-in(|@path);
+    %!subscriptions{$id}<last-value> =
+        $deep-equality-check ?? self!snapshot-value($current) !! $current;
 }
 
 #|( Subscribe to a state path with a callback — fires C<&callback($new-value)>
@@ -472,14 +541,21 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget) {
     on a list, C<set-text> on a label) rather than just re-rendering the
     same computed output. Equivalent to C<subscribe-with-callback> with
     a trivial compute closure, but without the per-tick closure
-    invocation cost — push-based like C<subscribe>. )
-method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widget) {
+    invocation cost — push-based like C<subscribe>.
+
+    C<:deep-equality-check> behaves the same way as on C<subscribe> —
+    see that method's docs and B<MUTABLE NESTED DATA> in this module's
+    Pod for when to set it. The callback always receives the live
+    current value; only the change-gate uses the snapshot. )
+method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widget,
+                               Bool :$deep-equality-check = False) {
     %!subscriptions{$id} = {
         type       => 'path-callback',
         path       => @path.List,
         callback   => &callback,
         last-value => $UNSET,
         widget     => $widget,
+        deep       => $deep-equality-check,
     };
     self!index-push-sub($id, @path);
     # Prime: fire the callback with the current value so the widget
@@ -487,7 +563,8 @@ method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widg
     # may not trigger a render indirectly, but the prime render is
     # always desired.
     my $current = self.get-in(|@path);
-    %!subscriptions{$id}<last-value> = $current;
+    %!subscriptions{$id}<last-value> =
+        $deep-equality-check ?? self!snapshot-value($current) !! $current;
     $widget.mark-dirty if $widget.defined;
     &callback($current);
 }
@@ -508,13 +585,26 @@ method !unindex-push-sub(Str:D $id, @path) {
 #|( Subscribe a widget to a computed value. C<&compute> receives the
     store each tick and should return the value. The widget is marked
     dirty when the return value changes (compared with C<eqv> /
-    identity). )
-method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget) {
+    identity).
+
+    C<:deep-equality-check> turns on structural change detection for
+    compute functions that return mutable containers — without it, a
+    compute that returns C<$store.get-in('a')> after a deep
+    C<assoc-in> write under C<a> sees the same Hash reference and
+    silently suppresses the fire. With it, the result is snapshotted
+    after each fire and compared structurally. See B<MUTABLE NESTED
+    DATA> in this module's Pod. The flag is unnecessary — and an
+    avoidable cost — when compute already returns a fresh value per
+    call (a String, a derived count, a freshly-constructed Hash
+    summary). )
+method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
+                          Bool :$deep-equality-check = False) {
     %!subscriptions{$id} = {
         type       => 'computed',
         compute    => &compute,
         last-value => $UNSET,
         widget     => $widget,
+        deep       => $deep-equality-check,
     };
     $!subs-primed = False;
 }
@@ -522,14 +612,21 @@ method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget) {
 #|( Like C<subscribe-computed>, but also invokes C<&callback> with the
     new value whenever it changes. Use this when your widget needs to
     be re-configured (e.g. C<set-items> on a list, C<set-text> on a
-    label), not just re-rendered. )
-method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $widget) {
+    label), not just re-rendered.
+
+    C<:deep-equality-check> behaves the same way as on
+    C<subscribe-computed>; see that method's docs. The callback
+    always receives the live (un-snapshotted) compute result so it
+    can install or read the value directly. )
+method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $widget,
+                               Bool :$deep-equality-check = False) {
     %!subscriptions{$id} = {
         type       => 'callback',
         compute    => &compute,
         callback   => &callback,
         last-value => $UNSET,
         widget     => $widget,
+        deep       => $deep-equality-check,
     };
     $!subs-primed = False;
 }
@@ -630,11 +727,18 @@ method !flush-push-subs() {
         next unless %!subscriptions{$sub-id}:exists;
         my %sub := %!subscriptions{$sub-id};
         my $current = self.get-in(|%sub<path>);
-        next if self!values-equal($current, %sub<last-value>);
+        # On the :deep-equality-check path, capture a fresh structural
+        # snapshot for both the comparison and the new last-value.
+        # The live $current would alias the previous last-value when
+        # callers update via assoc-in (which mutates in place), making
+        # eqv return True and silently suppressing the fire.
+        my $deep = ?%sub<deep>;
+        my $current-snap = $deep ?? self!snapshot-value($current) !! $current;
+        next if self!values-equal($current-snap, %sub<last-value>, :$deep);
         if $!debug-subscriptions {
             self!log-line("  push-sub[$sub-id] fired: " ~ self!fmt-value($current));
         }
-        %sub<last-value> = $current;
+        %sub<last-value> = $current-snap;
         %sub<widget>.mark-dirty if %sub<widget>.defined;
         if (%sub<type> // '') eq 'path-callback' && %sub<callback>.defined {
             %sub<callback>($current);
@@ -727,11 +831,17 @@ method !check-subscriptions() {
             when 'computed' | 'callback' { %sub<compute>(self) }
         };
 
-        unless self!values-equal($current, %sub<last-value>) {
+        # See the parallel block in !flush-push-subs for the rationale:
+        # mutable container compute results need a structural snapshot
+        # to detect deep-write changes that leave the container's
+        # identity intact.
+        my $deep = ?%sub<deep>;
+        my $current-snap = $deep ?? self!snapshot-value($current) !! $current;
+        unless self!values-equal($current-snap, %sub<last-value>, :$deep) {
             if $!debug-subscriptions {
                 self!log-line("  sub[$id] fired: " ~ self!fmt-value($current));
             }
-            %sub<last-value> = $current;
+            %sub<last-value> = $current-snap;
             %sub<widget>.mark-dirty if %sub<widget>.defined;
             if %sub<type> eq 'callback' && %sub<callback>.defined {
                 %sub<callback>($current);
@@ -740,12 +850,38 @@ method !check-subscriptions() {
     }
 }
 
-method !values-equal($a, $b --> Bool) {
+#|( Compare two subscription values for equality. The C<:deep> flag
+    skips the C<===> identity shortcut and forces a structural C<eqv>
+    compare — necessary for subscriptions over mutable nested data
+    where the in-place mutation leaves the container's identity
+    unchanged but its contents differ. See the C<:deep-equality-check>
+    flag on the C<subscribe*> methods for when to opt in. )
+method !values-equal($a, $b, Bool :$deep --> Bool) {
     return True if !$a.defined && !$b.defined;
     return False if !$a.defined || !$b.defined;
-    return True if $a === $b;
+    return True if !$deep && $a === $b;
     my $eq = try { $a eqv $b };
     $eq // False;
+}
+
+#|( Recursive deep clone for subscription change-detection. Returns a
+    fresh Hash / Array at every container level so subsequent in-place
+    mutations of the live store value can't alias back to the captured
+    snapshot. Scalar leaves (Str, Int, Num, Bool, type objects) are
+    returned as-is — they're immutable, so sharing the reference is
+    safe. Used only on the C<:deep-equality-check> path; the default
+    same-reference path skips this work. )
+method !snapshot-value($v) {
+    return $v unless $v.defined;
+    if $v ~~ Associative {
+        my %out;
+        %out{$_} = self!snapshot-value($v{$_}) for $v.keys;
+        return %out;
+    }
+    if $v ~~ Positional {
+        return $v.list.map({ self!snapshot-value($_) }).Array;
+    }
+    $v;
 }
 
 method !deep-merge(%updates) {

@@ -176,6 +176,10 @@ submethod TWEAK {
     }
 }
 
+#| Hook called when the widget is attached to a store. Subscribes
+#| against C<:store-path> so the sparkline re-renders when the
+#| underlying samples change. No-op in C<:data> or
+#| C<push-sample>-driven mode.
 method on-store-attached($store) {
     return unless @!store-path.elems > 0;
     self.once-subscribe(

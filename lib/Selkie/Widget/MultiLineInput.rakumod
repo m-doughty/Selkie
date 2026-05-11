@@ -78,12 +78,13 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 use Selkie::Sizing;
 use Selkie::Widget::TextInput :words;
 
-unit class Selkie::Widget::MultiLineInput does Selkie::Widget;
+unit class Selkie::Widget::MultiLineInput does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 has @!lines = ('',);
 has UInt $!cursor-row = 0;
@@ -104,10 +105,6 @@ has Supplier $!cut-supplier = Supplier.new;
 has Int $!sel-anchor-row = -1;
 has Int $!sel-anchor-col = 0;
 
-method new(*%args --> Selkie::Widget::MultiLineInput) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Click positions the caret. Double-click selects the word under
@@ -207,7 +204,14 @@ method clear-selection() {
     self.mark-dirty;
 }
 
+#| Supply emitting the currently-selected text on Ctrl+C. Selkie does
+#| not own the system clipboard — apps wire this up themselves via
+#| OSC 52 or notcurses paste-buffer. Fires only when there's an active
+#| selection.
 method on-copy(--> Supply) { $!copy-supplier.Supply }
+
+#| Supply emitting on Ctrl+X. Like C<on-copy> but the selection is
+#| also deleted from the buffer.
 method on-cut(--> Supply)  { $!cut-supplier.Supply }
 
 method !select-word-at(UInt $row, UInt $col) {
@@ -299,8 +303,15 @@ method !visual-to-logical(UInt $vrow, UInt $vcol --> List) {
     (@!lines.end.UInt, @!lines[*-1].chars.UInt);
 }
 
+#| The full buffer contents joined with C<\n>. (The buffer is stored
+#| as an array of logical lines; this assembly is O(N) in total
+#| character count — cache the result if calling per frame.)
 method text(--> Str) { @!lines.join("\n") }
 
+#| Replace the buffer contents and place the caret at the end. Emits
+#| on C<on-change>. Use this for user-driven updates; for programmatic
+#| syncs from a store path use C<set-text-silent> instead to avoid
+#| feedback loops.
 method set-text(Str:D $t) {
     self!load-text($t);
     $!change-supplier.emit(self.text);
@@ -308,9 +319,11 @@ method set-text(Str:D $t) {
     self.mark-dirty;
 }
 
-# Programmatic text update without firing on-change. Use this from store
-# subscriptions to avoid loops where the subscription emits a change which
-# is then re-dispatched into the same store path.
+#| Silent variant of C<set-text> — updates the buffer without emitting
+#| on C<on-change>. Wire this into store subscriptions that mirror
+#| external state into the input, so the input update doesn't dispatch
+#| an event that loops back through the store and re-fires the
+#| subscription.
 method set-text-silent(Str:D $t) {
     self!load-text($t);
     self!update-sizing;
@@ -325,18 +338,33 @@ method !load-text(Str:D $t) {
     $!sel-anchor-row = -1;
 }
 
+#| Empty the buffer. Equivalent to C<set-text('')>.
 method clear() { self.set-text('') }
 
+#| Supply that emits the current buffer when the user presses
+#| Ctrl+Enter (Enter inserts a newline). Apps that want plain Enter
+#| as submit register their own keybind and call C<text> directly.
 method on-submit(--> Supply) { $!submit-supplier.Supply }
+
+#| Supply that emits the new buffer contents on every user-driven edit
+#| (typing, paste, delete, cut, C<set-text>). Does not fire for
+#| C<set-text-silent>.
 method on-change(--> Supply) { $!change-supplier.Supply }
 
+#| Set the input's focus state. Called by C<Selkie::App>'s focus
+#| dispatcher. The caret is only painted while focused.
 method set-focused(Bool $f) {
     $!focused = $f;
     self.mark-dirty;
 }
 
+#| Whether the widget currently has focus.
 method is-focused(--> Bool) { $!focused }
 
+#| The natural visual height for the buffer in cells, accounting for
+#| soft-wrap at the current width. Clamped to C<max-lines>. Used by
+#| autosize containers (e.g. a chat compose area) to grow the input
+#| with its content.
 method desired-height(--> UInt) {
     my $visual = self!total-visual-rows;
     my UInt $h = $visual max 1;
@@ -344,8 +372,17 @@ method desired-height(--> UInt) {
     $h;
 }
 
+#| Number of logical lines in the buffer (counts hard newlines, not
+#| soft-wraps). Always at least 1 — an empty buffer counts as one
+#| empty line.
 method line-count(--> UInt) { @!lines.elems }
+
+#| Caret row in logical-line coordinates (0-based; counts hard newlines,
+#| not soft-wraps).
 method cursor-row(--> UInt) { $!cursor-row }
+
+#| Caret column on the current logical line (0-based; counts characters,
+#| not visual cells).
 method cursor-col(--> UInt) { $!cursor-col }
 
 # --- Visual line wrapping ---

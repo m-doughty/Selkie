@@ -133,11 +133,12 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 use Selkie::Sizing;
 
-unit class Selkie::Widget::Table does Selkie::Widget;
+unit class Selkie::Widget::Table does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 class Column {
     has Str $.name is required;
@@ -162,10 +163,6 @@ has Str $!sort-direction = 'asc';   # 'asc' or 'desc'
 has Supplier $!select-supplier = Supplier.new;
 has Supplier $!activate-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::Table) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Mouse routing:
@@ -352,6 +349,10 @@ method !rebuild-view() {
 
 # --- Cursor + scroll ------------------------------------------------------
 
+#| Move the cursor to row C<$idx> (clamped to the last row in the
+#| current sort view). Emits on C<on-row-selected> when the cursor
+#| actually moves; idempotent on no-ops. No-op when the table is
+#| empty.
 method select-index(UInt $idx) {
     return unless @!view-rows;
     my UInt $clamped = $idx min (@!view-rows.elems - 1);

@@ -99,8 +99,15 @@ has Selkie::Widget::Button $!yes-btn;
 has Selkie::Widget::Button $!no-btn;
 has Supplier $!result-supplier = Supplier.new;
 
+#| Supply that emits a C<Bool> when the user picks a button or presses
+#| Esc. C<True> for Yes, C<False> for No or Esc. The dialog stays open
+#| after emit — the caller is expected to close the modal in the tap
+#| (see SYNOPSIS).
 method on-result(--> Supply) { $!result-supplier.Supply }
 
+#| Build the dialog. Returns the underlying Modal so the caller can
+#| pass it directly to C<$app.show-modal>. Re-callable to rebuild
+#| with new labels (e.g. for a series of similar prompts).
 method build(
     Str :$title = 'Confirm',
     Str :$message = 'Are you sure?',
@@ -172,5 +179,9 @@ method build(
     $!modal;
 }
 
+#| The Yes button widget. Pass to C<$app.focus> to make Yes the default.
 method yes-button(--> Selkie::Widget::Button) { $!yes-btn }
+
+#| The No button widget. Pass to C<$app.focus> to make No the default
+#| (the safer choice for destructive confirmations).
 method no-button(--> Selkie::Widget::Button) { $!no-btn }

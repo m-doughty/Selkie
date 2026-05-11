@@ -31,7 +31,7 @@ sub place(Selkie::Widget $w, :$abs-y!, :$abs-x!, :$rows!, :$cols!) {
     $w.set-viewport(:$abs-y, :$abs-x, :$rows, :$cols);
 }
 
-plan 12;
+plan 13;
 
 subtest "mouse-event-button extracts the 1-indexed button" => {
     plan 6;
@@ -246,4 +246,48 @@ subtest "widget-at-in routes through overlay claims" => {
     # the root — no descendant covers row 4.
     is Selkie::App.widget-at-in($root, 4, 2), $root,
         'click below the overlay extent falls back to containment walk';
+};
+
+subtest "documented mouse-dispatch contract for handle-event overrides" => {
+    plan 4;
+    # Pin the contract documented under Widget.handle-event: subclasses
+    # that override handle-event for KeyEvent should branch on
+    # event-type and call self!dispatch-mouse-handlers explicitly for
+    # mouse — `nextsame` does NOT work here because Selkie::Widget is
+    # a role, and Raku flattens role methods into the consuming class.
+    # An override shadows the role's handle-event rather than
+    # inheriting it as a separate dispatch candidate, leaving nextsame
+    # with no candidate to fall through to.
+    my class DocPatternWidget does Selkie::Widget {
+        method render() { self.clear-dirty }
+        method handle-event(Selkie::Event $ev --> Bool) {
+            if $ev.event-type ~~ MouseEvent {
+                return True if self!dispatch-mouse-handlers($ev);
+                return False;
+            }
+            False;
+        }
+    }
+
+    my Int $click-count = 0;
+    my $w = DocPatternWidget.new;
+    $w.on-click(-> $ { $click-count++ });
+
+    my $click = mouse-event(
+        id => NCKEY_BUTTON1, y => 0, x => 0,
+        input-type => NCTYPE_PRESS, click-count => 1
+    );
+    my $consumed = $w.handle-event($click);
+
+    is $click-count, 1,
+        "explicit dispatch-mouse-handlers fires registered on-click";
+    ok $consumed, "handle-event returns True for consumed click";
+
+    # And a non-mouse event takes the keyboard branch (returns False
+    # for this minimal stub) — confirming the branch decision works
+    # both ways.
+    my $kev = key-event(id => 'a'.ord);
+    my $consumed-key = $w.handle-event($kev);
+    nok $consumed-key, "non-mouse path returns False (no keybinds bound)";
+    is $click-count, 1, "no-op key-event does not fire on-click again";
 };

@@ -152,8 +152,19 @@ method !scrollbar-jump-to-row(UInt $row) {
     is preserved across content changes (with clamping). )
 has Bool $.follow-bottom = False;
 
+#| Current scroll offset in rows from the top of the content. 0 means
+#| scrolled all the way up; C<max-offset> means scrolled to bottom.
 method scroll-offset(--> UInt) { $!scroll-offset }
+
+#| Total content height (sum of all children's logical heights), as
+#| measured on the most recent render. Stale between content changes
+#| and the next render — call C<scroll-by(0)> + render if you need a
+#| fresh value before the next natural redraw.
 method content-height(--> UInt) { $!content-height }
+
+#| Visible viewport height in rows. Alias for C<self.rows> — exposed
+#| for callers that prefer the semantically clearer name when working
+#| with scroll math.
 method viewport-height(--> UInt) { self.rows }
 
 #|( Read-only view of the persistent tail-follow flag. True when
@@ -165,6 +176,10 @@ method viewport-height(--> UInt) { self.rows }
     C<follow-bottom => False> — the flag is simply unused. )
 method follow-active(--> Bool) { $!follow-active }
 
+#| Set the scroll offset to C<$row> (clamped to C<max-offset>). All
+#| scroll mutators (scroll-by, scroll-page-by, scroll-to-start,
+#| scroll-to-end, mouse wheel, scrollbar drag) funnel through here
+#| so the C<follow-active> latch updates in exactly one place.
 method scroll-to(UInt $row) {
     my UInt $max = self!max-offset;
     $!scroll-offset = $row min $max;
@@ -177,6 +192,10 @@ method scroll-to(UInt $row) {
     self.mark-dirty;
 }
 
+#| Scroll by C<$delta> rows (positive = down, negative = up). Clamped
+#| at the top edge; the bottom is clamped inside C<scroll-to>. Updates
+#| the C<follow-active> latch so callers know whether the user has
+#| scrolled away from "live tail" mode.
 method scroll-by(Int $delta) {
     my Int $new = $!scroll-offset + $delta;
     $new = $new max 0;
@@ -191,10 +210,16 @@ method scroll-page-by(Int $direction) {
     self.scroll-by($direction * self.rows.Int);
 }
 
+#| Scroll to the very top.
 method scroll-to-start() { self.scroll-to(0) }
 
+#| Scroll to the very bottom (re-engages tail-follow when
+#| C<follow-bottom> is set).
 method scroll-to-end() { self.scroll-to(self!max-offset) }
 
+#| True when the view is scrolled to the bottom of its content.
+#| Useful for "auto-scroll only when already at bottom" logic in
+#| streaming consumers.
 method at-end(--> Bool) { $!scroll-offset >= self!max-offset }
 
 method !max-offset(--> UInt) {

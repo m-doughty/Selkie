@@ -89,6 +89,16 @@ Character used for the empty portion.
 
 Indeterminate bounce speed: one step per N ticks. Default 4 gives a comfortable animation at 60fps.
 
+### method new
+
+```raku
+method new(
+    *%args
+) returns Selkie::Widget::ProgressBar
+```
+
+Constructor. Defaults `focusable` to False (the bar is display-only). Pass `:indeterminate =` True> for the bouncing-animation mode (no value tracking; drive via the frame callback). Common: `:sizing`, `:label`, `:show-percent`.
+
 ### method value
 
 ```raku

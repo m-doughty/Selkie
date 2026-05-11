@@ -123,8 +123,18 @@ has Bool $.hide-bottom-border is rw = False;
     whether keyboard focus has moved out to another widget. )
 has Bool $.focus-from-store is rw = True;
 
+#| The current content widget, or the C<Selkie::Widget> type object
+#| when no content is set.
 method content(--> Selkie::Widget) { $!content }
 
+#| Install C<$w> as the wrapped content. Re-callable to swap content
+#| (e.g. for a Border that cycles through several views).
+#|
+#| C<:destroy> (default True) destroys the outgoing widget — the
+#| common case when content isn't reused. Pass C<:!destroy> to keep
+#| the outgoing widget alive (its plane is parked far off-screen so
+#| its last-rendered cells don't bleed through behind the new
+#| content); reinstall it later with another C<set-content> call.
 method set-content(Selkie::Widget $w, Bool :$destroy = True) {
     # Destroying the outgoing content is the safe default — most callers
     # won't reuse it. Pass :!destroy when swapping between widgets that
@@ -151,23 +161,34 @@ method set-content(Selkie::Widget $w, Bool :$destroy = True) {
     self.mark-dirty;
 }
 
+#| Update the border's title text. Mark-dirties only; no event emit.
 method set-title(Str:D $t) {
     $!title = $t;
     self.mark-dirty;
 }
 
+#| Set the border's focus state explicitly. Idempotent on no-ops.
+#| Used by containers (notably C<CardList>) that drive border
+#| highlighting from their own selection rather than the framework's
+#| keyboard-focus tracking — pair with C<focus-from-store = False> in
+#| those cases.
 method set-has-focus(Bool $f) {
     return if $f == $!has-focus;
     $!has-focus = $f;
     self.mark-dirty;
 }
 
+#| Whether the border is currently rendered in its focused style.
 method has-focus(--> Bool) { $!has-focus }
 
-# Auto-subscribe to focus state when store becomes available. `once-*`
-# variants are idempotent — reparenting and repeated set-store calls
-# won't create duplicate subscriptions. Skipped entirely when
-# C<focus-from-store> is False (see attribute docs).
+#|( Hook called when the widget is attached to a store. Auto-subscribes
+#| to the focused-widget path when C<focus-from-store> is True (the
+#| default) so the border highlights itself whenever the keyboard
+#| focus is one of its descendants. C<once-*> variants are idempotent
+#| — reparenting and repeated set-store calls won't create duplicate
+#| subscriptions. Skipped entirely when C<focus-from-store> is False
+#| (see attribute docs).
+)
 method on-store-attached($store) {
     return unless $!focus-from-store;
     my $border = self;
@@ -214,7 +235,23 @@ method render() {
 
     my UInt $rows = self.rows;
     my UInt $cols = self.cols;
-    return if $rows < 3 || $cols < 3;
+    if $rows < 3 || $cols < 3 {
+        # Too small to draw a useful border. Still resize the content
+        # plane to our footprint (treating both borders as hidden) so
+        # its cells stay inside our bounds — without this, the content's
+        # plane keeps its previous larger size and notcurses paints its
+        # cells past our edge into siblings, since notcurses doesn't
+        # clip child planes to parents. effective-bounds protects the
+        # blit-plane (sprixel pixels), but the content's own cell-grid
+        # paint needs the plane itself to be the right size.
+        if $!content && $!content.plane {
+            $!content.reposition(0, 0);
+            $!content.handle-resize($rows, $cols);
+        }
+        ncplane_erase(self.plane);
+        self.clear-dirty;
+        return;
+    }
 
     my $border-style = $!has-focus ?? self.theme.border-focused !! self.theme.border;
     self.apply-style($border-style);
@@ -294,6 +331,9 @@ method render() {
     self.clear-dirty;
 }
 
+#| Focusable descendants of the wrapped content subtree. Used by
+#| C<Selkie::App>'s Tab cycle to skip the Border itself (which is
+#| chrome) and reach the inner widget.
 method focusable-descendants(--> Seq) {
     return ().Seq without $!content;
     gather {
@@ -304,6 +344,9 @@ method focusable-descendants(--> Seq) {
     }
 }
 
+#| Destroy the wrapped content and the border's own plane. Always
+#| destroys the content unconditionally — for "swap and keep alive"
+#| flows, use C<set-content(:!destroy)> instead.
 method destroy() {
     $!content.destroy if $!content;
     $!content = Selkie::Widget;

@@ -257,6 +257,9 @@ use Selkie::ScreenManager;
 use Selkie::Widget::Modal;
 use Selkie::Store;
 use Selkie::Widget::Toast;
+use Selkie::EffectiveBounds;
+use Selkie::Tree;
+use Selkie::Widget::Image;
 
 has NotcursesHandle $!nc;
 has NcplaneHandle $!stdplane;
@@ -293,6 +296,7 @@ has Selkie::Widget::Modal @!modal-stack;
 has Selkie::Widget @!pre-modal-focus-stack;
 has Selkie::Widget::Toast $!toast;
 has Selkie::Widget $!focused;
+
 # Per-screen focus memory: screen name → last-focused widget on that
 # screen. Populated lazily on switch-screen when leaving a screen whose
 # focused widget is still attached; consulted on switch-screen arrival
@@ -343,6 +347,19 @@ has atomicint $!resize-pending = 0;
     handler. )
 has $!resize-tap;
 
+#|( Taps for asynchronously-recoverable fatal signals (SIGABRT,
+    SIGTERM, SIGHUP, SIGQUIT). When any of these arrives we run
+    C<shutdown> so the terminal returns to cooked mode and the
+    alternate screen is exited before the process dies. Without these
+    taps the kernel takes the default action (terminate) and Selkie's
+    LEAVE / END / CATCH cleanup never runs, leaving the user staring
+    at a wedged shell. SIGSEGV / SIGBUS / SIGILL / SIGFPE bypass Raku's
+    Supply-based dispatch (the process is dead by the time the
+    scheduler thread wakes); restoring on those requires a NativeCall
+    sigaction-based handler running in the offending thread, which
+    is out of scope for this change. )
+has @!crash-restore-taps;
+
 has Supplier $!event-supplier = Supplier.new;
 
 #|( Hot-rate frame budget in Hz. The main loop caps itself at this
@@ -381,12 +398,99 @@ has Num $.hot-hz = 60e0;
 has Str $.error-log;
 has Int $!saved-stderr-fd;
 has IO::Handle $!error-log-handle;
+has Str $!saved-tty-state;
 
 #| The screen manager. Useful for C<.active-screen> and C<.screen-names>
 #| — you don't typically need to manipulate it directly, since the
 #| C<add-screen> and C<switch-screen> methods on C<Selkie::App> are
 #| preferred.
 method screen-manager(--> Selkie::ScreenManager) { $!screen-manager }
+
+#|( Yield the live list of widget tree roots that framework-level
+    helpers should walk: the active screen's root, every modal in the
+    stack (top-most last), and the toast overlay if mounted. Used by
+    L<Selkie::Tree>'s C<mark-widgets-in-rect-dirty> (cell cleanup
+    after sprixel destroy) and analogous helpers. Re-evaluated on
+    every call so callers always see the current tree, even
+    immediately after C<show-modal> / C<close-modal> or screen
+    switches. )
+method !collect-tree-roots(--> List) {
+    my @roots;
+    with $!screen-manager.active-root { @roots.push($_) }
+    @roots.append: @!modal-stack;
+    with $!toast { @roots.push($_) }
+    @roots.List;
+}
+
+#|( The topmost open modal as a defined widget, or Nil when the stack is
+    empty. Wraps the existing C<!active-modal> private method which
+    returns the Modal type object when empty — Nil is what
+    L<Selkie::Tree>'s C<current-active-modal> contract expects. )
+method !active-modal-or-nil(--> Mu) {
+    @!modal-stack ?? @!modal-stack.tail !! Nil;
+}
+
+#|( Walk the live tree (active screen + modals + toast) and mark every
+    L<Selkie::Widget::Image> dirty. Used after modal mount / unmount /
+    toast hide / terminal resize so each Image's render method runs
+    its geometry-diff on the next frame and emits or destroys its
+    blit-plane as appropriate. Cheap walk; called only on
+    occlusion-state transitions and resizes. )
+method !mark-all-images-dirty(--> Nil) {
+    sub visit($w) {
+        return without $w;
+        $w.mark-dirty if $w ~~ Selkie::Widget::Image && !$w.is-dirty;
+        if $w.^can('children') {
+            visit($_) for $w.children;
+        }
+        if $w.^can('content') {
+            my $c = $w.content;
+            visit($c) if $c.defined;
+        }
+    }
+    visit($_) for self!collect-tree-roots;
+}
+
+#|( Walk the live tree and call C<park> on every L<Selkie::Widget::Image>
+    whose absolute screen bounds intersect the given rectangle. Used
+    by the toast layer to push Images underneath the toast strip
+    out of the visible area. Parked Images move their plane to an
+    absolute-off-viewport row regardless of cascade depth, and their
+    blit-plane is destroyed; the next layout pass that calls
+    C<reposition> on Image automatically un-parks. )
+method !park-images-in-rect(
+    Int  :$abs-y!,
+    Int  :$abs-x!,
+    UInt :$rows!,
+    UInt :$cols!,
+    --> Nil
+) {
+    return if $rows == 0 || $cols == 0;
+    my Int $rect-bottom = $abs-y + $rows.Int;
+    my Int $rect-right  = $abs-x + $cols.Int;
+    sub visit($w) {
+        return without $w;
+        if $w ~~ Selkie::Widget::Image {
+            my Int $w-bottom = $w.abs-y + $w.rows.Int;
+            my Int $w-right  = $w.abs-x + $w.cols.Int;
+            my Bool $intersects = !(
+                   $w-right     <= $abs-x
+                || $rect-right  <= $w.abs-x
+                || $w-bottom    <= $abs-y
+                || $rect-bottom <= $w.abs-y
+            );
+            $w.park if $intersects;
+        }
+        if $w.^can('children') {
+            visit($_) for $w.children;
+        }
+        if $w.^can('content') {
+            my $c = $w.content;
+            visit($c) if $c.defined;
+        }
+    }
+    visit($_) for self!collect-tree-roots;
+}
 
 #| The widget that currently has focus, or C<Nil> if none.
 method focused(--> Selkie::Widget) { $!focused }
@@ -423,6 +527,13 @@ submethod TWEAK() {
     my $opts = NotcursesOptions.new(
         flags => NCOPTION_SUPPRESS_BANNERS +| NCOPTION_NO_WINCH_SIGHANDLER,
     );
+
+    # Capture the real terminal's termios state before notcurses enters
+    # cbreak/raw-style mode. notcurses_stop should restore this itself,
+    # but keeping our own snapshot gives Selkie a final backstop if an
+    # exception or native failure leaves notcurses's restore path short.
+    $!saved-tty-state = self!capture-tty-state;
+
     $!nc = notcurses_init($opts, Pointer);
     die "Failed to initialize notcurses" without $!nc;
 
@@ -472,6 +583,21 @@ submethod TWEAK() {
 
     self!register-focus-handlers;
 
+    # Wire the framework-level provider closures used by widgets that
+    # need to reach beyond their own subtree:
+    #   * terminal-viewport    — final intersection step in
+    #     Selkie::Widget.effective-bounds, so widgets clipped past the
+    #     terminal always have empty bounds.
+    #   * tree-roots           — live list of trees to walk for
+    #     mark-widgets-in-rect-dirty (cell cleanup after sprixel
+    #     destroy in Selkie::Widget::Image).
+    #   * active-modal         — topmost open modal or Nil, used by
+    #     widgets to detect occlusion.
+    my $self-ref = self;
+    set-terminal-viewport-provider(-> { ($!rows, $!cols) });
+    set-tree-roots-provider(-> { $self-ref!collect-tree-roots });
+    set-modal-provider(-> { $self-ref!active-modal-or-nil });
+
     # Install our SIGWINCH handler. The tap fires on whatever thread
     # libuv dispatches to (not the main loop's thread), so we use an
     # atomic CAS to set the flag — the main loop reads it from
@@ -480,6 +606,30 @@ submethod TWEAK() {
     # resize during deep idle (when the loop sleeps for up to 250ms)
     # is picked up almost immediately instead of waiting for input.
     $!resize-tap = signal(SIGWINCH).tap: { cas($!resize-pending, 0, 1) };
+
+    # Crash-restore taps for the recoverable fatal signals. The Raku
+    # Supply dispatches on a scheduler thread, so the tap body runs
+    # asynchronously — fine for these signals because the kernel
+    # doesn't kill the process until the default action runs (and we
+    # control that here). For each signal we run shutdown (idempotent;
+    # restores the TTY and tears notcurses down) and then exit with
+    # the conventional 128+signum code so callers know which signal
+    # killed us.
+    #
+    # `signal()` is a Raku built-in returning a Supply per signal name.
+    # We can't tap on SIGSEGV/SIGBUS/SIGILL/SIGFPE here usefully —
+    # those are synchronous fatals whose default action runs before
+    # the scheduler dispatches the tap, so the process is dead before
+    # any Raku code in the tap body could execute. Restoring on those
+    # requires a NativeCall sigaction handler in the offending thread;
+    # leave that for a follow-up if it becomes necessary.
+    my $self-for-trap = self;
+    for SIGABRT, SIGTERM, SIGHUP, SIGQUIT -> $sig {
+        @!crash-restore-taps.push: signal($sig).tap: {
+            $self-for-trap.shutdown;
+            exit 128 + $sig.Int;
+        };
+    }
 
     # Safety net for unhandled exceptions between .new and .run. shutdown
     # is idempotent so there's no harm if run's CATCH already ran it.
@@ -671,6 +821,18 @@ method build-title-osc(Str:D $title, Bool :$tmux = False --> Str) {
     $osc;
 }
 
+method !capture-tty-state(--> Str) {
+    return Str unless '/dev/tty'.IO.e;
+    my $state = try qx{stty -g < /dev/tty 2>/dev/null};
+    $state.defined && $state.chomp.chars > 0 ?? $state.chomp !! Str;
+}
+
+method !restore-tty-state(--> Nil) {
+    return unless $!saved-tty-state.defined && $!saved-tty-state.chars > 0;
+    return unless '/dev/tty'.IO.e;
+    try shell "stty '$!saved-tty-state' < /dev/tty 2>/dev/null";
+}
+
 # --- Toast ---
 
 #|( Show a temporary message bar at the bottom of the screen. It auto-dismisses
@@ -683,6 +845,38 @@ method toast(Str:D $message, Num :$duration = 2e0) {
     }
     $!toast.resize-screen($!rows, $!cols);
     $!toast.show($message, :$duration);
+
+    # Park a 3-row strip at the bottom of the screen for the toast's
+    # lifetime. The toast renders at row C<$!rows - 2> with height 1,
+    # but pixel sprixels paint above text — and a sprixel whose
+    # bottom edge lands in that row would peek through the toast's
+    # cell content. Three rows of slack covers the toast's row plus
+    # the row above (where text content sits flush against the
+    # bottom in some layouts) and the trailing margin row. The
+    # unpark fires when C<!maybe-unpark-toast> sees the visibility
+    # flip, called once per frame from the main loop after
+    # C<$!toast.tick>.
+    # Park Image widgets that intersect the toast's bottom strip so
+    # notcurses pixel graphics — which paint above cell content and
+    # outside the cell grid entirely — don't bleed through the toast
+    # background. The strip is 3 rows at the bottom (toast row plus
+    # one of slack each side). Parked Images move their plane to an
+    # absolute-off-viewport position; their next render after the
+    # toast hides re-blits at the layout-restored position.
+    my UInt $strip-rows = $!rows >= 3 ?? 3 !! $!rows;
+    my Int  $strip-y    = ($!rows - $strip-rows).Int max 0;
+    self!park-images-in-rect(:abs-y($strip-y), :abs-x(0),
+        :rows($strip-rows), :cols($!cols));
+}
+
+#|( Mark Images dirty under the now-hidden toast so they re-blit on
+    the next render. C<$!toast.tick> returns True on the frame the
+    toast visibility flips off; the main loop already uses that to
+    force an extra render. We hook the same signal to mark Images
+    dirty so any blit destroyed when the toast mounted gets restored. )
+method !maybe-unpark-toast(Bool $just-hidden) {
+    return unless $just-hidden;
+    self!mark-all-images-dirty;
 }
 
 # --- Modal support ---
@@ -704,6 +898,15 @@ method show-modal(Selkie::Widget::Modal $modal) {
     $modal.set-store($!store);
     $modal.init-plane($!stdplane, y => 0, x => 0, rows => $!rows, cols => $!cols);
     $modal.mark-dirty;
+
+    # Image widgets that aren't in the modal's tree are now occluded.
+    # L<Selkie::Widget::Image>.render checks C<current-active-modal>
+    # on every render and skips the blit (destroying any live one) when
+    # it's not in the modal's subtree — so we don't need to imperatively
+    # park them here, just dirty them so their render runs and picks
+    # up the new occlusion state. Modals registered via show-modal
+    # inherit this behaviour for free.
+    self!mark-all-images-dirty;
 
     my @fd = $modal.focusable-descendants.List;
     self.focus(@fd[0]) if @fd;
@@ -729,6 +932,12 @@ method close-modal() {
     my $closed = @!modal-stack.pop;
     my $restore = @!pre-modal-focus-stack.pop;
     $closed.destroy;
+    # Re-blit Images that were occluded by the modal. Their occlusion
+    # check (C<current-active-modal>) now returns Nil (or the next
+    # modal up the stack), so dirtying them all triggers a render
+    # pass that re-emits the blits that were destroyed during
+    # occlusion.
+    self!mark-all-images-dirty;
 
     # The "input-owning surface" we restore focus against depends on
     # whether any modal remains: top-of-stack if the stack is non-empty,
@@ -956,6 +1165,7 @@ method quit() {
     exits the process with status 1. )
 method run() {
     $!running = True;
+    LEAVE self.shutdown;
     self!render-frame;
 
     # Scale the notcurses_get timespec to match the hot frame budget
@@ -1101,6 +1311,7 @@ method run() {
         # erase it — force it through even if no widget is dirty.
         my Bool $toast-hid = $!toast ?? $!toast.tick !! False;
         $activity = True if $toast-hid;
+        self!maybe-unpark-toast($toast-hid);
         self!render-frame(:force($toast-hid));
 
         # Bump the activity timestamp so the idle ladder stays hot.
@@ -1134,8 +1345,6 @@ method run() {
             $remaining -= $chunk;
         }
     }
-
-    self.shutdown;
 
     CATCH {
         default {
@@ -1481,6 +1690,17 @@ method !check-terminal-resize(--> Bool) {
     self!mark-all-dirty(self.root) if self.root;
     self!mark-all-dirty($_)        for @!modal-stack;
 
+    # Force every Image to tear down + re-emit its sprixel at the new
+    # geometry. C<notcurses_refresh> above re-syncs the terminal with
+    # notcurses's internal frame state, which doesn't include any
+    # sprixels emitted between renders — so we can't trust that
+    # pre-existing blit-planes still match what's actually painted.
+    # Marking Images dirty triggers their normal render path, which
+    # diffs the new geometry (cell-pixel dims have changed under font
+    # zoom; abs-y/x and rows/cols may have changed under window
+    # resize) and re-emits.
+    self!mark-all-images-dirty;
+
     # Render the new frame to widget planes NOW, synchronously, so
     # the terminal gets updated immediately rather than waiting for
     # the next loop iteration's bottom-of-loop render (which would
@@ -1553,6 +1773,15 @@ method !render-frame(Bool :$force = False) {
         $!toast.render;
         $any-rendered = True;
     }
+
+    # Sprixel lifecycle is owned by L<Selkie::Widget::Image> directly:
+    # its render method computes the current geometry snapshot, diffs
+    # against the previous frame's cache, and tears down + re-emits
+    # the blit-plane atomically when anything has changed (position,
+    # size, source file, terminal cell-pixel dims, modal occlusion).
+    # No central pass needed here — the Images render along with
+    # everything else in the dirty-driven walk above.
+
     notcurses_render($!nc) if $any-rendered || $force;
 }
 
@@ -1569,6 +1798,15 @@ method shutdown() {
     $!resize-tap.?close;
     $!resize-tap = Nil;
 
+    # Same reasoning for the crash-restore taps — if a recoverable
+    # fatal signal arrives during shutdown itself, we don't want the
+    # tap to fire and call shutdown again (it's idempotent, but the
+    # re-entry would log spurious notcurses-stop errors). After this
+    # point the default action takes over for the signals we'd been
+    # tapping.
+    .?close for @!crash-restore-taps;
+    @!crash-restore-taps = ();
+
     # Tear down every modal in the stack, deepest-on-top first (so each
     # destroy sees a sane stack). Pop emptied so a re-entrant shutdown
     # is a no-op rather than a double-destroy.
@@ -1578,10 +1816,15 @@ method shutdown() {
         $m.destroy if $m.defined;
     }
     $!screen-manager.destroy;
+    # Restore before and after notcurses_stop. The first restore protects
+    # users if notcurses_stop itself aborts; the second restore wins if
+    # notcurses restores a stale termios snapshot.
+    self!restore-tty-state;
     if $!nc {
         notcurses_stop($!nc);
         $!nc = NotcursesHandle;
     }
+    self!restore-tty-state;
     # Stderr goes last so any diagnostics notcurses_stop emits still
     # land in the log file rather than the cleared terminal.
     self!uninstall-error-log;

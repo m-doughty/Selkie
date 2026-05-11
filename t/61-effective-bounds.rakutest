@@ -1,0 +1,159 @@
+use Test;
+use lib 'lib';
+
+use nqp;
+use Selkie::Widget;
+use Selkie::EffectiveBounds;
+
+# Mock widget that exposes the attributes effective-bounds reads, without
+# requiring a live notcurses plane. We compose Selkie::Widget so we get
+# the real effective-bounds method, then push values into the relevant
+# slots via a small TWEAK helper.
+class MockWidget does Selkie::Widget {
+    submethod TWEAK(:$abs-y = 0, :$abs-x = 0, :$rows = 0, :$cols = 0,
+                    Selkie::Widget :$parent) {
+        # Reach into the role-private attributes via known accessor
+        # convention — Widget exposes abs-y/abs-x/rows/cols as accessors;
+        # we set the underlying slots through a private setter.
+        self!set-bounds(:$abs-y, :$abs-x, :$rows, :$cols);
+        self.parent = $parent if $parent.defined;
+    }
+
+    method !set-bounds(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
+        # set-viewport handles abs-y/abs-x; resize handles rows/cols, but
+        # those touch notcurses. We just write the slots directly.
+        nqp::bindattr(self, MockWidget, '$!abs-y', $abs-y);
+        nqp::bindattr(self, MockWidget, '$!abs-x', $abs-x);
+        nqp::bindattr(self, MockWidget, '$!rows',  $rows);
+        nqp::bindattr(self, MockWidget, '$!cols',  $cols);
+    }
+
+    method render() { self.clear-dirty }
+}
+
+# Reset terminal viewport to a generous default before each test so
+# we test ancestor clipping in isolation. Tests that exercise the
+# terminal-viewport-clip path override this.
+sub generous-terminal() {
+    set-terminal-viewport-provider(-> { (10_000, 10_000) });
+}
+
+plan 9;
+
+subtest 'no parent — bounds equal own rect' => {
+    plan 5;
+    generous-terminal;
+    my $w = MockWidget.new(:abs-y(10), :abs-x(10), :rows(8), :cols(16));
+    my $eb = $w.effective-bounds;
+    is $eb.abs-y,     10, 'abs-y';
+    is $eb.abs-x,     10, 'abs-x';
+    is $eb.rows,       8, 'rows';
+    is $eb.cols,      16, 'cols';
+    nok $eb.is-empty,     'not empty';
+};
+
+subtest 'fully inside parent — own rect, no clip' => {
+    plan 4;
+    generous-terminal;
+    my $p = MockWidget.new(:abs-y(5), :abs-x(5), :rows(20), :cols(20));
+    my $c = MockWidget.new(:abs-y(10), :abs-x(10), :rows(8), :cols(16),
+        parent => $p);
+    my $eb = $c.effective-bounds;
+    is $eb.abs-y, 10, 'abs-y unchanged';
+    is $eb.rows,   8, 'rows unchanged';
+    is $eb.clip-top,  0, 'no top clip';
+    is $eb.clip-left, 0, 'no left clip';
+};
+
+subtest 'fully outside parent — empty' => {
+    plan 2;
+    generous-terminal;
+    my $p = MockWidget.new(:abs-y(5),  :abs-x(5),  :rows(5), :cols(5));
+    my $c = MockWidget.new(:abs-y(20), :abs-x(20), :rows(8), :cols(16),
+        parent => $p);
+    my $eb = $c.effective-bounds;
+    ok  $eb.is-empty,  'is-empty when child entirely outside parent';
+    is  $eb.rows, 0,   'rows = 0';
+};
+
+subtest 'parent clips bottom-right corner of child' => {
+    plan 4;
+    generous-terminal;
+    # Parent extends only to y=14, x=18. Child at (10, 10) size 8x16
+    # → visible portion (10, 10) size 4x8.
+    my $p = MockWidget.new(:abs-y(0),  :abs-x(0),  :rows(14), :cols(18));
+    my $c = MockWidget.new(:abs-y(10), :abs-x(10), :rows(8), :cols(16),
+        parent => $p);
+    my $eb = $c.effective-bounds;
+    is $eb.abs-y,     10, 'abs-y unchanged';
+    is $eb.rows,       4, 'rows clipped to 4 (14-10)';
+    is $eb.cols,       8, 'cols clipped to 8 (18-10)';
+    is $eb.clip-top,   0, 'no clip-top — child starts at parent edge';
+};
+
+subtest 'parent clips top-left corner of child' => {
+    plan 4;
+    generous-terminal;
+    # Parent at (12, 12) — child at (10, 10) is partly above-left.
+    # Visible: starts at (12, 12), child top-left chopped by 2 each.
+    my $p = MockWidget.new(:abs-y(12), :abs-x(12), :rows(100), :cols(100));
+    my $c = MockWidget.new(:abs-y(10), :abs-x(10), :rows(8), :cols(16),
+        parent => $p);
+    my $eb = $c.effective-bounds;
+    is $eb.abs-y,     12, 'abs-y advances to parent top';
+    is $eb.rows,       6, 'rows = 8 - 2 (top clipped)';
+    is $eb.clip-top,   2, 'clip-top = 2';
+    is $eb.clip-left,  2, 'clip-left = 2';
+};
+
+subtest 'three-deep — grandparent is the binding constraint' => {
+    plan 3;
+    generous-terminal;
+    # Grandparent is small; parent is generous. Grandparent should clip.
+    my $gp = MockWidget.new(:abs-y(0),  :abs-x(0),  :rows(15), :cols(20));
+    my $p  = MockWidget.new(:abs-y(0),  :abs-x(0),  :rows(100), :cols(100),
+        parent => $gp);
+    my $c  = MockWidget.new(:abs-y(10), :abs-x(10), :rows(20), :cols(40),
+        parent => $p);
+    my $eb = $c.effective-bounds;
+    is $eb.rows,  5, 'grandparent caps rows at 15-10=5';
+    is $eb.cols, 10, 'grandparent caps cols at 20-10=10';
+    is $eb.clip-top, 0, 'no top clip — child starts at grandparent edge';
+};
+
+subtest 'terminal viewport clips even with no parent' => {
+    plan 3;
+    set-terminal-viewport-provider(-> { (40, 120) });
+    my $w = MockWidget.new(:abs-y(35), :abs-x(0), :rows(10), :cols(50));
+    my $eb = $w.effective-bounds;
+    is $eb.rows, 5,   'rows clipped to terminal height (40-35)';
+    is $eb.cols, 50,  'cols within terminal width';
+    is $eb.clip-top, 0, 'no clip — child starts at terminal top edge of visibility';
+};
+
+subtest 'widget entirely below terminal viewport — empty' => {
+    plan 2;
+    set-terminal-viewport-provider(-> { (40, 120) });
+    my $w = MockWidget.new(:abs-y(10_000), :abs-x(0), :rows(5), :cols(30));
+    my $eb = $w.effective-bounds;
+    ok $eb.is-empty,    'parked-off-screen widget has empty bounds';
+    is $eb.rows, 0,     'rows = 0';
+};
+
+subtest 'clip-to-ancestors=False ignores ancestors but still clips terminal' => {
+    plan 3;
+    set-terminal-viewport-provider(-> { (50, 200) });
+    my $p = MockWidget.new(:abs-y(0),  :abs-x(0),  :rows(5), :cols(5));
+    my $c = MockWidget.new(:abs-y(10), :abs-x(10), :rows(8), :cols(16),
+        parent => $p);
+    $c.clip-to-ancestors = False;
+    my $eb = $c.effective-bounds;
+    is $eb.abs-y, 10,   'parent ignored — child starts at own abs-y';
+    is $eb.rows,   8,   'rows = own rows (terminal is large enough)';
+    is $eb.cols,  16,   'cols = own cols';
+};
+
+# Restore generous default for any test files that follow in the same run
+set-terminal-viewport-provider(-> { (1_000, 1_000) });
+
+done-testing;

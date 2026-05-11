@@ -138,6 +138,16 @@ Optional fixed range upper bound. See `min`.
 
 Message rendered when there are no samples yet. This is the expected startup state for monitoring dashboards, so defaults to a calm placeholder rather than nothing. Disable by setting to the empty string.
 
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Subscribes against `:store-path` so the sparkline re-renders when the underlying samples change. No-op in `:data` or `push-sample`-driven mode.
+
 ### method push-sample
 
 ```raku

@@ -118,7 +118,7 @@ SEE ALSO
 
   * [Selkie::Plot::Ticks](Selkie--Plot--Ticks.md) — the nice-number tick generation
 
-  * [Selkie::Charts](Selkie--Charts.md) — overview of the chart family
+  * [Selkie::Widget::LineChart](Selkie--Widget--LineChart.md), [Selkie::Widget::BarChart](Selkie--Widget--BarChart.md), [Selkie::Widget::ScatterPlot](Selkie--Widget--ScatterPlot.md), [Selkie::Widget::Histogram](Selkie--Widget--Histogram.md), [Selkie::Widget::Heatmap](Selkie--Widget--Heatmap.md) — chart widgets that compose this axis
 
 ### has Str $.edge
 

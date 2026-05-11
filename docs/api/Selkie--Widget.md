@@ -297,6 +297,10 @@ How this widget wants to be sized by its parent layout. See [Selkie::Sizing](Sel
 
 Whether this widget can receive focus via Tab / Shift-Tab cycling or direct `$app.focus($widget)` calls. Leaf input widgets typically override this to True in their `new` method: method new(*%args) { %args<focusable> //= True; callwith(|%args); }
 
+### has Bool $.clip-to-ancestors
+
+When True (the default), this widget's [Selkie::EffectiveBounds](Selkie--EffectiveBounds.md) is computed as the intersection of its plane with every ancestor's plane and the terminal viewport. Sprixel-bearing widgets ([Selkie::Widget::Image](Selkie--Widget--Image.md) and any custom widget that allocates its own blit plane) use this to size their blit-plane to the visible region only — pixels never paint outside an ancestor's bounds, even though notcurses doesn't enforce that itself. Set False on a widget that intentionally paints outside its parent's visible area (e.g. a popup / dropdown / portal-style overlay that escapes its container's footprint). The intersection-with-terminal-viewport step still applies — pixels never paint past the terminal's edge regardless.
+
 ### method plane
 
 ```raku
@@ -376,6 +380,14 @@ method viewport-cols() returns UInt
 ```
 
 Number of columns actually visible on screen. See `viewport-rows`.
+
+### method effective-bounds
+
+```raku
+method effective-bounds() returns Selkie::EffectiveBounds
+```
+
+Compute this widget's [Selkie::EffectiveBounds](Selkie--EffectiveBounds.md) — the rectangular intersection of its plane with every ancestor's plane and the terminal viewport. This is the on-screen rectangle into which the widget may safely paint pixels; anything outside would bleed past an ancestor's visible region (notcurses doesn't clip child planes to parents). When `$!clip-to-ancestors` is False, the ancestor walk is skipped and only the terminal-viewport intersection applies — useful for portal-style overlays that intentionally escape their container. Cheap by construction: O(depth) attribute reads + intersections, no allocations beyond the returned value class. Called per frame by [Selkie::Widget::Image](Selkie--Widget--Image.md)'s blit-plane sizing path.
 
 ### method set-viewport
 
@@ -626,13 +638,23 @@ method render() returns Mu
 
 Render this widget to its plane. **Required override**: the composing class must provide a body. Always guard with `return without self.plane`, and call `self.clear-dirty` at the end.
 
-### method park
+### method park-y
 
 ```raku
-method park() returns Mu
+method park-y() returns Int
 ```
 
-Park the widget off-screen — used by container swap operations (e.g. `Border.set-content(:!destroy)`) when an outgoing widget needs to keep its state but stop appearing on the terminal. Default implementation repositions the widget's plane to a far-off Y so notcurses clips it. **Override in widgets that own other notcurses resources whose visibility doesn't follow plane position** — most importantly Image, where the blit-plane carries a sprixel (Sixel/Kitty pixel image) that the terminal renders at an absolute on-screen position and won't clear just because the parent moved. Such widgets need to destroy their auxiliary plane(s) here so the sprixel gets removed from the terminal. Containers should override to recurse: park self + each descendant.
+Park the widget off-screen — used by container swap operations (e.g. `Border.set-content(:!destroy)`) when an outgoing widget needs to keep its state but stop appearing on the terminal. Default implementation repositions the widget's plane to a far-off Y so notcurses clips it. **Override in widgets that own other notcurses resources whose visibility doesn't follow plane position** — most importantly Image, where the blit-plane carries a sprixel (Sixel/Kitty pixel image) that the terminal renders at an absolute on-screen position and won't clear just because the parent moved. Such widgets need to destroy their auxiliary plane(s) here so the sprixel gets removed from the terminal. Containers should override to recurse: park self + each descendant. Off-screen Y coordinate used by `park` to clip a widget's plane out of the visible terminal. Notcurses clips planes whose origin falls beyond the rendered bounds, so any sufficiently large value works; we standardise on 10,000 across Container, CardList, and any custom container override so the parked-Y is greppable and predictable in snapshot tests. Implemented as a method (rather than an `our constant`) because Raku doesn't allow `our`-scoped symbols inside a role — the role is parametric, so there's no single package to install the symbol in.
+
+### method park-children
+
+```raku
+method park-children(
+    @kids
+) returns Nil
+```
+
+Park each widget in `@kids`. Used by `Container.park` and `Selkie::Widget::CardList.park` — both walk a list of child widgets calling `.park` on each, but they store their children differently (Container in `@!children`, CardList in `@!items`), so the iteration is the only thing they share. Private to the Widget role; consumers compose Widget so they can call `self!park-children(@kids)`.
 
 ### method on-key
 
@@ -781,7 +803,7 @@ method handle-event(
 ) returns Bool
 ```
 
-Handle a keyboard or mouse event. Return True if the event was consumed (the event will stop bubbling to the parent); False to let it continue up the chain. The default implementation routes `MouseEvent`s through any handlers registered via `on-click`, `on-scroll`, `on-drag`, `on-mouse-down`, `on-mouse-up`, and falls through to the keybind table (registered via `on-key`) for everything else. Override to implement cursor movement, character input, or widget-specific click handling. Overrides that want to keep the registration-API behaviour can call `self!dispatch-mouse-handlers($ev)` explicitly and use its return value as the consume decision.
+Handle a keyboard or mouse event. Return True if the event was consumed (the event will stop bubbling to the parent); False to let it continue up the chain. The default implementation routes `MouseEvent`s through any handlers registered via `on-click`, `on-scroll`, `on-drag`, `on-mouse-down`, `on-mouse-up`, and falls through to the keybind table (registered via `on-key`) for everything else. Override to implement cursor movement, character input, or widget-specific click handling. Overrides typically split the event into Mouse and non-Mouse branches: =begin code :lang<raku> method handle-event(Selkie::Event $ev --> Bool) { if $ev.event-type ~~ MouseEvent { return True if self!dispatch-mouse-handlers($ev); return False; } return False unless $!focused; # ...keyboard handling... } =end code That call to `self!dispatch-mouse-handlers` reuses the same registration API the base uses (handlers registered via `on-click`, `on-scroll`, `on-drag`, `on-mouse-down`, `on-mouse-up`); your override doesn't need to re-implement mouse-event classification. Override only the keyboard branch. A note on `nextsame`: it does **not** work for delegating Mouse handling back to this default. `Selkie::Widget` is a role, and Raku flattens role methods into the consuming class — so a subclass override of `handle-event` shadows the role version rather than inheriting it as a separate dispatch candidate, and `nextsame` from the override has no role-supplied candidate to fall through to. Always call `self!dispatch-mouse-handlers($ev)` explicitly when you need the registration-API behaviour.
 
 ### method destroy
 

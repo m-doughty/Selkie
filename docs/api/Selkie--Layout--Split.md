@@ -122,6 +122,17 @@ method set-second(
 
 Install a widget in the second pane. The previous occupant is destroyed. Returns the new widget for chaining.
 
+### method handle-resize
+
+```raku
+method handle-resize(
+    Int $rows where { ... },
+    Int $cols where { ... }
+) returns Mu
+```
+
+Re-layout the two panes and the divider when the parent resizes. The split ratio is honoured exactly — first pane gets `floor(total * ratio)`, the divider takes 1 cell, the second gets the remainder. Idempotent on no-size-change calls.
+
 ### method children
 
 ```raku
@@ -129,4 +140,20 @@ method children() returns List
 ```
 
 Expose the panes as `children` so that Container-level cascade helpers (notably `!unsubscribe-tree`) reach them. Split stores its panes in `$!first` / `$!second` rather than the inherited `@!children` array, so without this override the cascade walks an empty list and leaks subscriptions / bookkeeping for anything inside a pane.
+
+### method focusable-descendants
+
+```raku
+method focusable-descendants() returns Seq
+```
+
+Focusable descendants in stable left-to-right (or top-to-bottom) order — Tab cycles through everything in the first pane, then everything in the second pane. Omits the divider (which is chrome).
+
+### method destroy
+
+```raku
+method destroy() returns Mu
+```
+
+Destroy both panes, the divider plane, and the split's own plane.
 

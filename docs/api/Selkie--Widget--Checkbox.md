@@ -92,3 +92,21 @@ method on-change() returns Supply
 
 Supply emitting `Bool` each time the state changes.
 
+### method set-focused
+
+```raku
+method set-focused(
+    Bool $f
+) returns Mu
+```
+
+Set focus state. Called by `Selkie::App`'s focus dispatcher; the focused-styling palette flips on/off accordingly.
+
+### method is-focused
+
+```raku
+method is-focused() returns Bool
+```
+
+Whether the checkbox currently has keyboard focus.
+

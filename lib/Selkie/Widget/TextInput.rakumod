@@ -101,10 +101,11 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::TextInput does Selkie::Widget;
+unit class Selkie::Widget::TextInput does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 #|( Find the position of the start of the next word at or after C<$pos>
     in C<$s>. Word = run of C<\w> chars. Skips through the current
@@ -161,10 +162,6 @@ has Supplier $!copy-supplier = Supplier.new;
 has Supplier $!cut-supplier = Supplier.new;
 has Bool $!focused = False;
 
-method new(*%args --> Selkie::Widget::TextInput) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Click positions the caret; double-click selects the word under
@@ -215,6 +212,7 @@ submethod TWEAK() {
     };
 }
 
+#| The current buffer contents.
 method text(--> Str) { $!buffer }
 
 #|( True iff there is an active selection (anchor differs from cursor).
@@ -302,6 +300,10 @@ method !move-cursor(UInt $new, Bool $extend-selection) {
     self.mark-dirty;
 }
 
+#| Replace the buffer's contents and place the caret at the end. Emits
+#| on C<on-change>. Use this for user-driven updates (e.g. a "load
+#| from history" button); for programmatic syncs from a store path
+#| use C<set-text-silent> instead to avoid feedback loops.
 method set-text(Str:D $t) {
     $!buffer = $t;
     $!cursor = $t.chars;
@@ -310,6 +312,11 @@ method set-text(Str:D $t) {
     self.mark-dirty;
 }
 
+#| Silent variant of C<set-text> — updates the buffer without emitting
+#| on C<on-change>. Wire this into store subscriptions that mirror
+#| external state into the input, so the input update doesn't dispatch
+#| an event that loops back through the store and re-fires the
+#| subscription.
 method set-text-silent(Str:D $t) {
     $!buffer = $t;
     $!cursor = $t.chars;
@@ -317,11 +324,22 @@ method set-text-silent(Str:D $t) {
     self.mark-dirty;
 }
 
+#| Empty the buffer. Equivalent to C<set-text('')> — emits on
+#| C<on-change>.
 method clear() { self.set-text('') }
 
+#| Supply emitting the current buffer contents when the user presses
+#| Enter.
 method on-submit(--> Supply) { $!submit-supplier.Supply }
+
+#| Supply emitting the new buffer contents on every user-driven edit
+#| (typing, paste, delete, cut, C<set-text>). Does not fire for
+#| C<set-text-silent> — the silent variant is intended exactly to
+#| break the change-supplier ↔ store feedback loop.
 method on-change(--> Supply) { $!change-supplier.Supply }
 
+#| Set the input's focus state. Called by C<Selkie::App>'s focus
+#| dispatcher. The caret is only painted while focused.
 method set-focused(Bool $f) {
     $!focused = $f;
     self.mark-dirty;

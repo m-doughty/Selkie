@@ -109,14 +109,25 @@ has Bool $.dismiss-on-click-outside = False;
 has NcplaneHandle $!bg-plane;
 has Supplier $!close-supplier = Supplier.new;
 
+#| The current content widget, or the C<Selkie::Widget> type object
+#| when no content is set.
 method content(--> Selkie::Widget) { $!content }
 
+#| Supply that emits C<True> when C<close> is called or the user
+#| dismisses the modal (Esc, or a click outside when
+#| C<dismiss-on-click-outside> is set). Tap this to call
+#| C<$app.close-modal> and run any post-close logic.
 method on-close(--> Supply) { $!close-supplier.Supply }
 
+#| Install C<$w> as the modal's content. Re-callable to swap content
+#| during a multi-step wizard.
+#|
+#| C<:destroy> (default True) destroys the outgoing widget — the
+#| common case when content isn't reused. Pass C<:!destroy> to keep
+#| the outgoing widget alive (its plane is parked far off-screen so
+#| its last-rendered cells don't bleed through behind the new
+#| content); call C<set-content> with it again later to reinstall.
 method set-content(Selkie::Widget $w, Bool :$destroy = True) {
-    # See Border.set-content — same rationale for parking the outgoing
-    # plane off-screen when C<:!destroy> is passed. park() recurses
-    # through containers and cleans up sprixels on Image widgets.
     if $!content && $destroy {
         $!content.destroy;
     } elsif $!content && $!content.plane {
@@ -127,10 +138,16 @@ method set-content(Selkie::Widget $w, Bool :$destroy = True) {
     self.mark-dirty;
 }
 
+#| Emit on C<on-close>. Doesn't itself remove the modal from the App
+#| — the caller's tap is expected to call C<$app.close-modal>.
 method close() {
     $!close-supplier.emit(True);
 }
 
+#| Focusable descendants of the modal's content subtree. C<Selkie::App>
+#| uses this to scope Tab / Shift-Tab cycling to within the active
+#| modal — keyboard focus never escapes to the surrounding screen
+#| while the modal is up.
 method focusable-descendants(--> Seq) {
     return ().Seq without $!content;
     gather {
@@ -141,6 +158,10 @@ method focusable-descendants(--> Seq) {
     }
 }
 
+#| Cascade a terminal resize to the content subtree. The content is
+#| sized to the same fraction of the parent that C<render> uses
+#| (C<width-ratio> by C<height-ratio>) so its layout pass sees the
+#| right dimensions before the next render frame.
 method handle-resize(UInt $rows, UInt $cols) {
     my $changed = $rows != self.rows || $cols != self.cols;
     return unless $changed;
@@ -220,11 +241,18 @@ method !render-dim-background(UInt $rows, UInt $cols) {
     }
 }
 
+#| Modal-level event handler. Only consults the modal's own keybinds
+#| (Esc-to-close by default). Per-content events are routed by
+#| C<Selkie::App>'s dispatcher to the focused descendant inside the
+#| modal — modal-isolation is enforced at the App layer, not here.
 method handle-event(Selkie::Event $ev --> Bool) {
-    # Check our own keybinds (e.g., escape to close)
     self!check-keybinds($ev);
 }
 
+#| Destroy the modal: tear down the content subtree, the dim-background
+#| plane, and the modal's own plane. Always called by C<Selkie::App>
+#| when the modal is removed from the stack — apps don't usually call
+#| this directly.
 method destroy() {
     $!content.destroy if $!content;
     $!content = Selkie::Widget;

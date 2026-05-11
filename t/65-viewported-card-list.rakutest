@@ -1,0 +1,140 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Widget;
+use Selkie::Widget::ViewportedCardList;
+use Selkie::Layout::VBox;
+use Selkie::Sizing;
+use Selkie::Event;
+use Selkie::Test::Keys;
+use Notcurses::Native::Types;
+
+class StubWidget does Selkie::Widget {
+    has Bool $.clipped-top = False;
+    has Bool $.clipped-bottom = False;
+    method render() { self.clear-dirty }
+    method set-clipped(Bool :$top = False, Bool :$bottom = False) {
+        $!clipped-top = $top;
+        $!clipped-bottom = $bottom;
+    }
+}
+
+sub add-stub($list, Int :$height = 5) {
+    my $widget = StubWidget.new;
+    my $root = Selkie::Layout::VBox.new(sizing => Sizing.fixed($height));
+    $list.add-item($widget, :$root, :$height);
+    $widget;
+}
+
+plan 10;
+
+subtest "construction defaults" => {
+    plan 5;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    is $list.count, 0, "no items initially";
+    is $list.selected, 0, "selected starts at 0";
+    is $list.scroll-offset, 0, "scroll offset starts at 0";
+    is $list.content-height, 0, "content height starts at 0";
+    ok $list.focusable, "focusable by default";
+};
+
+subtest "content-height sums item heights" => {
+    plan 1;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    add-stub($list, height => 3);
+    add-stub($list, height => 7);
+    is $list.content-height, 10, "content height is sum of cards";
+};
+
+subtest "scroll-to and scroll-by clamp to top and bottom" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(6, 40);
+    add-stub($list, height => 4) for ^4; # total 16, max offset 10
+    $list.scroll-to(100);
+    is $list.scroll-offset, 10, "scroll-to clamps at bottom";
+    $list.scroll-by(-99);
+    is $list.scroll-offset, 0, "scroll-by clamps at top";
+    nok $list.at-end, "not at end after scrolling to top";
+};
+
+subtest "scroll-to-end reports at-end with ScrollView semantics" => {
+    plan 2;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3; # total 12, max offset 7
+    $list.scroll-to-end;
+    is $list.scroll-offset, 7, "scroll-to-end goes to max offset";
+    ok $list.at-end, "at-end is true at max offset";
+};
+
+subtest "selection movement minimally keeps selected card visible" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 3) for ^4;
+    $list.select-index(1);
+    is $list.scroll-offset, 1, "second card bottom is brought into view";
+    $list.scroll-down;
+    is $list.selected, 2, "scroll-down moves selection by card";
+    is $list.scroll-offset, 4, "third card is visible without whole-card scroll";
+};
+
+subtest "on-select fires only on selection changes" => {
+    plan 2;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    add-stub($list) for ^3;
+    my @seen;
+    $list.on-select.tap: -> $idx { @seen.push($idx) };
+    $list.select-index(0);
+    is @seen.elems, 0, "selecting current index does not emit";
+    $list.select-index(2);
+    is @seen, [2], "changed selection emits once";
+};
+
+subtest "Up/Down navigates cards, PgUp/PgDown row-scrolls by viewport" => {
+    plan 4;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;
+    $list.handle-event(key-event(id => NCKEY_DOWN));
+    is $list.selected, 1, "plain Down selects next card";
+    is $list.scroll-offset, 3, "selection movement keeps card visible";
+    $list.handle-event(key-event(id => NCKEY_PGDOWN));
+    is $list.selected, 1, "PgDown leaves selection alone";
+    is $list.scroll-offset, 7, "PgDown scrolls by one viewport (clamped to max)";
+};
+
+subtest "Shift+Up / Shift+Down scroll one row without moving selection" => {
+    plan 4;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;
+    $list.handle-event(key-event(id => NCKEY_DOWN, modifiers => Set(Mod-Shift)));
+    is $list.selected, 0, "Shift+Down leaves selection alone";
+    is $list.scroll-offset, 1, "Shift+Down scrolls by exactly one row";
+    $list.handle-event(key-event(id => NCKEY_UP, modifiers => Set(Mod-Shift)));
+    is $list.selected, 0, "Shift+Up leaves selection alone";
+    is $list.scroll-offset, 0, "Shift+Up scrolls back to zero";
+};
+
+subtest "clear-items resets state" => {
+    plan 4;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;
+    $list.select-last;
+    $list.clear-items;
+    is $list.count, 0, "count reset";
+    is $list.selected, 0, "selection reset";
+    is $list.scroll-offset, 0, "offset reset";
+    is $list.content-height, 0, "content height reset";
+};
+
+subtest "bottom-anchor flag is accepted" => {
+    plan 2;
+    my $list = Selkie::Widget::ViewportedCardList.new(bottom-anchor => True);
+    ok $list.bottom-anchor, "bottom-anchor set via constructor";
+    add-stub($list, height => 2);
+    lives-ok { $list.scroll-to-start }, "bottom-anchor does not affect scroll API";
+};

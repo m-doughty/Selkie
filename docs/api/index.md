@@ -68,10 +68,13 @@ Auto-generated from Pod6 declarator comments and pod blocks in each module. See 
 
 ## Other
 
+- [Selkie::EffectiveBounds](Selkie--EffectiveBounds.md)
+- [Selkie::Layout::Allocate](Selkie--Layout--Allocate.md)
 - [Selkie::Plot::Palette](Selkie--Plot--Palette.md)
 - [Selkie::Plot::Scaler](Selkie--Plot--Scaler.md)
 - [Selkie::Plot::Ticks](Selkie--Plot--Ticks.md)
 - [Selkie::Test::Snapshot::Harness](Selkie--Test--Snapshot--Harness.md)
+- [Selkie::Tree](Selkie--Tree.md)
 - [Selkie::Widget::Axis](Selkie--Widget--Axis.md)
 - [Selkie::Widget::BarChart](Selkie--Widget--BarChart.md)
 - [Selkie::Widget::Heatmap](Selkie--Widget--Heatmap.md)
@@ -83,4 +86,5 @@ Auto-generated from Pod6 declarator comments and pod blocks in each module. See 
 - [Selkie::Widget::Plot](Selkie--Widget--Plot.md)
 - [Selkie::Widget::ScatterPlot](Selkie--Widget--ScatterPlot.md)
 - [Selkie::Widget::Sparkline](Selkie--Widget--Sparkline.md)
+- [Selkie::Widget::ViewportedCardList](Selkie--Widget--ViewportedCardList.md)
 

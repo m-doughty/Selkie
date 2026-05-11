@@ -1,0 +1,115 @@
+use Test;
+use lib 'lib';
+
+use nqp;
+use Selkie::Widget;
+use Selkie::Tree;
+
+# Mock widget composing Selkie::Widget so we get the real abs-y/x +
+# rows/cols accessors and mark-dirty / is-dirty plumbing, without
+# requiring a live notcurses plane. We push values into the slots
+# directly so we can position widgets at arbitrary cell coordinates
+# for the tree-walk tests.
+class Plotted does Selkie::Widget {
+    has Bool $.was-dirtied is rw = False;
+    submethod TWEAK(:$abs-y = 0, :$abs-x = 0, :$rows = 0, :$cols = 0,
+                    Selkie::Widget :$parent) {
+        nqp::bindattr(self, Plotted, '$!abs-y', $abs-y.Int);
+        nqp::bindattr(self, Plotted, '$!abs-x', $abs-x.Int);
+        nqp::bindattr(self, Plotted, '$!rows',  $rows.UInt);
+        nqp::bindattr(self, Plotted, '$!cols',  $cols.UInt);
+        self.parent = $parent if $parent.defined;
+    }
+    method render() { self.clear-dirty }
+}
+
+# Container exposing .children for the walk to reach.
+class PlottedContainer does Selkie::Widget {
+    has @.children;
+    submethod TWEAK(:$abs-y = 0, :$abs-x = 0, :$rows = 0, :$cols = 0,
+                    :@children) {
+        nqp::bindattr(self, PlottedContainer, '$!abs-y', $abs-y.Int);
+        nqp::bindattr(self, PlottedContainer, '$!abs-x', $abs-x.Int);
+        nqp::bindattr(self, PlottedContainer, '$!rows',  $rows.UInt);
+        nqp::bindattr(self, PlottedContainer, '$!cols',  $cols.UInt);
+        @!children = @children;
+        $_.parent = self for @children;
+    }
+    method render() { self.clear-dirty }
+}
+
+plan 5;
+
+subtest 'mark-widgets-in-rect-dirty marks intersecting widgets' => {
+    plan 3;
+    # Two siblings: one inside the rect, one outside.
+    my $a = Plotted.new(:abs-y(5),  :abs-x(5),  :rows(4), :cols(8));
+    my $b = Plotted.new(:abs-y(50), :abs-x(50), :rows(4), :cols(8));
+    my $root = PlottedContainer.new(
+        :abs-y(0), :abs-x(0), :rows(100), :cols(100),
+        children => [$a, $b]
+    );
+    set-tree-roots-provider(-> { ($root,) });
+
+    $a.clear-dirty; $b.clear-dirty; $root.clear-dirty;
+    mark-widgets-in-rect-dirty(:abs-y(4), :abs-x(4), :rows(6), :cols(10));
+
+    ok  $a.is-dirty,    'intersecting widget marked dirty';
+    nok $b.is-dirty,    'distant widget not marked';
+    ok  $root.is-dirty, 'enclosing root marked dirty (it intersects too)';
+};
+
+subtest 'rectangle entirely outside any widget marks nothing' => {
+    plan 1;
+    my $a = Plotted.new(:abs-y(5), :abs-x(5), :rows(4), :cols(8));
+    my $root = PlottedContainer.new(
+        :abs-y(0), :abs-x(0), :rows(20), :cols(20),
+        children => [$a]
+    );
+    set-tree-roots-provider(-> { ($root,) });
+    $a.clear-dirty; $root.clear-dirty;
+    mark-widgets-in-rect-dirty(:abs-y(100), :abs-x(100), :rows(4), :cols(4));
+    nok $a.is-dirty, 'no widget marked when rect is far away';
+};
+
+subtest 'edge-touching rectangles do NOT count as intersecting' => {
+    plan 1;
+    # Widget at (5, 5) size 4x8 — right edge at x=13, bottom at y=9.
+    # Rectangle starting at x=13 should NOT intersect (exclusive edges).
+    my $a = Plotted.new(:abs-y(5), :abs-x(5), :rows(4), :cols(8));
+    my $root = PlottedContainer.new(
+        :abs-y(0), :abs-x(0), :rows(100), :cols(100),
+        children => [$a]
+    );
+    set-tree-roots-provider(-> { ($root,) });
+    $a.clear-dirty; $root.clear-dirty;
+    mark-widgets-in-rect-dirty(:abs-y(5), :abs-x(13), :rows(4), :cols(8));
+    nok $a.is-dirty, 'widget abutting on the right is not "in" the rect';
+};
+
+subtest 'multiple roots all walked' => {
+    plan 2;
+    my $a = Plotted.new(:abs-y(5), :abs-x(5), :rows(4), :cols(8));
+    my $b = Plotted.new(:abs-y(5), :abs-x(5), :rows(4), :cols(8));
+    set-tree-roots-provider(-> { ($a, $b) });
+    $a.clear-dirty; $b.clear-dirty;
+    mark-widgets-in-rect-dirty(:abs-y(4), :abs-x(4), :rows(8), :cols(12));
+    ok $a.is-dirty, 'first root marked';
+    ok $b.is-dirty, 'second root marked';
+};
+
+subtest 'modal provider round-trips a widget' => {
+    plan 3;
+    my $modal = Plotted.new(:abs-y(0), :abs-x(0), :rows(20), :cols(40));
+    is  current-active-modal(), Nil, 'no modal initially';
+    set-modal-provider(-> { $modal });
+    ok  current-active-modal() === $modal, 'modal returned';
+    set-modal-provider(-> { Nil });
+    is  current-active-modal(), Nil, 'cleared';
+};
+
+# Reset providers so any test files that follow start fresh
+set-tree-roots-provider(-> { () });
+set-modal-provider(-> { Nil });
+
+done-testing;

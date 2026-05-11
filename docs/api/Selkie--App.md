@@ -224,6 +224,10 @@ Set asynchronously by our SIGWINCH handler when the terminal is resized. Consume
 
 Tap on Raku's signal(SIGWINCH) Supply. Stored so `shutdown` can close it cleanly — without explicit close, the tap keeps the App object alive past shutdown via the Supply's subscriber list, and SIGWINCH after shutdown would still try to fire the (now invalid) handler.
 
+### has Positional @!crash-restore-taps
+
+Taps for asynchronously-recoverable fatal signals (SIGABRT, SIGTERM, SIGHUP, SIGQUIT). When any of these arrives we run `shutdown` so the terminal returns to cooked mode and the alternate screen is exited before the process dies. Without these taps the kernel takes the default action (terminate) and Selkie's LEAVE / END / CATCH cleanup never runs, leaving the user staring at a wedged shell. SIGSEGV / SIGBUS / SIGILL / SIGFPE bypass Raku's Supply-based dispatch (the process is dead by the time the scheduler thread wakes); restoring on those requires a NativeCall sigaction-based handler running in the offending thread, which is out of scope for this change.
+
 ### has Num $.hot-hz
 
 Hot-rate frame budget in Hz. The main loop caps itself at this rate while anything is happening; the idle ladder then steps down (to 30 / 12 / 4 Hz) after periods of inactivity. Defaults to 60 Hz — enough for smooth typing and scrolling without burning battery on passive sits. Apps doing terminal video playback, high-refresh animations, or live plot rendering can bump this higher — notcurses itself supports video, so 120 Hz+ is a legitimate use case for that flavour of app. This is a CEILING, not a floor: the loop sleeps at least `1 / $hot-hz` seconds between frames, but may sleep longer when the idle ladder has ramped down.
@@ -239,6 +243,43 @@ method screen-manager() returns Selkie::ScreenManager
 ```
 
 The screen manager. Useful for `.active-screen` and `.screen-names` — you don't typically need to manipulate it directly, since the `add-screen` and `switch-screen` methods on `Selkie::App` are preferred.
+
+### method collect-tree-roots
+
+```raku
+method collect-tree-roots() returns List
+```
+
+Yield the live list of widget tree roots that framework-level helpers should walk: the active screen's root, every modal in the stack (top-most last), and the toast overlay if mounted. Used by [Selkie::Tree](Selkie--Tree.md)'s `mark-widgets-in-rect-dirty` (cell cleanup after sprixel destroy) and analogous helpers. Re-evaluated on every call so callers always see the current tree, even immediately after `show-modal` / `close-modal` or screen switches.
+
+### method active-modal-or-nil
+
+```raku
+method active-modal-or-nil() returns Mu
+```
+
+The topmost open modal as a defined widget, or Nil when the stack is empty. Wraps the existing `!active-modal` private method which returns the Modal type object when empty — Nil is what [Selkie::Tree](Selkie--Tree.md)'s `current-active-modal` contract expects.
+
+### method mark-all-images-dirty
+
+```raku
+method mark-all-images-dirty() returns Nil
+```
+
+Walk the live tree (active screen + modals + toast) and mark every [Selkie::Widget::Image](Selkie--Widget--Image.md) dirty. Used after modal mount / unmount / toast hide / terminal resize so each Image's render method runs its geometry-diff on the next frame and emits or destroys its blit-plane as appropriate. Cheap walk; called only on occlusion-state transitions and resizes.
+
+### method park-images-in-rect
+
+```raku
+method park-images-in-rect(
+    Int :$abs-y!,
+    Int :$abs-x!,
+    Int :$rows! where { ... },
+    Int :$cols! where { ... }
+) returns Nil
+```
+
+Walk the live tree and call `park` on every [Selkie::Widget::Image](Selkie--Widget--Image.md) whose absolute screen bounds intersect the given rectangle. Used by the toast layer to push Images underneath the toast strip out of the visible area. Parked Images move their plane to an absolute-off-viewport row regardless of cascade depth, and their blit-plane is destroyed; the next layout pass that calls `reposition` on Image automatically un-parks.
 
 ### method focused
 
@@ -326,6 +367,16 @@ method toast(
 ```
 
 Show a temporary message bar at the bottom of the screen. It auto-dismisses after `$duration` seconds (default 2). The toast overlay is created lazily on first call — subsequent toasts reuse the same widget.
+
+### method maybe-unpark-toast
+
+```raku
+method maybe-unpark-toast(
+    Bool $just-hidden
+) returns Mu
+```
+
+Mark Images dirty under the now-hidden toast so they re-blit on the next render. `$!toast.tick` returns True on the frame the toast visibility flips off; the main loop already uses that to force an extra render. We hook the same signal to mark Images dirty so any blit destroyed when the toast mounted gets restored.
 
 ### method show-modal
 

@@ -240,6 +240,8 @@ method build(
 #| The TextInput — typing immediately filters without pressing Tab.
 method focusable-widget() { $!input }
 
+#| The underlying Modal, available after C<build> has been called.
+#| Pass to C<$app.show-modal> when binding the palette to a keybind.
 method modal() { $!modal }
 
 method !refilter() {

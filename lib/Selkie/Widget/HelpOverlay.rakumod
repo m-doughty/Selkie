@@ -14,7 +14,7 @@ use Selkie::Widget::HelpOverlay;
 $root.on-key: 'ctrl+h', -> $ {
     my $help = Selkie::Widget::HelpOverlay.new(
         app             => $app,
-        focused-widget  => $app.focused-widget,
+        focused-widget  => $app.focused,
     );
     $app.show-modal($help.build);
 };
@@ -67,8 +67,16 @@ has Selkie::Widget $.focused-widget;
 
 has Selkie::Widget::Modal $!modal;
 
+#| The underlying Modal, available after C<build> has been called.
+#| Use this to attach extra C<on-close> taps or to pass to
+#| C<$app.show-modal>.
 method modal(--> Selkie::Widget::Modal) { $!modal }
 
+#| Build the help modal: walk the focus chain, group reachable
+#| keybinds by widget class, and produce a centered Modal listing
+#| them. Returns the Modal so the caller can pass it to
+#| C<$app.show-modal>. Re-callable to refresh; replaces any prior
+#| modal this overlay built.
 method build(--> Selkie::Widget::Modal) {
     # dismiss-on-click-outside defaults True for HelpOverlay: it's a
     # lightweight informational overlay, and "click outside to dismiss"

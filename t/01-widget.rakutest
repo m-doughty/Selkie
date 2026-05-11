@@ -2,6 +2,9 @@ use Test;
 use lib 'lib';
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
+use Selkie::Widget::Button;
+use Selkie::Widget::Checkbox;
 use Selkie::Event;
 use Selkie::Style;
 use Selkie::Theme;
@@ -13,7 +16,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 16;
+plan 18;
 
 subtest "construction defaults" => {
     plan 7;
@@ -227,4 +230,47 @@ subtest "mark-screen-dirty walks up to root then cascades" => {
     ok $root.is-dirty, "root is dirty";
     ok $sibling-of-mid.is-dirty,
         "sibling branch reached via downward cascade from root";
+};
+
+subtest "FocusableByDefault role applies to focusable input widgets" => {
+    plan 4;
+    # The role is composed into 10 widgets to remove a duplicated
+    # %args<focusable> //= True; callwith(...) opener. Verify it
+    # actually applies, that the explicit override still wins, and
+    # that more than one widget benefits (cross-widget composition).
+
+    my $btn = Selkie::Widget::Button.new(label => 'OK');
+    ok $btn.focusable, "Button is focusable by default";
+
+    my $cb = Selkie::Widget::Checkbox.new(label => 'Yes');
+    ok $cb.focusable, "Checkbox is focusable by default";
+
+    my $btn-explicit = Selkie::Widget::Button.new(
+        label => 'X', focusable => False
+    );
+    nok $btn-explicit.focusable,
+        "explicit focusable=>False is honoured (Button)";
+
+    my $cb-explicit = Selkie::Widget::Checkbox.new(
+        label => 'No', focusable => False
+    );
+    nok $cb-explicit.focusable,
+        "explicit focusable=>False is honoured (Checkbox)";
+};
+
+subtest "park-y returns the canonical off-screen Y" => {
+    plan 3;
+    # The framework standardises on a single off-screen Y so Container,
+    # CardList, and any custom container override all park to the same
+    # spot — making parked widgets greppable in snapshot tests and
+    # easy to reason about in debugger output. `park-y` is a method
+    # (not an `our` constant) because Raku doesn't allow our-scoped
+    # symbols inside a role.
+    my $w = TestWidget.new;
+    ok $w.park-y.defined,
+        "park-y is callable on every Widget consumer";
+    ok $w.park-y >= 1000,
+        "park-y is comfortably larger than any plausible terminal height";
+    is $w.park-y, 10_000,
+        "park-y is the documented value (regression pin)";
 };

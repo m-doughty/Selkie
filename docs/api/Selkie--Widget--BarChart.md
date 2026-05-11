@@ -169,3 +169,23 @@ Approximate tick count for the value axis.
 
 Message rendered when there are no bars. The default is the expected startup state for monitoring dashboards. Set to the empty string to suppress.
 
+### method on-store-attached
+
+```raku
+method on-store-attached(
+    $store
+) returns Mu
+```
+
+Hook called when the widget is attached to a store. Wires up a subscription against the chart's `:store-path` so it re-renders whenever the underlying state changes. No-op in `:data` mode.
+
+### method set-data
+
+```raku
+method set-data(
+    @new
+) returns Mu
+```
+
+Replace the chart's data with a new array of bars / grouped bars. Throws when the chart was constructed in `:store-path` mode — pick one feed source up front (data array vs. store path) and stick with it for the lifetime of the widget.
+

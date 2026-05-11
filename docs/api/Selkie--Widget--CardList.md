@@ -56,6 +56,8 @@ Each item is registered with:
 
   * `:border` — optional Border for focus-highlight integration
 
+  * `:min-display-height` — smallest `display-h` at which a partial render of this card is still meaningful. Non-selected cards whose visible height would fall below this threshold are parked rather than rendered as a sliver. Defaults to `1` (any positive sliver renders, the pre-existing behaviour). Useful for cards with structural minimums — e.g. a chat card with a fixed-height avatar plus a name row plus a border edge needs at least `avatar-rows + 2` rows before its partial render reads as "the bottom of a message" instead of "merged into the neighbour". The selected card is always exempt from this check; if it can't fully fit, the list relies on its own internal scrolling (e.g. a wrapped `ScrollView`) to handle the overflow.
+
 EXAMPLES
 ========
 
@@ -84,13 +86,33 @@ SEE ALSO
 
   * [Selkie::Widget::ScrollView](Selkie--Widget--ScrollView.md) — non-interactive virtual scroll
 
-### has Int $!last-scroll-top
-
-State carried across renders so we can detect any layout shift that would otherwise rely on Image's per-Image cache invalidation to be 100% reliable — which it isn't in practice. Sprixel cleanup goes via the terminal wire as an escape sequence; rapid sprite churn on scroll / resize occasionally lets the new blit land before the old remove has flushed, leaving ghost avatars at the previous positions. Detecting state changes here lets us park every card before the normal layout pass, which forces a fresh sprixel ID on every visible card and sidesteps the incremental-update reliability question entirely. `@!last-heights` tracks per-item heights across renders so a streaming-token-driven height growth (~1% of tokens, when a rendered line wraps and the card grows by a row) is treated as a layout shift. Most streaming tokens don't change card height, so the snapshot comparison stays cheap and the park-all only fires on wraps. `$!last-selected` catches selection-only changes that shift card positions without moving scroll-top — clicking a card that's already on screen recomputes `$top-clip` in render based on the new selected-index, which can push every visible card's row offset up or down by a few cells. Without this in the trigger set, those clicks would re-render at a new geometry without first parking the avatar planes, and notcurses would emit the new sprixels alongside the old ghosts.
-
 ### has Bool $.bottom-anchor
 
 When True and the rendered cards (from `scroll-top` through the last item) sum to less than the viewport height, render shifts every visible card down so the LAST item ends at the bottom of the viewport rather than leaving empty space below it. Designed for chat-style consumers where new content arrives at the bottom and the user expects the latest message to be anchored there even when the whole conversation fits on screen. Default False — classic top-aligned list rendering for inventory / file-browser / pickers (e.g. AvatarList) where empty space below the last item is the right behaviour.
+
+### method on-select
+
+```raku
+method on-select() returns Supply
+```
+
+Supply that emits the new selected index whenever the selection moves (Up / Down / mouse click / `select-index` / `select-first` / `select-last`). Does **not** fire on `add-item` or `clear-items` — those only mark-dirty.
+
+### method selected
+
+```raku
+method selected() returns Int
+```
+
+Index of the selected card. Stable across resizes / rebuilds. Returns 0 when the list is empty (selection is conventionally at index 0 for empty lists; pair with `count` if you need to disambiguate).
+
+### method count
+
+```raku
+method count() returns Int
+```
+
+Number of cards in the list.
 
 ### method handle-resize
 
@@ -111,6 +133,14 @@ method park() returns Mu
 
 Park self plus every card root. CardList stores its items in `@!items` rather than `self.children`, so the standard Container.park doesn't reach them; we recurse explicitly here. Without this override, when a CardList scrolls or its host screen is swapped out, sprixels carried by Image widgets inside cards keep painting on the terminal at their last screen position.
 
+### method selected-item
+
+```raku
+method selected-item() returns Mu
+```
+
+The inner widget of the selected card (the `$widget` argument passed to `add-item`), or `Nil` when the list is empty / index is out of range.
+
 ### method children
 
 ```raku
@@ -118,6 +148,81 @@ method children() returns List
 ```
 
 Expose each card's root (and its border, if any) as `children` so Container-level cascade helpers (notably `!unsubscribe-tree`) reach them. CardList stores its cards in `@!items` rather than the inherited `@!children` array, so without this override the cascade walks an empty list and leaks subscriptions anchored inside cards.
+
+### method add-item
+
+```raku
+method add-item(
+    $widget,
+    :$root!,
+    :$height!,
+    :$border,
+    Int :$min-display-height where { ... } = 1
+) returns Mu
+```
+
+Append a card. The four parameters describe the card's structure: #| #| `$widget` — the inner widget the card represents. Returned by #| `selected-item`. Usually a `RichText`, `Text`, or custom widget; #| does not need to manage its own plane (the `:root` handles that). #| #| `:root!` — the widget that gets a plane and is rendered. Often a #| `Border` wrapping the inner widget, or the inner widget itself if #| no border is wanted. CardList drives reposition / resize / park on #| this root each frame. #| #| `:height!` — the card's logical height in cells. CardList uses #| this to lay out cards stacked top-to-bottom and decide which fit #| in the viewport. Variable-height cards are the whole point — every #| card can have its own height. #| #| `:border` — optional. When provided, CardList drives this widget's #| `set-has-focus` per render so the border highlights the selected #| card regardless of where keyboard focus actually lives. Pass the #| same Border instance you used as `:root` to wire the highlight. #| #| `:min-display-height` — when a card is partially clipped at the #| top or bottom edge of the viewport, this is the minimum visible #| height before CardList parks the card entirely instead of showing #| a sliver. Default 1.
+
+### method clear-items
+
+```raku
+method clear-items() returns Mu
+```
+
+Destroy every card and reset selection / scroll. Calls `destroy` on each card's root, so any subscriptions or sprixels owned by cards are cleaned up. Use before rebuilding the list to avoid leaks; for incremental updates, prefer `set-item-height` + selective `add-item`.
+
+### method set-item-height
+
+```raku
+method set-item-height(
+    Int $idx,
+    Int $height
+) returns Mu
+```
+
+Update an existing card's logical height (e.g. when its content reflows after a viewport resize). No-op when `$idx` is out of range. Triggers re-layout on the next render.
+
+### method select-index
+
+```raku
+method select-index(
+    Int $idx
+) returns Mu
+```
+
+Move the selection to `$idx` (clamped to the valid range). Emits on `on-select`. No-op when the list is empty.
+
+### method select-last
+
+```raku
+method select-last() returns Mu
+```
+
+Jump selection to the last card. Useful after appending content in chat-style consumers where the user wants to track the latest message. Does **not** emit on `on-select` — symmetry with `select-first`.
+
+### method select-first
+
+```raku
+method select-first() returns Mu
+```
+
+Jump selection to the first card. Does **not** emit on `on-select`.
+
+### method scroll-up
+
+```raku
+method scroll-up() returns Mu
+```
+
+Move selection one card up. Alias for the internal `!select-prev` so external callers can advance the cursor without registering a keybind.
+
+### method scroll-down
+
+```raku
+method scroll-down() returns Mu
+```
+
+Move selection one card down. See `scroll-up`.
 
 ### method scroll-selected-page
 

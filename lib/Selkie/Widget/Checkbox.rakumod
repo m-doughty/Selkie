@@ -64,10 +64,11 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 
 use Selkie::Widget;
+use Selkie::Widget::FocusableByDefault;
 use Selkie::Style;
 use Selkie::Event;
 
-unit class Selkie::Widget::Checkbox does Selkie::Widget;
+unit class Selkie::Widget::Checkbox does Selkie::Widget does Selkie::Widget::FocusableByDefault;
 
 #| The label displayed after the C<[x]> / C<[ ]> indicator. Required.
 has Str $.label is required;
@@ -76,10 +77,6 @@ has Bool $!checked = False;
 has Bool $!focused = False;
 has Supplier $!change-supplier = Supplier.new;
 
-method new(*%args --> Selkie::Widget::Checkbox) {
-    %args<focusable> //= True;
-    callwith(|%args);
-}
 
 submethod TWEAK() {
     # Primary mouse click toggles, same path as Enter / Space.
@@ -109,11 +106,14 @@ method toggle() {
 #| Supply emitting C<Bool> each time the state changes.
 method on-change(--> Supply) { $!change-supplier.Supply }
 
+#| Set focus state. Called by C<Selkie::App>'s focus dispatcher; the
+#| focused-styling palette flips on/off accordingly.
 method set-focused(Bool $f) {
     $!focused = $f;
     self.mark-dirty;
 }
 
+#| Whether the checkbox currently has keyboard focus.
 method is-focused(--> Bool) { $!focused }
 
 method render() {

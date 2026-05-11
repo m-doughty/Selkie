@@ -200,6 +200,9 @@ submethod TWEAK {
     });
 }
 
+#| Hook called when the widget is attached to a store. Wires up a
+#| subscription against C<:store-path> so the chart re-renders on
+#| state changes. No-op in C<:series> mode.
 method on-store-attached($store) {
     return unless @!store-path.elems > 0;
     self.once-subscribe(
@@ -208,6 +211,11 @@ method on-store-attached($store) {
     );
 }
 
+#| Replace the chart's series array. Each series' points are realised
+#| into an Array up-front because callers often pass Seqs from C<.map>
+#| chains, and a TUI re-renders every frame — an exhausted Seq would
+#| produce an empty plot on subsequent renders. Throws when constructed
+#| in C<:store-path> mode.
 method set-series(@new) {
     die "Selkie::Widget::ScatterPlot.set-series: only valid in :series mode"
         if @!store-path.elems > 0;

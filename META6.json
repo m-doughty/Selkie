@@ -6,7 +6,7 @@
   "build-depends": [
   ],
   "depends": [
-    "Notcurses::Native:auth<zef:apogee>"
+    "Notcurses::Native:ver<0.3.0+>:auth<zef:apogee>"
   ],
   "description": "High-level TUI framework built on Notcurses",
   "license": "Artistic-2.0",
@@ -16,7 +16,9 @@
     "Selkie": "lib/Selkie.rakumod",
     "Selkie::App": "lib/Selkie/App.rakumod",
     "Selkie::Container": "lib/Selkie/Container.rakumod",
+    "Selkie::EffectiveBounds": "lib/Selkie/EffectiveBounds.rakumod",
     "Selkie::Event": "lib/Selkie/Event.rakumod",
+    "Selkie::Layout::Allocate": "lib/Selkie/Layout/Allocate.rakumod",
     "Selkie::Layout::HBox": "lib/Selkie/Layout/HBox.rakumod",
     "Selkie::Layout::Split": "lib/Selkie/Layout/Split.rakumod",
     "Selkie::Layout::VBox": "lib/Selkie/Layout/VBox.rakumod",
@@ -35,6 +37,7 @@
     "Selkie::Test::Supply": "lib/Selkie/Test/Supply.rakumod",
     "Selkie::Test::Tree": "lib/Selkie/Test/Tree.rakumod",
     "Selkie::Theme": "lib/Selkie/Theme.rakumod",
+    "Selkie::Tree": "lib/Selkie/Tree.rakumod",
     "Selkie::Widget": "lib/Selkie/Widget.rakumod",
     "Selkie::Widget::Axis": "lib/Selkie/Widget/Axis.rakumod",
     "Selkie::Widget::BarChart": "lib/Selkie/Widget/BarChart.rakumod",
@@ -45,6 +48,7 @@
     "Selkie::Widget::CommandPalette": "lib/Selkie/Widget/CommandPalette.rakumod",
     "Selkie::Widget::ConfirmModal": "lib/Selkie/Widget/ConfirmModal.rakumod",
     "Selkie::Widget::FileBrowser": "lib/Selkie/Widget/FileBrowser.rakumod",
+    "Selkie::Widget::FocusableByDefault": "lib/Selkie/Widget/FocusableByDefault.rakumod",
     "Selkie::Widget::Heatmap": "lib/Selkie/Widget/Heatmap.rakumod",
     "Selkie::Widget::HelpOverlay": "lib/Selkie/Widget/HelpOverlay.rakumod",
     "Selkie::Widget::Histogram": "lib/Selkie/Widget/Histogram.rakumod",
@@ -70,7 +74,8 @@
     "Selkie::Widget::Text": "lib/Selkie/Widget/Text.rakumod",
     "Selkie::Widget::TextInput": "lib/Selkie/Widget/TextInput.rakumod",
     "Selkie::Widget::TextStream": "lib/Selkie/Widget/TextStream.rakumod",
-    "Selkie::Widget::Toast": "lib/Selkie/Widget/Toast.rakumod"
+    "Selkie::Widget::Toast": "lib/Selkie/Widget/Toast.rakumod",
+    "Selkie::Widget::ViewportedCardList": "lib/Selkie/Widget/ViewportedCardList.rakumod"
   },
   "resources": [
   ],
@@ -84,5 +89,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.6.0"
+  "version": "0.7.0"
 }
