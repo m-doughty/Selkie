@@ -2,6 +2,25 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.7.1  2026-05-12T17:16:11+01:00
+    - Selkie::Store, Selkie::App: env-gated performance instrumentation.
+      Setting SELKIE_PERF_LOG enables two diagnostic spurts to
+      /tmp/selkie-perf.log:
+      (a) Store!values-equal logs any eqv comparison whose fallback
+          path (after the === identity shortcut) takes >20 ms, with
+          the type names + WHICH of both operands. Surfaces the
+          subscriptions whose computed values land in a deep walk
+          (Array/Hash/Buf) on every store tick.
+      (b) Selkie::App's run-loop logs per-phase timing (frame
+          callbacks, store tick, render-frame) for any iteration
+          whose total exceeds 50 ms. Localises lag to a specific
+          phase so a slow input cycle is attributable.
+      Both branches early-return on unset env, so the overhead in
+      production is one Bool check per call. Pair with the consumer's
+      own enable-debug() call on Selkie::Store to capture dispatch /
+      effect / subscription fires alongside the timings. Designed to
+      be left in tree as a permanent opt-in profiler.
+
 0.7.0  2026-05-12T00:43:46+01:00
     - Selkie::EffectiveBounds: value class returned by
       `Widget.effective-bounds` representing the on-screen rectangle a

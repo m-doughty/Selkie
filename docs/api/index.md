@@ -77,6 +77,7 @@ Auto-generated from Pod6 declarator comments and pod blocks in each module. See 
 - [Selkie::Tree](Selkie--Tree.md)
 - [Selkie::Widget::Axis](Selkie--Widget--Axis.md)
 - [Selkie::Widget::BarChart](Selkie--Widget--BarChart.md)
+- [Selkie::Widget::FocusableByDefault](Selkie--Widget--FocusableByDefault.md)
 - [Selkie::Widget::Heatmap](Selkie--Widget--Heatmap.md)
 - [Selkie::Widget::HelpOverlay](Selkie--Widget--HelpOverlay.md)
 - [Selkie::Widget::Histogram](Selkie--Widget--Histogram.md)

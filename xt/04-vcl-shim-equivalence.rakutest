@@ -1,0 +1,102 @@
+use Test;
+
+# Byte-equivalence between the C shim path and the Raku per-cell
+# fallback path through ViewportedCardList.!copy-cells. The shim
+# is a direct port of the Raku loop, but "directly" is doing a lot
+# of work — empty-cell base substitution, style/channel propagation,
+# the egcpool ownership convention. If they ever drift visibly,
+# users on prebuilts-without-shim would see a different chat to
+# users on the fast path.
+#
+# Renders go through Selkie::Test::Snapshot's render-to-string from
+# child subprocesses for two reasons:
+#
+#   1. We need to drive both code paths against the same widget
+#      tree without stale notcurses state between renders.
+#   2. render-to-string + destroy has a known fragility at viewport
+#      dimensions roughly above 5×22 (notcurses_stop crashes at
+#      process exit on some configurations); fork-per-render
+#      isolates that crash to the child without affecting the
+#      harness's exit code.
+#
+# Renders deliberately stay at 5×22 — that's the largest size with
+# a green snapshot scenario today. Equivalence at this size is
+# enough to verify the shim's per-cell semantics: empty-cell base
+# substitution (Border interior), style/channel propagation, the
+# egcpool ownership convention. It does NOT exercise wide
+# multi-byte glyph runs or massive viewports — those would need
+# the upstream notcurses_stop fragility resolved first.
+
+plan 3;
+
+sub render-in-subprocess(Bool $use-shim, Int $rows, Int $cols,
+                         @labels, Int $card-h, Int $scroll
+                         --> Str)
+{
+    my $labels-list = @labels.map({ "'$_'" }).join(', ');
+    my $script = qq:to/RAKU/;
+        use lib 'lib';
+        use Selkie::Test::Snapshot;
+        use Selkie::Widget::ViewportedCardList;
+        use Selkie::Widget::Border;
+        use Selkie::Widget::Text;
+        use Selkie::Sizing;
+
+        viewported-cardlist-shim-available({$use-shim ?? 'True' !! 'False'});
+
+        my \$vcl = Selkie::Widget::ViewportedCardList.new(sizing => Sizing.flex);
+        for ($labels-list) -> \$label \{
+            my \$text = Selkie::Widget::Text.new(text => \$label, sizing => Sizing.flex);
+            my \$border = Selkie::Widget::Border.new(sizing => Sizing.flex);
+            \$border.set-content(\$text);
+            \$vcl.add-item(\$text, root => \$border, height => $card-h, :border(\$border));
+        \}
+        \$vcl.scroll-to($scroll) if $scroll > 0;
+        print render-to-string(\$vcl, rows => $rows, cols => $cols);
+        RAKU
+
+    my $tmpfile = $*TMPDIR.add("vcl-shim-eq-{$*PID}-{$use-shim}-{rand.Int}.raku");
+    $tmpfile.spurt($script);
+    LEAVE { $tmpfile.unlink if $tmpfile.e }
+
+    my $proc = run 'raku', '-Ilib', $tmpfile.Str, :out, :err;
+    my $out = $proc.out.slurp(:close);
+    my $err = $proc.err.slurp(:close);
+    if $proc.exitcode != 0 || $out eq '' {
+        diag "subprocess (use-shim=$use-shim, $rows×$cols) exit { $proc.exitcode }, out len { $out.chars }";
+        diag "  stderr: $err" if $err;
+    }
+    $out;
+}
+
+subtest 'scroll-to(2) on 3 cards × 3 rows in 5×22 viewport — byte-identical' => {
+    plan 2;
+    my @labels = <alpha beta gamma>;
+    my $shim-out = render-in-subprocess(True,  5, 22, @labels, 3, 2);
+    my $raku-out = render-in-subprocess(False, 5, 22, @labels, 3, 2);
+    is $shim-out.chars, $raku-out.chars,
+        "outputs equal length ({$shim-out.chars} chars)";
+    ok $shim-out eq $raku-out, "byte-identical glyph output";
+};
+
+subtest 'no scroll, all visible — byte-identical' => {
+    plan 2;
+    my @labels = <one two>;
+    my $shim-out = render-in-subprocess(True,  6, 22, @labels, 3, 0);
+    my $raku-out = render-in-subprocess(False, 6, 22, @labels, 3, 0);
+    is $shim-out.chars, $raku-out.chars,
+        "outputs equal length ({$shim-out.chars} chars)";
+    ok $shim-out eq $raku-out, "byte-identical with no scroll";
+};
+
+subtest 'mid-scroll, partial top + bottom clip — byte-identical' => {
+    plan 2;
+    my @labels = <a b c d>;
+    # 4 cards × 3 = content 12, viewport 6, scroll-to(4) puts us
+    # mid-content with both top and bottom cards partially clipped.
+    my $shim-out = render-in-subprocess(True,  6, 22, @labels, 3, 4);
+    my $raku-out = render-in-subprocess(False, 6, 22, @labels, 3, 4);
+    is $shim-out.chars, $raku-out.chars,
+        "outputs equal length under mid-scroll ({$shim-out.chars} chars)";
+    ok $shim-out eq $raku-out, "byte-identical with partial clip on both ends";
+};

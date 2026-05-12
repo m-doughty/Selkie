@@ -860,6 +860,29 @@ method !values-equal($a, $b, Bool :$deep --> Bool) {
     return True if !$a.defined && !$b.defined;
     return False if !$a.defined || !$b.defined;
     return True if !$deep && $a === $b;
+    # PERF INSTRUMENTATION (temporary): log eqv compares that take >20 ms.
+    # Gated on SELKIE_PERF_LOG env var. Writes via spurt :append because
+    # Cantina mutes fd 2 to keep stderr from corrupting the TUI; `note`
+    # would silently drop. Revert after ComfyUI lag root-caused.
+    if %*ENV<SELKIE_PERF_LOG> {
+        my $start = now;
+        my $eq = try { $a eqv $b };
+        my $elapsed = (now - $start).Num;
+        if $elapsed > 0.020e0 {
+            my $ts = now.Rat.fmt('%.3f');
+            # Include WHICH to disambiguate "same object eqv'd" vs
+            # "different objects eqv'd" — if WHICHs match, === should
+            # have shortcut and the eqv is bogus.
+            my $a-id = try { $a.WHICH.Str } // '?';
+            my $b-id = try { $b.WHICH.Str } // '?';
+            my $a-elems = try { $a.elems } // '?';
+            my $b-elems = try { $b.elems } // '?';
+            try spurt '/tmp/selkie-perf.log',
+                "[$ts] [eqv {$elapsed.fmt('%.4f')}s] {$a.WHAT.^name}\#{$a-id}(elems=$a-elems) vs {$b.WHAT.^name}\#{$b-id}(elems=$b-elems) same-which={$a-id eq $b-id}\n",
+                :append;
+        }
+        return $eq // False;
+    }
     my $eq = try { $a eqv $b };
     $eq // False;
 }

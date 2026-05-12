@@ -26,7 +26,7 @@ sub add-stub($list, Int :$height = 5) {
     $widget;
 }
 
-plan 10;
+plan 17;
 
 subtest "construction defaults" => {
     plan 5;
@@ -137,4 +137,127 @@ subtest "bottom-anchor flag is accepted" => {
     ok $list.bottom-anchor, "bottom-anchor set via constructor";
     add-stub($list, height => 2);
     lives-ok { $list.scroll-to-start }, "bottom-anchor does not affect scroll API";
+};
+
+subtest "follow-active accessor and defaults" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new(follow-bottom => True);
+    ok $list.follow-active, "follow-active starts True";
+
+    my $no-follow = Selkie::Widget::ViewportedCardList.new;
+    ok $no-follow.follow-active,
+        "follow-active starts True even with follow-bottom False (latch unused)";
+    nok $no-follow.follow-bottom, "follow-bottom defaults False";
+};
+
+# Regression: while a streamed token grew the last card, set-item-height
+# routed through scroll-to($!scroll-offset). scroll-to recomputes
+# follow-active against the freshly-grown max-offset, which left the
+# old offset (still equal to the OLD max) below the NEW max — so
+# follow-active flipped to False on the very first token and the
+# snap-to-max in render() never fired. The fix has set-item-height
+# clamp directly, leaving follow-active to the user-input funnel.
+subtest "set-item-height preserves follow-active at bottom" => {
+    plan 4;
+    my $list = Selkie::Widget::ViewportedCardList.new(follow-bottom => True);
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;        # content=12, max=7
+    $list.scroll-to-end;
+    is $list.scroll-offset, 7, "scrolled to bottom";
+    ok $list.follow-active, "follow-active engaged at bottom";
+
+    $list.set-item-height(2, 6);                # content=14, max=9
+    is $list.content-height, 14, "content-height reflects new height";
+    ok $list.follow-active,
+        "follow-active still engaged after last-card growth — render will snap";
+};
+
+subtest "set-item-height leaves follow-active off when user scrolled away" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new(follow-bottom => True);
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;        # content=12, max=7
+    $list.scroll-to(2);                         # mid-content
+    nok $list.follow-active, "follow-active off after scrolling away from bottom";
+
+    $list.set-item-height(2, 6);                # last card grows
+    nok $list.follow-active,
+        "follow-active stays off — content growth doesn't yank user back";
+    is $list.scroll-offset, 2,
+        "scroll position preserved while user is reading history";
+};
+
+subtest "scroll-to is the funnel that maintains follow-active" => {
+    plan 4;
+    my $list = Selkie::Widget::ViewportedCardList.new(follow-bottom => True);
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;        # max=7
+    $list.scroll-to-end;
+    ok $list.follow-active, "scroll-to-end engages follow";
+    $list.scroll-to(0);
+    nok $list.follow-active, "scroll-to(0) disengages follow";
+    $list.scroll-by(99);
+    ok $list.follow-active, "scroll-by clamping to bottom re-engages follow";
+    $list.scroll-by(-1);
+    nok $list.follow-active, "single row up disengages follow";
+};
+
+subtest "add-item does not disturb follow-active" => {
+    plan 2;
+    my $list = Selkie::Widget::ViewportedCardList.new(follow-bottom => True);
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^3;
+    $list.scroll-to-end;
+    ok $list.follow-active, "engaged after scroll-to-end";
+    add-stub($list, height => 5);               # new message appended
+    ok $list.follow-active,
+        "appending a new card preserves follow-active — render snaps";
+};
+
+# set-item-height is called on every streaming token (the orchestrator
+# re-measures and writes back the cached height) AND on every ComfyUI
+# image-gen progress event (the chat-view callback updates status
+# text and re-measures the live card). Most of those calls land on
+# the same height — the token appended within an existing wrapped
+# row, the progress bar swapped one block character for another. The
+# old implementation marked-dirty unconditionally and the
+# ViewportedCardList re-rendered + re-merged every visible card on
+# every event. The skip is what keeps the tick thread responsive.
+subtest "set-item-height with same value is a no-op" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4);
+    add-stub($list, height => 4);
+
+    # Drain dirty so the post-call check is meaningful.
+    $list.clear-dirty;
+    nok $list.is-dirty, "list starts clean for the test";
+
+    $list.set-item-height(0, 4);                # SAME height
+    nok $list.is-dirty,
+        "same-value set-item-height left the list clean";
+
+    $list.set-item-height(0, 6);                # actually different
+    ok $list.is-dirty,
+        "different-value set-item-height re-marks dirty";
+};
+
+subtest "scroll-to with same offset is a no-op" => {
+    plan 3;
+    my $list = Selkie::Widget::ViewportedCardList.new;
+    $list.resize(5, 40);
+    add-stub($list, height => 4) for ^4;        # max-offset = 11
+
+    $list.scroll-to(7);
+    $list.clear-dirty;
+    nok $list.is-dirty, "list clean before the no-op call";
+
+    $list.scroll-to(7);                         # SAME offset
+    nok $list.is-dirty,
+        "same-offset scroll-to left the list clean";
+
+    $list.scroll-to(8);                         # actually different
+    ok $list.is-dirty,
+        "different-offset scroll-to re-marks dirty";
 };

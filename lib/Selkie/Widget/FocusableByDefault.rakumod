@@ -61,9 +61,16 @@ C<new> doesn't interfere with C<TWEAK>; both compose cleanly.
 unit role Selkie::Widget::FocusableByDefault;
 
 #| Constructor wrapper. Defaults C<focusable> to True before delegating
-#| to the next C<new> candidate in MRO (typically C<Mu.new>). An
-#| explicit C<:focusable(False)> from the caller is preserved.
-method new(*%args --> ::?CLASS) {
+#| to the next C<new> candidate in MRO (typically C<Mu.new>), which
+#| returns an instance of the composing class. An explicit
+#| C<:focusable(False)> from the caller is preserved.
+#|
+#| The return type is intentionally unconstrained: a role-context
+#| C<--> ::?CLASS> trips C<Pod::To::Markdown>'s signature renderer
+#| (the placeholder has no C<.WHICH> before composition), and the
+#| constraint would be redundant anyway since C<callwith> already
+#| returns an instance of C<::?CLASS>.
+method new(*%args) {
     %args<focusable> //= True;
     callwith(|%args);
 }

@@ -1302,8 +1302,20 @@ method run() {
         # internally without queueing a ResizeEvent through input.
         $activity = True if self!maybe-check-terminal-resize;
 
+        # PERF INSTRUMENTATION (temporary): time each phase of the loop
+        # iteration when SELKIE_PERF_LOG is set. Logs any iteration where
+        # the combined work exceeds 50 ms, broken down by phase, so we
+        # can see whether the ComfyUI lag is in frame-callbacks, store
+        # tick, or render. Revert after root-cause found.
+        my $perf-log = ?%*ENV<SELKIE_PERF_LOG>;
+        my $t-cb-start = $perf-log ?? now !! Instant;
         .() for @!frame-callbacks;
+        my $t-cb     = $perf-log ?? (now - $t-cb-start).Num !! 0e0;
+
+        my $t-st-start = $perf-log ?? now !! Instant;
         $activity = True if $!store.tick;
+        my $t-st     = $perf-log ?? (now - $t-st-start).Num !! 0e0;
+
         self!process-focus-actions;
         # Toast.tick returns True when visibility just flipped to False
         # this tick (the duration expired). The composited frame still
@@ -1312,7 +1324,19 @@ method run() {
         my Bool $toast-hid = $!toast ?? $!toast.tick !! False;
         $activity = True if $toast-hid;
         self!maybe-unpark-toast($toast-hid);
+        my $t-rf-start = $perf-log ?? now !! Instant;
         self!render-frame(:force($toast-hid));
+        my $t-rf     = $perf-log ?? (now - $t-rf-start).Num !! 0e0;
+        if $perf-log {
+            my $total = $t-cb + $t-st + $t-rf;
+            if $total > 0.050e0 {
+                my $ts = now.Rat.fmt('%.3f');
+                try spurt '/tmp/selkie-perf.log',
+                    sprintf("[%s] [loop total=%.3fs cb=%.3fs store=%.3fs render=%.3fs activity=%s]\n",
+                        $ts, $total, $t-cb, $t-st, $t-rf, $activity ?? 'T' !! 'F'),
+                    :append;
+            }
+        }
 
         # Bump the activity timestamp so the idle ladder stays hot.
         # Any of: input event, resize detected, store event dispatched
