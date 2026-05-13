@@ -821,6 +821,63 @@ method build-title-osc(Str:D $title, Bool :$tmux = False --> Str) {
     $osc;
 }
 
+#|( Build the "exit terminal protocol" escape sequence emitted by
+    C<shutdown> as a belt-and-suspenders layer on top of
+    C<notcurses_stop>.
+
+    Why it exists: C<notcurses_stop> handles most of this on most
+    terminals, but the Kitty keyboard protocol push (C<CSI > n u>)
+    doesn't reliably pop on iTerm2 — after the app exits every
+    keystroke arrives as C<CSI codepoint u> at the shell and the
+    user sees literal escape codes where typing should be. The
+    Kitty pop is the load-bearing fix; the other disables ride
+    along on the same emit because every one is idempotent
+    ("disable a mode that's already off" is a no-op on every
+    terminal that parses them), so any future protocol leak that
+    C<notcurses_stop> misses is also covered.
+
+    Sequences, in order: show cursor, reset SGR, mouse tracking
+    off (every encoding variant), focus event reporting off,
+    bracketed paste off, modify-other-keys off, Kitty kbd
+    protocol pop ×3 (overshoots a single push in case anything
+    else nested), alt-screen exit.
+
+    Factored as a class method so tests can verify the exact
+    bytes without spinning up a notcurses instance. )
+method build-terminal-cleanup-sequence(--> Str) {
+    join '',
+        "\e[?25h",         # show cursor (DECTCEM)
+        "\e[0m",           # reset SGR
+        "\e[?1000l",       # X10 mouse off
+        "\e[?1001l",       # VT220 highlight mouse off
+        "\e[?1002l",       # button-event mouse off
+        "\e[?1003l",       # any-event mouse off
+        "\e[?1004l",       # focus event reporting off
+        "\e[?1005l",       # UTF-8 mouse encoding off
+        "\e[?1006l",       # SGR mouse encoding off
+        "\e[?1015l",       # urxvt mouse encoding off
+        "\e[?1016l",       # SGR-pixel mouse encoding off
+        "\e[?2004l",       # bracketed paste off
+        "\e[>4;0m",        # modify-other-keys off
+        "\e[<u\e[<u\e[<u", # Kitty kbd protocol pop ×3 (idempotent on empty stack)
+        "\e[?1049l",       # exit alternate screen (idempotent)
+    ;
+}
+
+#|( Write the terminal-cleanup escape sequence to C</dev/tty> as the
+    final step of C<shutdown>. Bypasses notcurses's output buffering
+    by going direct to the tty (same pattern as C<set-title>).
+    Best-effort: missing C</dev/tty>, failed open, or failed write
+    are all silently swallowed — at this point the app is shutting
+    down and there's nowhere useful to surface an error. )
+method !emit-terminal-cleanup(--> Nil) {
+    return unless '/dev/tty'.IO.e;
+    my $tty = try open('/dev/tty', :w);
+    return without $tty;
+    LEAVE { try $tty.close }
+    try $tty.print(Selkie::App.build-terminal-cleanup-sequence);
+}
+
 method !capture-tty-state(--> Str) {
     return Str unless '/dev/tty'.IO.e;
     my $state = try qx{stty -g < /dev/tty 2>/dev/null};
@@ -1849,6 +1906,13 @@ method shutdown() {
         $!nc = NotcursesHandle;
     }
     self!restore-tty-state;
+    # Escape-sequence backstop on top of notcurses_stop. Catches
+    # terminal-mode leaks where notcurses_stop's per-protocol disable
+    # didn't take — notably the Kitty keyboard protocol push on
+    # iTerm2 3.5+, which leaves every keystroke arriving at the shell
+    # as `CSI codepoint u` instead of a raw byte. Idempotent on
+    # terminals where notcurses_stop already handled it.
+    self!emit-terminal-cleanup;
     # Stderr goes last so any diagnostics notcurses_stop emits still
     # land in the log file rather than the cleared terminal.
     self!uninstall-error-log;

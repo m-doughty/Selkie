@@ -16,7 +16,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 18;
+plan 19;
 
 subtest "construction defaults" => {
     plan 7;
@@ -171,6 +171,32 @@ subtest "keybind - non-matching event not consumed" => {
     my $consumed = $w.handle-event($ev);
     nok $called, "handler not invoked";
     nok $consumed, "event not consumed";
+};
+
+subtest "keybind-chain collects from leaf upward, deduped, no undescribed" => {
+    plan 6;
+    my $root  = TestWidget.new;
+    my $mid   = TestWidget.new;
+    my $leaf  = TestWidget.new;
+    $mid.parent  = $root;
+    $leaf.parent = $mid;
+
+    # Leaf has 'n' (described) and 'esc' (no description — internal).
+    # Mid re-binds 'n' (described) — must lose to leaf's 'n' on dedupe.
+    # Root contributes 'ctrl+h' (described).
+    $leaf.on-key('n',      -> $ {}, :description('New character'));
+    $leaf.on-key('esc',    -> $ {});  # no description: skipped
+    $mid.on-key('n',       -> $ {}, :description('Mid-level new'));
+    $mid.on-key('a',       -> $ {}, :description('Add item'));
+    $root.on-key('ctrl+h', -> $ {}, :description('Show help'));
+
+    my @chain = $leaf.keybind-chain;
+    is @chain.elems, 3, "three deduped, described binds";
+    is @chain[0]<spec>,        'n',              "leaf's 'n' wins position 0";
+    is @chain[0]<description>, 'New character',  "leaf's description wins on dedupe";
+    is @chain[1]<spec>,        'a',              "mid contributes 'a'";
+    is @chain[2]<spec>,        'ctrl+h',         "root contributes 'ctrl+h'";
+    ok @chain.grep({ .<spec> eq 'esc' }).elems == 0, "undescribed binds excluded";
 };
 
 # --- mark-dirty-tree / mark-screen-dirty ---

@@ -357,6 +357,22 @@ method build-title-osc(
 
 Build the OSC sequence for a title. Factored out as a class method so tests can exercise the sanitisation + tmux-passthrough logic without needing a real tty. Public for callers that want to emit the sequence elsewhere (logging, snapshot tests, etc).
 
+### method build-terminal-cleanup-sequence
+
+```raku
+method build-terminal-cleanup-sequence() returns Str
+```
+
+Build the "exit terminal protocol" escape sequence emitted by `shutdown` as a belt-and-suspenders layer on top of `notcurses_stop`. Why it exists: `notcurses_stop` handles most of this on most terminals, but the Kitty keyboard protocol push (`CSI ` n u>) doesn't reliably pop on iTerm2 — after the app exits every keystroke arrives as `CSI codepoint u` at the shell and the user sees literal escape codes where typing should be. The Kitty pop is the load-bearing fix; the other disables ride along on the same emit because every one is idempotent ("disable a mode that's already off" is a no-op on every terminal that parses them), so any future protocol leak that `notcurses_stop` misses is also covered. Sequences, in order: show cursor, reset SGR, mouse tracking off (every encoding variant), focus event reporting off, bracketed paste off, modify-other-keys off, Kitty kbd protocol pop ×3 (overshoots a single push in case anything else nested), alt-screen exit. Factored as a class method so tests can verify the exact bytes without spinning up a notcurses instance.
+
+### method emit-terminal-cleanup
+
+```raku
+method emit-terminal-cleanup() returns Nil
+```
+
+Write the terminal-cleanup escape sequence to `/dev/tty` as the final step of `shutdown`. Bypasses notcurses's output buffering by going direct to the tty (same pattern as `set-title`). Best-effort: missing `/dev/tty`, failed open, or failed write are all silently swallowed — at this point the app is shutting down and there's nowhere useful to surface an error.
+
 ### method toast
 
 ```raku

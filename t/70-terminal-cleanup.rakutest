@@ -1,0 +1,46 @@
+use Test;
+use lib 'lib';
+
+use Selkie::App;
+
+plan 17;
+
+# build-terminal-cleanup-sequence is the escape-sequence backstop
+# emitted at the end of Selkie::App.shutdown to defend against
+# terminal-mode leaks notcurses_stop didn't fully handle (notably
+# the Kitty keyboard protocol push on iTerm2). Tested as a class
+# method so it doesn't need a real notcurses init or a tty.
+
+my $seq = Selkie::App.build-terminal-cleanup-sequence;
+
+ok $seq.chars > 0, 'returns a non-empty string';
+ok $seq.starts-with("\e"), 'starts with ESC';
+
+# Kitty keyboard protocol pop is the load-bearing fix for the
+# iTerm2 leak. Three pops because notcurses pushes once but
+# overshooting is safe (pop on empty stack is a no-op) and other
+# code paths could nest a push.
+my $pop-count = ($seq ~~ m:g/"\e[<u"/).elems;
+is $pop-count, 3, 'Kitty keyboard protocol pop emitted three times';
+
+# Mouse tracking — every encoding variant the standard defines,
+# so any leak across notcurses-supported terminals is covered.
+like $seq, /"\e[?1000l"/, 'X10 mouse off';
+like $seq, /"\e[?1001l"/, 'VT220 highlight mouse off';
+like $seq, /"\e[?1002l"/, 'button-event mouse off';
+like $seq, /"\e[?1003l"/, 'any-event mouse off';
+like $seq, /"\e[?1005l"/, 'UTF-8 mouse encoding off';
+like $seq, /"\e[?1006l"/, 'SGR mouse encoding off';
+like $seq, /"\e[?1015l"/, 'urxvt mouse encoding off';
+like $seq, /"\e[?1016l"/, 'SGR-pixel mouse encoding off';
+
+# Other input-protocol modes that can leak.
+like $seq, /"\e[?1004l"/, 'focus event reporting off';
+like $seq, /"\e[?2004l"/, 'bracketed paste off';
+like $seq, /"\e[>4;0m"/,  'modify-other-keys off';
+
+# Visible state — cursor restoration and SGR reset so the shell
+# isn't left styled or with a hidden cursor.
+like $seq, /"\e[?25h"/,   'cursor shown (DECTCEM set)';
+like $seq, /"\e[0m"/,     'SGR reset';
+like $seq, /"\e[?1049l"/, 'alternate screen exited (idempotent)';

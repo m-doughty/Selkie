@@ -1146,6 +1146,41 @@ method !dispatch-mouse-handlers(Selkie::Event $ev --> Bool) {
 #| HelpOverlay to render a listing for the focused widget chain.
 method keybinds(--> List) { @!keybinds.List }
 
+#|( Walk this widget's ancestor chain (self → parent → … → root)
+    collecting every keybind whose C<:description> is non-empty.
+    Returns a list of C<{ spec => Str, description => Str }> hashes
+    in focused-leaf-first order. Identical specs further up the
+    chain are deduplicated — the most-specific (leaf-closest)
+    binding wins, mirroring the order in which event dispatch
+    would actually invoke handlers.
+
+    Cycle-safe: if the parent chain loops back on itself (pathological
+    reparenting bug, but observed in test rigs), the walk stops at
+    the first repeat.
+
+    Useful for any "what shortcuts are reachable from here" UI —
+    keybind footers, status bars, tooltips, command palettes. The
+    grouped-by-class shape used by L<Selkie::Widget::HelpOverlay>
+    is a separate private helper because the overlay wants section
+    headers per widget class; flat consumers want a flat list. )
+method keybind-chain(--> List) {
+    my @out;
+    my %seen-spec;
+    my %seen-widget;
+    my $w = self;
+    while $w {
+        last if %seen-widget{$w.WHICH};
+        %seen-widget{$w.WHICH} = True;
+        for $w.keybinds.grep({ .description.chars > 0 }) -> $kb {
+            next if %seen-spec{$kb.spec};
+            %seen-spec{$kb.spec} = True;
+            @out.push: %( spec => $kb.spec, description => $kb.description );
+        }
+        $w = $w.parent;
+    }
+    @out.List;
+}
+
 method !check-keybinds(Selkie::Event $ev --> Bool) {
     for @!keybinds -> $kb {
         if $kb.matches($ev) {
