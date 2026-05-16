@@ -71,24 +71,30 @@ That's it on supported platforms. No system dependencies, no compiler, no CMake.
 How it works
 ------------
 
-Selkie depends on [Notcurses::Native](https://github.com/m-doughty/Notcurses-Native), which ships prebuilt, self-contained notcurses libraries (with bundled ffmpeg / ncurses / libunistring / libdeflate) for the common platforms. On `zef install` the matching archive is downloaded from GitHub Releases, SHA256-verified against a checksum baked into the distribution, and staged into `resources/`. No system packages are touched.
+Selkie depends on [Notcurses::Native](https://github.com/m-doughty/Notcurses-Native), which ships prebuilt, self-contained notcurses libraries (with bundled ffmpeg / ncurses / libunistring / libdeflate plus accelerated codec libraries — libdav1d for AV1, libvpx for VP8/9, libopus for Opus audio) for the common platforms. On `zef install` the matching archive is downloaded from GitHub Releases, SHA256-verified against a checksum baked into the distribution, and staged into a stable XDG data directory. No system packages are touched.
 
 Supported prebuilt platforms:
 
-  * macOS arm64 (Apple Silicon)
+  * macOS arm64 (Apple Silicon, macOS 11.0+)
 
-  * Linux x86_64 (glibc — Debian / Ubuntu / Fedora / RHEL / Arch)
+  * macOS x86_64 (Intel Mac / Hackintosh, macOS 10.15 Catalina+)
 
-  * Linux aarch64 (glibc)
+  * Linux x86_64 glibc — manylinux_2_28 baseline (RHEL 8+ / Ubuntu 18.10+ / Debian 10+ / Arch / Fedora 28+)
 
-  * Windows x86_64
+  * Linux aarch64 glibc
 
-  * Windows arm64
+  * Linux x86_64 musl — alpine:3.20 baseline (Alpine 3.13+ / Postmarket OS / Void / Adelie)
+
+  * Linux aarch64 musl
+
+  * Windows x86_64 (mingw-w64 / UCRT)
+
+  * Windows arm64 (clang / UCRT — built but not CI-verified; see Notcurses::Native README)
 
 Falling back to a source build
 ------------------------------
 
-If you're on a platform not in the list above (Intel Mac, musl Linux, FreeBSD, …), or you set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the usual native deps:
+If you're on a platform not in the list above (FreeBSD / OpenBSD / i686 / riscv64 / ppc64le / …), or you set `NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1`, Notcurses::Native compiles notcurses from source via CMake. That path needs the usual native deps:
 
 **Linux (Debian / Ubuntu):**
 

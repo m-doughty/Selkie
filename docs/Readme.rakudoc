@@ -75,26 +75,31 @@ no CMake.
 
 Selkie depends on L<Notcurses::Native|https://github.com/m-doughty/Notcurses-Native>,
 which ships prebuilt, self-contained notcurses libraries (with bundled
-ffmpeg / ncurses / libunistring / libdeflate) for the common platforms.
-On C<zef install> the matching archive is downloaded from GitHub
-Releases, SHA256-verified against a checksum baked into the
-distribution, and staged into C<resources/>. No system packages are
-touched.
+ffmpeg / ncurses / libunistring / libdeflate plus accelerated codec
+libraries — libdav1d for AV1, libvpx for VP8/9, libopus for Opus
+audio) for the common platforms. On C<zef install> the matching
+archive is downloaded from GitHub Releases, SHA256-verified against
+a checksum baked into the distribution, and staged into a stable
+XDG data directory. No system packages are touched.
 
 Supported prebuilt platforms:
 
-=item macOS arm64 (Apple Silicon)
-=item Linux x86_64 (glibc — Debian / Ubuntu / Fedora / RHEL / Arch)
-=item Linux aarch64 (glibc)
-=item Windows x86_64
-=item Windows arm64
+=item macOS arm64 (Apple Silicon, macOS 11.0+)
+=item macOS x86_64 (Intel Mac / Hackintosh, macOS 10.15 Catalina+)
+=item Linux x86_64 glibc — manylinux_2_28 baseline (RHEL 8+ / Ubuntu 18.10+ / Debian 10+ / Arch / Fedora 28+)
+=item Linux aarch64 glibc
+=item Linux x86_64 musl — alpine:3.20 baseline (Alpine 3.13+ / Postmarket OS / Void / Adelie)
+=item Linux aarch64 musl
+=item Windows x86_64 (mingw-w64 / UCRT)
+=item Windows arm64 (clang / UCRT — built but not CI-verified; see Notcurses::Native README)
 
 =head2 Falling back to a source build
 
-If you're on a platform not in the list above (Intel Mac, musl Linux,
-FreeBSD, …), or you set C<NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1>,
-Notcurses::Native compiles notcurses from source via CMake. That path
-needs the usual native deps:
+If you're on a platform not in the list above (FreeBSD / OpenBSD /
+i686 / riscv64 / ppc64le / …), or you set
+C<NOTCURSES_NATIVE_BUILD_FROM_SOURCE=1>, Notcurses::Native compiles
+notcurses from source via CMake. That path needs the usual native
+deps:
 
 B<Linux (Debian / Ubuntu):>
 

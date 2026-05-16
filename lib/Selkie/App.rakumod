@@ -246,6 +246,7 @@ use Notcurses::Native::Types;
 use Notcurses::Native::Plane;
 use Notcurses::Native::Input;
 use Notcurses::Native::Channel;
+use Notcurses::Native::Context;
 
 use Selkie::Widget;
 use Selkie::Container;
@@ -566,6 +567,8 @@ submethod TWEAK() {
     $!rows = $r;
     $!cols = $c;
 
+    self!log-terminal-startup-state;
+
     # Paint the stdplane's base cell using the theme's `base` style
     # so gaps between widgets fall through to the theme's background
     # instead of the terminal's default. Notcurses composites child
@@ -876,6 +879,54 @@ method !emit-terminal-cleanup(--> Nil) {
     return without $tty;
     LEAVE { try $tty.close }
     try $tty.print(Selkie::App.build-terminal-cleanup-sequence);
+}
+
+#|( One-shot startup diagnostic for terminal-pixel issues. Writes a
+    summary of the chosen pixel implementation, cell + cell-pixel
+    dimensions, and the env vars notcurses uses for terminal
+    identification to C</tmp/selkie-terminal-debug.{pid}.log>.
+    Gated on C<SELKIE_TERMINAL_DEBUG=1> so it never fires in
+    production. Used to diagnose Image-rendering bugs that differ
+    across terminals (e.g. AvatarList renders empty in iTerm2 but
+    works in Kitty / Terminal.app). )
+method !log-terminal-startup-state(--> Nil) {
+    my $env = %*ENV<SELKIE_TERMINAL_DEBUG>;
+    return unless $env.defined && $env ne '' && $env ne '0';
+
+    my $pixel-impl = notcurses_check_pixel_support($!nc);
+    my %impl-names =
+        0 => 'NCPIXEL_NONE',
+        1 => 'NCPIXEL_SIXEL',
+        2 => 'NCPIXEL_LINUXFB',
+        3 => 'NCPIXEL_ITERM2',
+        4 => 'NCPIXEL_KITTY_STATIC',
+        5 => 'NCPIXEL_KITTY_ANIMATED',
+        6 => 'NCPIXEL_KITTY_SELFREF';
+    my $impl-name = %impl-names{$pixel-impl} // "UNKNOWN($pixel-impl)";
+
+    my uint32 $pxy = 0; my uint32 $pxx = 0;
+    my uint32 $cdy = 0; my uint32 $cdx = 0;
+    my uint32 $bmy = 0; my uint32 $bmx = 0;
+    ncplane_pixel_geom($!stdplane, $pxy, $pxx, $cdy, $cdx, $bmy, $bmx);
+
+    my $log = qq:to/END/;
+        ===== Selkie terminal startup diagnostic =====
+        PID: $*PID
+        TERM:         {%*ENV<TERM>         // '(unset)'}
+        TERM_PROGRAM: {%*ENV<TERM_PROGRAM> // '(unset)'}
+        TERM_PROGRAM_VERSION: {%*ENV<TERM_PROGRAM_VERSION> // '(unset)'}
+        LC_TERMINAL:  {%*ENV<LC_TERMINAL>  // '(unset)'}
+        LC_TERMINAL_VERSION: {%*ENV<LC_TERMINAL_VERSION> // '(unset)'}
+        COLORTERM:    {%*ENV<COLORTERM>    // '(unset)'}
+        Pixel implementation: $impl-name (raw={$pixel-impl})
+        Terminal cells:    rows={$!rows} cols={$!cols}
+        Terminal pixels:   y={$pxy} x={$pxx}
+        Cell pixel dims:   y={$cdy} x={$cdx}
+        Bitmap max emit:   y={$bmy} x={$bmx}
+        ==============================================
+        END
+    my $path = "/tmp/selkie-terminal-debug.{$*PID}.log";
+    try spurt $path, $log, :append;
 }
 
 method !capture-tty-state(--> Str) {

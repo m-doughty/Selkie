@@ -373,6 +373,14 @@ method emit-terminal-cleanup() returns Nil
 
 Write the terminal-cleanup escape sequence to `/dev/tty` as the final step of `shutdown`. Bypasses notcurses's output buffering by going direct to the tty (same pattern as `set-title`). Best-effort: missing `/dev/tty`, failed open, or failed write are all silently swallowed — at this point the app is shutting down and there's nowhere useful to surface an error.
 
+### method log-terminal-startup-state
+
+```raku
+method log-terminal-startup-state() returns Nil
+```
+
+One-shot startup diagnostic for terminal-pixel issues. Writes a summary of the chosen pixel implementation, cell + cell-pixel dimensions, and the env vars notcurses uses for terminal identification to `/tmp/selkie-terminal-debug.{pid}.log`. Gated on `SELKIE_TERMINAL_DEBUG=1` so it never fires in production. Used to diagnose Image-rendering bugs that differ across terminals (e.g. AvatarList renders empty in iTerm2 but works in Kitty / Terminal.app).
+
 ### method toast
 
 ```raku
