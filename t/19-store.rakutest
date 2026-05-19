@@ -9,7 +9,7 @@ class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
 }
 
-plan 27;
+plan 29;
 
 subtest "empty store" => {
     plan 2;
@@ -468,4 +468,125 @@ subtest "many sibling subs killed in one callback do not crash" => {
 
     $s.dispatch('bump');
     lives-ok { $s.tick }, "tick survives mass-unsubscribe in one callback";
+};
+
+subtest "unsubscribe-widget cascade mid-tick does not corrupt iteration" => {
+    # Forward-coverage of the contract: a callback may
+    # `unsubscribe-widget` many siblings in one go (each widget
+    # carrying its own cluster of subs) without breaking the outer
+    # iteration. Multiple trials defeat hash-order luck.
+    plan 1;
+
+    my $message-count   = 40;   # roughly one chat-pane's worth
+    my $subs-per-widget = 3;    # text-update, scroll, focus
+    my $trial-count     = 8;    # defeat hash randomization
+
+    my $all-survived = True;
+    for ^$trial-count {
+        my $s = Selkie::Store.new;
+        my @msg-widgets = TestWidget.new xx $message-count;
+
+        $s.register-handler('rebuild-list', -> $st, %ev {
+            (db => { generation => ($st.get-in('generation') // 0) + 1 },);
+        });
+
+        for @msg-widgets.kv -> $i, $w {
+            for ^$subs-per-widget -> $j {
+                $s.subscribe-with-callback("msg-{$i}-sub-{$j}",
+                    -> $store { $store.get-in('generation') // 0 },
+                    -> $v { },
+                    $w);
+            }
+        }
+
+        my $orchestrator-widget = TestWidget.new;
+        $s.subscribe-with-callback('orchestrator',
+            -> $store { $store.get-in('generation') // 0 },
+            -> $v {
+                # The actual Cantina path: destroy all message widgets,
+                # each cascading unsubscribe-widget.
+                $s.unsubscribe-widget($_) for @msg-widgets;
+            },
+            $orchestrator-widget);
+
+        $s.tick;                  # priming
+        $s.dispatch('rebuild-list');
+
+        my $survived = True;
+        try {
+            $s.tick;
+            CATCH { default { $survived = False } }
+        }
+        $all-survived = False unless $survived;
+    }
+
+    ok $all-survived,
+        "$trial-count trials of {$message-count}-widget mid-tick cascade all survived";
+};
+
+subtest "path-callback widget cascade from pull-sub callback survives" => {
+    # Faithful reproduction of App::Cantina's character-change path:
+    # 40 "message" widgets each carrying 3 path-callback subs (the
+    # ChatMessage / ImageMessage shape), plus a pull-based
+    # 'orchestrator' sub whose callback synchronously tears down
+    # every message widget. The teardown cascades unsubscribe-widget
+    # → 120 unsubscribes back into the very %!subscriptions hash
+    # !check-subscriptions is walking. Pre-defer this crashed with
+    # "Hash keys must be concrete strings (got )". Post-defer, the
+    # 120 unsubscribes queue into $!pending-unsubscribes and the
+    # LEAVE block flushes them after the walk completes.
+    plan 3;
+
+    my $s = Selkie::Store.new;
+    my $orchestrator-widget = TestWidget.new;
+    my @msg-widgets = TestWidget.new xx 40;
+
+    # Seed the data each path-callback reads, so subscribe-path-callback's
+    # synchronous priming has something to compute against.
+    for ^40 -> $i {
+        $s.assoc-in('msgs', "m{$i}", value => { content => '' });
+    }
+
+    my $msg-callback-fires = 0;
+    for @msg-widgets.kv -> $i, $w {
+        for ^3 -> $j {
+            $s.subscribe-path-callback(
+                "msg-{$i}-sub-{$j}",
+                ('msgs', "m{$i}"),
+                -> $msg { $msg-callback-fires++ },
+                $w,
+            );
+        }
+    }
+
+    my $orchestrator-fired = 0;
+    $s.subscribe-with-callback(
+        'orchestrator',
+        -> $store { $store.get-in('generation') // 0 },
+        -> $v {
+            $orchestrator-fired++;
+            $s.unsubscribe-widget($_) for @msg-widgets;
+        },
+        $orchestrator-widget,
+    );
+
+    $s.register-handler('rebuild', -> $st, %ev {
+        (db => { generation => ($st.get-in('generation') // 0) + 1 },);
+    });
+
+    $s.tick;                  # primes (orchestrator fires once with 0)
+    $msg-callback-fires = 0;  # reset after priming fires
+
+    $s.dispatch('rebuild');
+    lives-ok { $s.tick }, "cascading path-callback teardown mid-tick survives";
+    ok $orchestrator-fired >= 1, "orchestrator callback fired";
+
+    # Behavioral cleanup check: after the deferred flush, writing to
+    # any message's path must NOT invoke a per-widget callback, since
+    # they should all have been unsubscribed.
+    $msg-callback-fires = 0;
+    $s.assoc-in('msgs', 'm0', value => { content => 'after' });
+    $s.assoc-in('msgs', 'm17', value => { content => 'after' });
+    $s.tick;
+    is $msg-callback-fires, 0, "per-widget subs all cleaned up by walk exit";
 };

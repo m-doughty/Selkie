@@ -6,7 +6,7 @@ use Selkie::Event;
 use Selkie::Test::Keys;
 use Notcurses::Native::Types;
 
-plan 12;
+plan 15;
 
 subtest "construction" => {
     plan 3;
@@ -154,4 +154,59 @@ subtest "primary click fires on-press supply" => {
     );
     ok $consumed, 'click event consumed';
     ok $pressed, 'on-press fired from primary click';
+};
+
+subtest "debounce-ms default 0 lets every click through" => {
+    plan 1;
+    my $b = Selkie::Widget::Button.new(label => 'OK');
+    my $count = 0;
+    $b.on-press.tap: -> $ { $count++ };
+    for ^3 {
+        $b.handle-event(
+            mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS,
+                        click-count => 1)
+        );
+    }
+    is $count, 3, 'three clicks → three emits with debounce-ms=0';
+};
+
+subtest "debounce-ms collapses rapid emits" => {
+    plan 2;
+    my $b = Selkie::Widget::Button.new(label => 'OK', debounce-ms => 120);
+    my $count = 0;
+    $b.on-press.tap: -> $ { $count++ };
+
+    # Two clicks in immediate succession — the second falls inside
+    # the debounce window and is dropped.
+    $b.handle-event(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS,
+                    click-count => 1)
+    );
+    $b.handle-event(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS,
+                    click-count => 1)
+    );
+    is $count, 1, 'second click within window suppressed';
+
+    # Wait past the window, then a third click is allowed through.
+    sleep 0.15;
+    $b.handle-event(
+        mouse-event(id => NCKEY_BUTTON1, input-type => NCTYPE_PRESS,
+                    click-count => 1)
+    );
+    is $count, 2, 'click after window emits';
+};
+
+subtest "debounce-ms also gates keyboard activation" => {
+    plan 1;
+    # Mouse and keyboard share the same emit chokepoint, so a
+    # repeat-key burst on a focused button should also collapse.
+    my $b = Selkie::Widget::Button.new(label => 'OK', debounce-ms => 120);
+    $b.set-focused(True);
+    my $count = 0;
+    $b.on-press.tap: -> $ { $count++ };
+    $b.handle-event(key-event(id => NCKEY_ENTER));
+    $b.handle-event(key-event(id => NCKEY_ENTER));
+    $b.handle-event(key-event(id => NCKEY_SPACE));
+    is $count, 1, 'three rapid activations → one emit';
 };

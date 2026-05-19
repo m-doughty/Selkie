@@ -2,6 +2,88 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.7.4  2026-05-19T17:10:03+01:00
+    - Selkie::Store: subscription mutations made from inside the
+      per-tick subscription walks (`!check-subscriptions` and
+      `!flush-push-subs`) are now deferred and applied after the
+      walk via a `LEAVE` block. Earlier in this release cycle the
+      same call site was patched with a `.keys.List -> Str:D $id`
+      snapshot, which proved insufficient — App::Cantina's
+      character-change path cascades ~120 `unsubscribe` calls
+      from a single callback firing (ChatMessage / ImageMessage
+      per-widget subs cleaned up via `Container.clear` →
+      `unsubscribe-widget`), and the live `%!subscriptions` hash
+      shrinking under that load left the loop variable undefined
+      on the next iteration ("Hash keys must be concrete strings
+      (got )" mid-tick). Neither `.keys.List` (likely fused away
+      by spesh) nor `Str:D` on a pointy-block parameter (loosely
+      enforced) caught it.
+      The new mechanism establishes a hard invariant:
+      `%!subscriptions` and `%!push-subs-by-key` are never
+      mutated mid-walk. `unsubscribe` queues into a private
+      `$!pending-unsubscribes` SetHash when called during a walk;
+      the LEAVE block at the end of each walk drains the queue
+      via a new private `!do-unsubscribe`. During the walk,
+      queued ids are skipped in the dispatch loop, so the
+      observable contract is unchanged (a sub unsubscribed by
+      callback X in tick N does not fire later in tick N).
+      Re-subscribing an id that's queued for removal cancels the
+      queue and tears the old entry down cleanly before the new
+      registration. The walks themselves now snapshot keys via a
+      typed eager Array (`my Str:D @ids = %!subscriptions.keys`)
+      that spesh cannot fuse away and that throws loudly on any
+      non-Str:D key as a diagnostic backstop. Pod "Mutation
+      safety" section rewritten to describe the actual mechanism.
+    - Selkie::Widget::MultiLineInput: `set-text` and `set-text-silent`
+      now normalise CRLF and lone CR to LF before splitting. A stray
+      `\r` inside a logical line made `ncplane_putstr_yx` reset the
+      cursor to column 0 mid-row, threw off `.chars`-based wrap
+      counts, and broke scroll. The bug surfaced loading CCv3
+      character cards (often authored on Windows) into the Cantina
+      character editor's description box.
+    - Selkie::Widget::Button: new constructor parameter
+      `:debounce-ms` (UInt, default 0 = off). When non-zero, click
+      events emitted within the window of the previous emit are
+      suppressed. Default of 0 preserves existing behaviour for
+      every consumer; opt in where mis-fires matter (e.g. Cantina's
+      "+ Add LoRA" row builder).
+    - Selkie::App: terminal-tab-switch sprixel recovery. New attribute
+      `$.sprixel-refresh-idle-threshold` (Num seconds) controls how
+      long the loop tolerates input-idle before forcing every Image
+      in the tree to re-emit its sprixel on the next render. Defaults
+      to 5e0 on Kitty (detected via `KITTY_WINDOW_ID` or `TERM`
+      starting with `xterm-kitty`) and 0e0 (disabled) elsewhere. The
+      bug it fixes: Kitty's per-tab compositor restores the cell
+      buffer on tab return but NOT the direct-placement graphics
+      notcurses emitted, so any Image widget whose owning widget
+      hasn't dirtied since the switch stays visually blank — most
+      visible in App::Cantina's character-select pane (AvatarList),
+      which rarely re-renders during normal use. Other Image-bearing
+      widgets recover incidentally because they're already dirtying
+      on chat-pane scrolls / emotion-pane changes. The "next input
+      after long idle" signal is the cheapest detector we have:
+      Kitty does emit focus events under CSI ?1004, but notcurses's
+      input parser doesn't surface them as keyable events, and
+      reading raw stdin in parallel with notcurses isn't workable.
+    - Selkie::App: new public method `force-refresh-sprixels`. Walks
+      the live tree (active screen + modal stack + toast) and on
+      every Selkie::Widget::Image calls `destroy-blit-plane` (which
+      also clears the geometry cache so the next render takes the
+      cache-miss path) and `mark-dirty`. Apps can call it directly
+      from a manual-refresh keybind, or after an operation known to
+      bypass the auto-refresh idle signal.
+    - Selkie::App: new public class method
+      `detect-sprixel-bug-prone-terminal` returning Bool. Exposed
+      so the detection logic is unit-testable without an active
+      notcurses instance — Selkie::App.detect-sprixel-bug-prone-terminal
+      runs cleanly in plain Raku.
+    - t/71-sprixel-refresh.rakutest (new): Kitty detection across
+      KITTY_WINDOW_ID / TERM signals, the tree-walking helper's
+      behavior on a mock mixed-widget tree (Images marked dirty,
+      non-Image widgets untouched, undef tree safe), and source-
+      level structural invariants tying the threshold into TWEAK
+      and the run loop.
+
 0.7.3  2026-05-16T04:21:07+01:00
     - META6: bump Notcurses::Native dep from 0.3.2+ to 0.3.4+ to
       pick up the new prebuilt platform matrix. 0.3.4 adds macOS

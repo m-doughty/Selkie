@@ -21,6 +21,21 @@ Emits on its `on-press` Supply when the user presses `Enter` or `Space` while fo
 
 Focusable by default (no need to pass `focusable =` True>). The label is immutable after construction — build a new button if you need different text.
 
+Debouncing accidental double-clicks
+-----------------------------------
+
+Mouse drivers and the terminal layer occasionally deliver two presses for a single physical click. For buttons whose activation has visible side effects (adding a row, kicking off a job, posting a request), pass `:debounce-ms` to throttle the `on-press` emit:
+
+```raku
+my $add = Selkie::Widget::Button.new(
+    label       => '+ Add row',
+    sizing      => Sizing.fixed(14),
+    debounce-ms => 120,    # collapse press emits within 120ms
+);
+```
+
+The default of `0` leaves existing buttons unchanged.
+
 EXAMPLES
 ========
 
@@ -48,6 +63,18 @@ SEE ALSO
 ### has Str $.label
 
 The text shown on the button. Required at construction; use `set-label` to change afterwards (e.g. for counters).
+
+### has UInt $.debounce-ms
+
+Reject press emits that arrive within this many milliseconds of the previous emit. 0 (default) leaves every press through — the existing contract for every consumer that doesn't opt in. Set on buttons whose activation is destructive or stateful enough that a stray second click would surprise the user (typical mouse-click double- fire, repeat-key bursts). Applies uniformly to mouse and keyboard activation paths.
+
+### method emit-press
+
+```raku
+method emit-press() returns Nil
+```
+
+Single chokepoint for emit. Centralises the debounce check so the mouse path and the keyboard path can't drift apart.
 
 ### method on-press
 

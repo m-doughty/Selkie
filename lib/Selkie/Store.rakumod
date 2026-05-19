@@ -217,15 +217,37 @@ a widget (used during widget destruction).
 
 =head2 Mutation safety
 
-It's safe for a subscription's callback to call C<unsubscribe> (its
-own id, or any sibling) — the per-tick subscription walk snapshots
-the key set up front and re-resolves each entry through an
-existence-guarded lookup, so deletions during iteration don't
-corrupt the loop. This matters whenever a callback closes a modal
-(which destroys the modal's widget tree, which calls
-C<unsubscribe-widget> for every child), since a tick can otherwise
-crash with "expected Associative but got Mu" on the next pair-bind.
-The same applies to C<flush-push-subs> for path subscriptions.
+It's safe for a subscription's callback to call C<unsubscribe>,
+C<unsubscribe-widget>, or any cascade thereof (closing a modal,
+clearing a container, swapping a pane) while a tick is in progress.
+C<unsubscribe> calls made from inside C<!check-subscriptions> or
+C<!flush-push-subs> are queued into a pending set; the actual hash
+deletions are applied after the walk exits, via a C<LEAVE> block
+that runs whether the walk returns normally or unwinds via an
+exception. During the walk, queued ids are skipped in the dispatch
+loop, so a sub unsubscribed by an earlier callback in the same tick
+does B<not> fire later in that same tick — matching the observable
+behaviour callers depended on before the defer mechanism existed.
+
+Re-subscribing the same id during a walk (C<unsubscribe('foo')>
+followed by C<subscribe-with-callback('foo', ...)> in the same
+callback) cancels the queued removal and tears down the old entry
+cleanly before installing the new one, so the deferred flush never
+clobbers the new registration.
+
+Mutations from outside a walk — the common case, a handler running
+in C<!process-queue> or app code calling C<unsubscribe> directly —
+take effect immediately as before. The defer mechanism is invisible
+to that path.
+
+The invariant the walks maintain: C<%!subscriptions> and
+C<%!push-subs-by-key> are never mutated while a walk is iterating
+them. Earlier implementations relied on C<:exists> guards plus
+C<.keys.List> snapshots, but neither survived realistic load
+(App::Cantina character changes cascade ~120 C<unsubscribe> calls
+through one callback firing); the typed eager Array snapshot
+(C<my Str:D @ids = %!subscriptions.keys>) plus the queued-mutation
+discipline above is what actually holds.
 
 =head2 Equality semantics
 
@@ -328,6 +350,14 @@ has Bool $!subs-primed = False;
 # the pull split.
 has @!dirty-paths;        # List of path Lists written since last flush
 has %!push-subs-by-key;   # path-key → Array[sub-id]
+
+# Walks (!check-subscriptions, !flush-push-subs) set this True
+# while iterating. Any `unsubscribe` called during that window is
+# captured in $!pending-unsubscribes and applied after the walk
+# exits via the LEAVE block — never mid-iteration. See "Mutation
+# safety" in the Pod above for the contract.
+has Bool    $!in-subscription-walk = False;
+has SetHash $!pending-unsubscribes .= new;
 
 has IO::Handle $!debug-log;
 has Bool $!debug-dispatches    = False;
@@ -511,6 +541,13 @@ our sub key-path(Str $key --> List) {
     DATA> in this module's Pod. )
 method subscribe(Str:D $id, @path, Selkie::Widget $widget,
                  Bool :$deep-equality-check = False) {
+    # Re-subscribing an id that's queued for deferred removal: tear
+    # down the old entry cleanly *now* and drop the queue marker, so
+    # the end-of-walk flush doesn't clobber the new registration.
+    if $!pending-unsubscribes{$id} {
+        self!do-unsubscribe($id);
+        $!pending-unsubscribes.unset($id);
+    }
     %!subscriptions{$id} = {
         type       => 'path',
         path       => @path.List,
@@ -549,6 +586,10 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget,
     current value; only the change-gate uses the snapshot. )
 method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widget,
                                Bool :$deep-equality-check = False) {
+    if $!pending-unsubscribes{$id} {
+        self!do-unsubscribe($id);
+        $!pending-unsubscribes.unset($id);
+    }
     %!subscriptions{$id} = {
         type       => 'path-callback',
         path       => @path.List,
@@ -599,6 +640,10 @@ method !unindex-push-sub(Str:D $id, @path) {
     summary). )
 method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
                           Bool :$deep-equality-check = False) {
+    if $!pending-unsubscribes{$id} {
+        self!do-unsubscribe($id);
+        $!pending-unsubscribes.unset($id);
+    }
     %!subscriptions{$id} = {
         type       => 'computed',
         compute    => &compute,
@@ -620,6 +665,10 @@ method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
     can install or read the value directly. )
 method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $widget,
                                Bool :$deep-equality-check = False) {
+    if $!pending-unsubscribes{$id} {
+        self!do-unsubscribe($id);
+        $!pending-unsubscribes.unset($id);
+    }
     %!subscriptions{$id} = {
         type       => 'callback',
         compute    => &compute,
@@ -631,13 +680,39 @@ method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $w
     $!subs-primed = False;
 }
 
-#| Remove a subscription by its id. No-op if the id isn't registered.
+#|( Remove a subscription by its id. No-op if the id isn't registered.
+
+    During a subscription walk (C<!check-subscriptions> /
+    C<!flush-push-subs>), the actual removal is deferred to walk
+    exit; the queued id is skipped in the dispatch loop, so an
+    earlier callback's unsubscribe is observed in the same tick.
+    Outside a walk, removal is immediate as before. )
 method unsubscribe(Str:D $id) {
+    if $!in-subscription-walk {
+        $!pending-unsubscribes.set($id);
+        return;
+    }
+    self!do-unsubscribe($id);
+}
+
+# Actual hash mutation — caller has already established that this
+# is safe (either outside a walk, or via !flush-pending-unsubscribes
+# at walk exit).
+method !do-unsubscribe(Str:D $id) {
     my %sub = %!subscriptions{$id} // return;
     if (%sub<type> // '') eq any('path', 'path-callback') {
         self!unindex-push-sub($id, %sub<path>);
     }
     %!subscriptions{$id}:delete;
+}
+
+# Drain the pending-unsubscribe set, applying each deferred removal.
+# Called from the LEAVE block of every walk wrapper.
+method !flush-pending-unsubscribes() {
+    return unless $!pending-unsubscribes.elems;
+    my @to-flush = $!pending-unsubscribes.keys.List;
+    $!pending-unsubscribes = SetHash.new;
+    self!do-unsubscribe($_) for @to-flush;
 }
 
 #|( Remove every subscription bound to a widget. Called automatically by
@@ -696,6 +771,16 @@ method tick(--> Bool) {
     C<!values-equal> gates whether C<&callback> / C<mark-dirty>
     actually runs, so no-op writes don't produce spurious fires. )
 method !flush-push-subs() {
+    # Same defer wrapper as !check-subscriptions — see "Mutation
+    # safety" in the module Pod. Path-callbacks fired from here can
+    # call unsubscribe / unsubscribe-widget; those calls queue and
+    # apply at walk exit.
+    $!in-subscription-walk = True;
+    LEAVE {
+        $!in-subscription-walk = False;
+        self!flush-pending-unsubscribes;
+    }
+
     my @writes = @!dirty-paths;
     @!dirty-paths = ();
 
@@ -724,6 +809,7 @@ method !flush-push-subs() {
     }
 
     for %to-fire.keys -> $sub-id {
+        next if $!pending-unsubscribes{$sub-id};
         next unless %!subscriptions{$sub-id}:exists;
         my %sub := %!subscriptions{$sub-id};
         my $current = self.get-in(|%sub<path>);
@@ -808,18 +894,25 @@ method !run-effect(Str:D $fx-name, $fx-params, Str :$event) {
 }
 
 method !check-subscriptions() {
-    # Snapshot the keys upfront and re-resolve each value through
-    # `:exists`-guarded lookup. A subscription's callback is allowed
-    # to call `unsubscribe` (its own id, or others) — `Hash.kv`
-    # iterates lazily so a deleted entry would otherwise yield Nil at
-    # value-bind time, failing the typecheck on `%sub`. Mirrors the
-    # pattern already used in C<!flush-push-subs>. Without this,
-    # closing a modal from inside a subscription callback (which
-    # destroys the modal's widget tree, which calls
-    # C<unsubscribe-widget> for each child) caused a non-deterministic
-    # "expected Associative but got Mu" crash one or two ticks later
-    # depending on hash ordering.
-    for %!subscriptions.keys -> $id {
+    # See "Mutation safety" in the module Pod. The flag tells
+    # `unsubscribe` to queue removals; the LEAVE block runs whether
+    # we exit normally or by exception, so we never wedge the store.
+    $!in-subscription-walk = True;
+    LEAVE {
+        $!in-subscription-walk = False;
+        self!flush-pending-unsubscribes;
+    }
+
+    # Typed eager Array snapshot: assignment to `Str:D @ids` throws
+    # X::TypeCheck::Assignment loudly if any key isn't a defined Str
+    # (instead of corrupting an unrelated downstream `:exists` call).
+    # The Array binding is an explicit container slot that the spesh
+    # optimiser cannot fuse away — `.keys.List` was insufficient in
+    # practice for the same purpose.
+    my Str:D @ids = %!subscriptions.keys;
+
+    for @ids -> $id {
+        next if $!pending-unsubscribes{$id};
         next unless %!subscriptions{$id}:exists;
         my %sub := %!subscriptions{$id};
 

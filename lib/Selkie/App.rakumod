@@ -93,6 +93,13 @@ An C<END> phaser registered during construction guarantees C<shutdown>
 runs even if the program exits abnormally (e.g. an exception before
 C<run> is called). This means your terminal is always restored.
 
+C<shutdown> itself is exception-isolated step-by-step: a throw in modal
+destroy, screen-manager destroy, or C<notcurses_stop> (the most common
+real-world cause is a NativeCall dlopen failure when the bundled
+notcurses library was reinstalled to a new path mid-session) doesn't
+abort the rest. TTY restoration, the escape-sequence backstop, and
+stderr-redirect teardown always get a chance to run.
+
 C<run> wraps the event loop in a C<CATCH> block. If anything inside the
 loop throws, the terminal is restored, the error is printed to STDERR
 with a full backtrace, and the process exits with code 1.
@@ -377,6 +384,37 @@ has Supplier $!event-supplier = Supplier.new;
     when the idle ladder has ramped down. )
 has Num $.hot-hz = 60e0;
 
+#|( Seconds of input-idle before the next input event triggers a
+    forced re-emit of every L<Selkie::Widget::Image>'s sprixel. Defends
+    against terminals that drop or fail to redraw inline graphics on
+    tab / window-focus changes — Kitty's per-tab compositor is the
+    canonical example: switching to another Kitty tab and back
+    typically restores the cell buffer but B<not> the direct-placement
+    graphics that notcurses emitted there, so any Image whose owning
+    widget hasn't dirtied since the switch stays visually blank even
+    though Selkie's blit-plane cache thinks it's still live.
+
+    The fix surface is the next input event after the user comes
+    back: the run loop compares C<now - last-activity> against this
+    threshold and, when it crosses, calls C<force-refresh-sprixels>
+    before dispatching the input. That's the cheapest available
+    signal — terminal focus events (CSI 1004) aren't surfaced
+    through notcurses's input parser, and we can't read raw stdin
+    in parallel without fighting notcurses for it.
+
+    Defaults: C<5e0> on Kitty (detected via C<KITTY_WINDOW_ID> or
+    C<TERM> starting with C<xterm-kitty>); C<0e0> (disabled) elsewhere.
+    Set to C<0e0> explicitly to opt out even on Kitty, or to a higher
+    value to reduce the frequency of refreshes during normal pauses.
+
+    The cost of a triggered refresh is roughly C<O(images-in-tree)>
+    destroy-blit-plane calls plus the same number of fresh blits on
+    the next render — sub-millisecond per Image on terminals where
+    the image data is cached terminal-side (Kitty by image ID),
+    a few ms per Image elsewhere. The tree walk itself is free on
+    apps without Images. )
+has Num $.sprixel-refresh-idle-threshold;
+
 #|( Path to a file that receives everything that would normally hit
     stderr while the app is running — Raku warnings
     (C<Use of uninitialized value …>), runtime failures logged via
@@ -429,6 +467,56 @@ method !collect-tree-roots(--> List) {
     L<Selkie::Tree>'s C<current-active-modal> contract expects. )
 method !active-modal-or-nil(--> Mu) {
     @!modal-stack ?? @!modal-stack.tail !! Nil;
+}
+
+#|( True when the host terminal is one of the known
+    sprixel-survives-tab-switch problem cases (currently: Kitty).
+    Used by C<TWEAK> to pick the default
+    C<sprixel-refresh-idle-threshold> for apps that don't override.
+
+    Exposed as a regular method (callable on the type object) so the
+    detection logic is unit-testable without spinning up notcurses —
+    C<Selkie::App.detect-sprixel-bug-prone-terminal()> runs
+    cleanly in plain Raku. )
+method detect-sprixel-bug-prone-terminal(--> Bool) {
+    # KITTY_WINDOW_ID is set by Kitty itself and survives TERM
+    # overrides (e.g., users running with TERM=xterm-256color for
+    # compatibility with older programs while still inside Kitty).
+    return True if %*ENV<KITTY_WINDOW_ID>:exists;
+    return True if (%*ENV<TERM> // '').starts-with('xterm-kitty');
+    False;
+}
+
+#|( Walk the live tree (active screen + modals + toast) and force
+    every L<Selkie::Widget::Image> to re-emit its sprixel on the
+    next render: destroy the live blit-plane (which also clears the
+    Image's geometry cache so the next render takes the
+    cache-miss path) and mark the Image dirty (in case it had no
+    live blit-plane and so destroy was a no-op — the
+    mark-widgets-in-rect-dirty walk inside destroy only fires for
+    Images that actually had a blit to tear down).
+
+    Called automatically by C<run> when an input event arrives after
+    C<sprixel-refresh-idle-threshold> seconds of input-idle (the
+    "user came back from a Kitty tab" heuristic). Apps can also call
+    it directly — e.g., from a manual-refresh keybind, or after an
+    operation known to bypass the auto-refresh signal. )
+method force-refresh-sprixels(--> Nil) {
+    sub visit($w) {
+        return without $w;
+        if $w ~~ Selkie::Widget::Image {
+            $w.destroy-blit-plane;
+            $w.mark-dirty unless $w.is-dirty;
+        }
+        if $w.^can('children') {
+            visit($_) for $w.children;
+        }
+        if $w.^can('content') {
+            my $c = $w.content;
+            visit($c) if $c.defined;
+        }
+    }
+    visit($_) for self!collect-tree-roots;
 }
 
 #|( Walk the live tree (active screen + modals + toast) and mark every
@@ -508,6 +596,17 @@ method root(--> Selkie::Container) { $!screen-manager.active-root }
 
 submethod TWEAK() {
     $!theme //= Selkie::Theme.default;
+
+    # Pick the auto-default for the idle-refresh threshold based on
+    # the host terminal. Apps that pass a value explicitly skip
+    # detection; passing 0e0 opts out even on a bug-prone terminal.
+    # See the C<$.sprixel-refresh-idle-threshold> attribute doc for
+    # the full rationale.
+    unless $!sprixel-refresh-idle-threshold.defined {
+        $!sprixel-refresh-idle-threshold = self.detect-sprixel-bug-prone-terminal
+            ?? 5e0
+            !! 0e0;
+    }
 
     # Redirect stderr to the log file BEFORE notcurses_init so any
     # banner text or terminal-capability probe output notcurses emits
@@ -1341,6 +1440,20 @@ method run() {
         my $ni = Ncinput.new;
         my $id = notcurses_get($!nc, $timeout, $ni);
         if $id > 0 {
+            # Terminal-tab-switch sprixel recovery: when input arrives
+            # after a long-enough idle, force every Image to re-emit
+            # its sprixel on the next render. Catches the "user
+            # switched away from this Kitty tab and came back" path,
+            # where Kitty restored the cell buffer but not the
+            # direct-placement graphics. Done BEFORE dispatch so the
+            # input event drives a re-render where the cache-miss
+            # path runs. See $.sprixel-refresh-idle-threshold doc for
+            # the full rationale and tuning notes.
+            if $!sprixel-refresh-idle-threshold > 0e0
+               && (now - $last-activity).Num >= $!sprixel-refresh-idle-threshold
+            {
+                self.force-refresh-sprixels;
+            }
             $activity = True;
             my $ev = Selkie::Event.from-ncinput($ni);
             $!event-supplier.emit($ev);
@@ -1920,7 +2033,17 @@ method !render-frame(Bool :$force = False) {
 #|( Shut down notcurses and destroy the active modal and screen manager.
     Idempotent — safe to call multiple times. Usually you don't call this
     directly; the event loop's CATCH, the END phaser, or C<DESTROY>
-    takes care of it. )
+    takes care of it.
+
+    Each cleanup step is best-effort: an exception thrown in modal
+    destroy, screen-manager destroy, or C<notcurses_stop> (e.g. when a
+    NativeCall dlopen fails because Notcurses-Native was reinstalled to
+    a new path mid-session) is caught and isolated so the later steps
+    — TTY restore, the escape-sequence backstop in
+    C<!emit-terminal-cleanup>, and C<!uninstall-error-log> — still run.
+    Without this isolation, a single failure mid-shutdown would strand
+    the terminal in raw mode / alt-screen / Kitty-kbd-protocol-pushed
+    state. )
 method shutdown() {
     # Close the SIGWINCH tap before tearing down notcurses — if a
     # signal arrives after notcurses_stop but before the tap is
@@ -1941,28 +2064,36 @@ method shutdown() {
 
     # Tear down every modal in the stack, deepest-on-top first (so each
     # destroy sees a sane stack). Pop emptied so a re-entrant shutdown
-    # is a no-op rather than a double-destroy.
+    # is a no-op rather than a double-destroy. Each destroy is wrapped
+    # individually so a single throwing modal doesn't abandon the rest
+    # of the stack — and, more importantly, doesn't strand the terminal
+    # cleanup that runs below.
     while @!modal-stack {
         my $m = @!modal-stack.pop;
         @!pre-modal-focus-stack.pop;
-        $m.destroy if $m.defined;
+        try { $m.destroy if $m.defined }
     }
-    $!screen-manager.destroy;
+    try { $!screen-manager.destroy }
     # Restore before and after notcurses_stop. The first restore protects
     # users if notcurses_stop itself aborts; the second restore wins if
     # notcurses restores a stale termios snapshot.
     self!restore-tty-state;
-    if $!nc {
-        notcurses_stop($!nc);
-        $!nc = NotcursesHandle;
-    }
+    # notcurses_stop is the most likely thrower in practice: if the
+    # bundled Notcurses-Native library was reinstalled to a new
+    # binaries-notcurses-3.0.17-r{N} path mid-session, NativeCall's
+    # lazy dlopen fails here and the exception would otherwise skip the
+    # entire backstop below.
+    try { notcurses_stop($!nc) if $!nc }
+    $!nc = NotcursesHandle;
     self!restore-tty-state;
     # Escape-sequence backstop on top of notcurses_stop. Catches
     # terminal-mode leaks where notcurses_stop's per-protocol disable
     # didn't take — notably the Kitty keyboard protocol push on
     # iTerm2 3.5+, which leaves every keystroke arriving at the shell
     # as `CSI codepoint u` instead of a raw byte. Idempotent on
-    # terminals where notcurses_stop already handled it.
+    # terminals where notcurses_stop already handled it. Doubly load-
+    # bearing when notcurses_stop itself threw: without this emit the
+    # alt-screen stays active and the Kitty kbd protocol stays pushed.
     self!emit-terminal-cleanup;
     # Stderr goes last so any diagnostics notcurses_stop emits still
     # land in the log file rather than the cleared terminal.

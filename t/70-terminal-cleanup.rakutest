@@ -3,7 +3,7 @@ use lib 'lib';
 
 use Selkie::App;
 
-plan 17;
+plan 21;
 
 # build-terminal-cleanup-sequence is the escape-sequence backstop
 # emitted at the end of Selkie::App.shutdown to defend against
@@ -44,3 +44,36 @@ like $seq, /"\e[>4;0m"/,  'modify-other-keys off';
 like $seq, /"\e[?25h"/,   'cursor shown (DECTCEM set)';
 like $seq, /"\e[0m"/,     'SGR reset';
 like $seq, /"\e[?1049l"/, 'alternate screen exited (idempotent)';
+
+# --- Shutdown exception isolation ---------------------------------------
+#
+# The shutdown method must keep running its terminal-cleanup steps even
+# if an earlier step throws. The canonical failure mode in the wild is
+# Notcurses-Native being reinstalled to a new bundled-binaries path
+# mid-session: NativeCall's lazy dlopen then fails inside notcurses_stop
+# (or inside Widget.destroy paths called from screen-manager.destroy),
+# and a bare throw would skip restore-tty-state[2], the escape-sequence
+# backstop, and the stderr restore — leaving the user staring at a
+# wedged terminal.
+#
+# Constructing a real Selkie::App requires a working notcurses init, so
+# we can't drive shutdown directly in a unit test. Instead, assert the
+# structural invariants on the source — each throw-prone step is wrapped
+# in a try, and the escape-sequence backstop sits at the end where it
+# can always run. Brittle to surface formatting but cheap, and it locks
+# in the contract documented in the shutdown Pod block.
+
+my $src-path = $?FILE.IO.parent.parent.add('lib/Selkie/App.rakumod');
+my $src = $src-path.slurp;
+my $shutdown-body = ($src ~~ /'method shutdown()' \s* '{' (.*?) ^^ '}' /).[0].Str;
+ok $shutdown-body.defined && $shutdown-body.chars > 0,
+    'shutdown method body extracted from source';
+
+like $shutdown-body, /'try' \s* '{' <-[}]>* '$m.destroy'/,
+    'modal-stack destroy is wrapped in try{}';
+
+like $shutdown-body, /'try' \s* '{' \s* '$!screen-manager.destroy' \s* '}'/,
+    'screen-manager.destroy is wrapped in try{}';
+
+like $shutdown-body, /'try' \s* '{' \s* 'notcurses_stop'/,
+    'notcurses_stop is wrapped in try{}';

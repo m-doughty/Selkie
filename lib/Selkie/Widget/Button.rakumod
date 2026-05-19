@@ -28,6 +28,25 @@ Focusable by default (no need to pass C<focusable => True>). The label
 is immutable after construction — build a new button if you need
 different text.
 
+=head2 Debouncing accidental double-clicks
+
+Mouse drivers and the terminal layer occasionally deliver two presses
+for a single physical click. For buttons whose activation has visible
+side effects (adding a row, kicking off a job, posting a request),
+pass C<:debounce-ms> to throttle the C<on-press> emit:
+
+=begin code :lang<raku>
+
+my $add = Selkie::Widget::Button.new(
+    label       => '+ Add row',
+    sizing      => Sizing.fixed(14),
+    debounce-ms => 120,    # collapse press emits within 120ms
+);
+
+=end code
+
+The default of C<0> leaves existing buttons unchanged.
+
 =head1 EXAMPLES
 
 =head2 A button row
@@ -70,12 +89,32 @@ has Str $.label is required;
 has Bool $!focused = False;
 has Supplier $!press-supplier = Supplier.new;
 
+#|( Reject press emits that arrive within this many milliseconds of the
+    previous emit. 0 (default) leaves every press through — the existing
+    contract for every consumer that doesn't opt in. Set on buttons
+    whose activation is destructive or stateful enough that a stray
+    second click would surprise the user (typical mouse-click double-
+    fire, repeat-key bursts). Applies uniformly to mouse and keyboard
+    activation paths. )
+has UInt $.debounce-ms = 0;
+has Instant $!last-press;
+
 submethod TWEAK() {
     # Mouse press fires the same activate path as Enter / Space. App's
     # dispatcher has already given us focus by the time this fires
     # (click-to-focus runs on PRESS before delivery), so the supply
     # emit matches the keyboard activation contract exactly.
-    self.on-click: -> $ { $!press-supplier.emit(True) };
+    self.on-click: -> $ { self!emit-press };
+}
+
+#|( Single chokepoint for emit. Centralises the debounce check so the
+    mouse path and the keyboard path can't drift apart. )
+method !emit-press(--> Nil) {
+    if $!debounce-ms > 0 && $!last-press.defined {
+        return if (now - $!last-press) * 1000 < $!debounce-ms;
+    }
+    $!last-press = now;
+    $!press-supplier.emit(True);
 }
 
 #| Supply that emits each time the user activates the button (Enter or
@@ -141,7 +180,7 @@ method handle-event(Selkie::Event $ev --> Bool) {
 
     if $ev.event-type ~~ KeyEvent {
         if $ev.id == NCKEY_ENTER || $ev.id == NCKEY_SPACE {
-            $!press-supplier.emit(True);
+            self!emit-press;
             return True;
         }
         # Left / Right cycle focus the same way Tab / Shift-Tab do.

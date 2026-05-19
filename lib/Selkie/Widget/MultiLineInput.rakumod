@@ -33,7 +33,10 @@ C<sizing => Sizing.fixed(1)>, the parent layout sees the widget's
 desired height grow as content is added, bounded by C<max-lines>.
 
 C<set-text-silent> updates the buffer without emitting C<on-change> —
-use this from store subscriptions to avoid feedback loops.
+use this from store subscriptions to avoid feedback loops. Both
+C<set-text> and C<set-text-silent> normalise CRLF and lone CR to LF
+before splitting, so text loaded from Windows-authored files (e.g.
+CCv3 cards) does not strand a C<\r> inside each line.
 
 =head2 Mouse and selection
 
@@ -331,7 +334,13 @@ method set-text-silent(Str:D $t) {
 }
 
 method !load-text(Str:D $t) {
-    @!lines = $t.split("\n").List;
+    # Normalise CRLF/CR → LF before splitting. A stray \r left in the
+    # buffer makes ncplane_putstr_yx jump the cursor back to col 0
+    # mid-row, throws off .chars-based wrap counts, and breaks scroll.
+    # Common when text comes from imported JSON authored on Windows
+    # (e.g. CCv3 character cards).
+    my $norm = $t.subst("\r\n", "\n", :g).subst("\r", "\n", :g);
+    @!lines = $norm.split("\n").List;
     @!lines = ('',) unless @!lines;
     $!cursor-row = @!lines.end;
     $!cursor-col = @!lines[*-1].chars;

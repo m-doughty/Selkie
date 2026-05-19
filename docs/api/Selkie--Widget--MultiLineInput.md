@@ -27,7 +27,7 @@ A multi-line text area with word-wrapping, a 2D cursor, and dynamic height that 
 
 The height auto-adjusts via `desired-height`: if you pass `sizing =` Sizing.fixed(1)>, the parent layout sees the widget's desired height grow as content is added, bounded by `max-lines`.
 
-`set-text-silent` updates the buffer without emitting `on-change` — use this from store subscriptions to avoid feedback loops.
+`set-text-silent` updates the buffer without emitting `on-change` — use this from store subscriptions to avoid feedback loops. Both `set-text` and `set-text-silent` normalise CRLF and lone CR to LF before splitting, so text loaded from Windows-authored files (e.g. CCv3 cards) does not strand a `\r` inside each line.
 
 Mouse and selection
 -------------------

@@ -9,7 +9,7 @@ use Selkie::Test::Keys;
 
 use Selkie::Sizing;
 
-plan 45;
+plan 49;
 
 subtest "construction defaults" => {
     plan 5;
@@ -576,4 +576,39 @@ subtest "double-click selects the word under the cursor (multi-line)" => {
     $mli.handle-event(mouse-event(id => NCKEY_BUTTON1, y => 0, x => 8,
                                   input-type => NCTYPE_PRESS, click-count => 2));
     is $mli.selected-text, 'world', 'double-click selected word "world"';
+};
+
+subtest "set-text normalises CRLF to LF" => {
+    plan 4;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text("a\r\nb\r\nc");
+    is $mli.text, "a\nb\nc", "CRLF collapsed to LF";
+    is $mli.line-count, 3, "3 logical lines";
+    is $mli.cursor-row, 2, "cursor at last line";
+    is $mli.cursor-col, 1, "cursor at end of 'c' (no trailing \\r)";
+};
+
+subtest "set-text normalises lone CR to LF" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text("a\rb");
+    is $mli.text, "a\nb", "lone CR collapsed to LF";
+    is $mli.line-count, 2, "2 logical lines";
+};
+
+subtest "set-text leaves LF-only text untouched" => {
+    plan 2;
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text("a\nb\nc");
+    is $mli.text, "a\nb\nc", "unchanged";
+    is $mli.line-count, 3, "3 logical lines";
+};
+
+subtest "set-text-silent also normalises CRLF" => {
+    plan 1;
+    # Same normalisation path (!load-text), but exercised through
+    # the silent setter that store subscriptions use.
+    my $mli = Selkie::Widget::MultiLineInput.new;
+    $mli.set-text-silent("foo\r\nbar");
+    is $mli.text, "foo\nbar", "CRLF collapsed via set-text-silent";
 };

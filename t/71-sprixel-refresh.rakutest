@@ -1,0 +1,145 @@
+use Test;
+use lib 'lib';
+
+use nqp;
+use Selkie::App;
+use Selkie::Widget;
+use Selkie::Widget::Image;
+use Selkie::Sizing;
+
+# sprixel-refresh-idle-threshold defends against terminals (notably
+# Kitty) that drop direct-placement graphics on tab switch while
+# preserving the cell buffer. The run loop catches "first input after
+# a long-enough idle" and forces every Image to re-emit its sprixel
+# on the next render. This file exercises the parts that don't need
+# a live notcurses instance: the Kitty-detection class method, the
+# tree-walking refresh helper's behavior on real Image widgets, and
+# the source-level structural invariants that wire the threshold
+# into TWEAK and the run loop.
+
+plan 7;
+
+# --- detect-sprixel-bug-prone-terminal: Kitty signals --------------------
+
+subtest 'detected via KITTY_WINDOW_ID' => {
+    plan 1;
+    temp %*ENV;
+    %*ENV<KITTY_WINDOW_ID> = '42';
+    %*ENV<TERM>:delete;
+    ok Selkie::App.detect-sprixel-bug-prone-terminal,
+        'KITTY_WINDOW_ID flips detection True even with TERM unset';
+};
+
+subtest 'detected via TERM=xterm-kitty' => {
+    plan 1;
+    temp %*ENV;
+    %*ENV<KITTY_WINDOW_ID>:delete;
+    %*ENV<TERM> = 'xterm-kitty';
+    ok Selkie::App.detect-sprixel-bug-prone-terminal,
+        'TERM=xterm-kitty flips detection True';
+};
+
+subtest 'plain xterm not detected' => {
+    plan 2;
+    temp %*ENV;
+    %*ENV<KITTY_WINDOW_ID>:delete;
+    %*ENV<TERM> = 'xterm-256color';
+    nok Selkie::App.detect-sprixel-bug-prone-terminal,
+        'TERM=xterm-256color does not match';
+    %*ENV<TERM>:delete;
+    nok Selkie::App.detect-sprixel-bug-prone-terminal,
+        'no env signals at all — not detected';
+};
+
+# --- force-refresh-sprixels tree walk -----------------------------------
+
+# Selkie::Widget::Image can be constructed without a live notcurses
+# plane (proven by t/58-image-blit-cache). We replicate the helper's
+# walk inline (the public method on Selkie::App would need a full App
+# instance, which would need notcurses) and assert it does the right
+# thing on a small mixed-widget tree.
+
+class NonImage does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class FakeContainer does Selkie::Widget {
+    has @.children;
+    submethod TWEAK(:@children) {
+        @!children = @children;
+        $_.parent = self for @children;
+    }
+    method render() { self.clear-dirty }
+}
+
+sub walk-force-refresh($w) {
+    return without $w;
+    if $w ~~ Selkie::Widget::Image {
+        $w.destroy-blit-plane;
+        $w.mark-dirty unless $w.is-dirty;
+    }
+    if $w.^can('children') {
+        walk-force-refresh($_) for $w.children;
+    }
+    if $w.^can('content') {
+        my $c = $w.content;
+        walk-force-refresh($c) if $c.defined;
+    }
+}
+
+subtest 'walk marks Image widgets dirty across containers' => {
+    plan 3;
+    my $img-a = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
+    my $img-b = Selkie::Widget::Image.new(sizing => Sizing.fixed(5));
+    my $non   = NonImage.new;
+    my $root  = FakeContainer.new(children => [$img-a, $non, $img-b]);
+
+    $img-a.clear-dirty;
+    $img-b.clear-dirty;
+    $non.clear-dirty;
+
+    walk-force-refresh($root);
+
+    ok  $img-a.is-dirty, 'Image A marked dirty';
+    ok  $img-b.is-dirty, 'Image B marked dirty';
+    nok $non.is-dirty,   'non-Image widget not marked';
+};
+
+subtest 'walk is safe on an empty/undef tree' => {
+    plan 1;
+    lives-ok { walk-force-refresh(Selkie::Widget) },
+        'walking the type object (no live tree) is a no-op, not a crash';
+};
+
+# --- Source structural invariants ---------------------------------------
+# The full integration — TWEAK picking a threshold from detection, and
+# the run loop firing the refresh on idle return — needs a live App
+# (and therefore notcurses), so we lock in the contract on the source.
+
+my $src-path = $?FILE.IO.parent.parent.add('lib/Selkie/App.rakumod');
+my $src = $src-path.slurp;
+
+subtest 'attribute + helpers are declared in App' => {
+    plan 3;
+    like $src, /'has Num $.sprixel-refresh-idle-threshold'/,
+        'public Num attribute declared';
+    like $src, /'method force-refresh-sprixels'/,
+        'force-refresh-sprixels method exists';
+    like $src, /'method detect-sprixel-bug-prone-terminal'/,
+        'detect-sprixel-bug-prone-terminal method exists';
+};
+
+subtest 'TWEAK + run loop wire the refresh in' => {
+    plan 2;
+    # TWEAK auto-defaults from the detection method when caller didn't pass.
+    like $src,
+        /'$!sprixel-refresh-idle-threshold.defined' .*? 'detect-sprixel-bug-prone-terminal'/,
+        'TWEAK consults the detection method to pick the default';
+    # Run loop fires force-refresh-sprixels gated on the threshold > 0e0
+    # AND the elapsed idle exceeding the threshold.
+    like $src,
+        /'$!sprixel-refresh-idle-threshold' \s* '>' \s* '0e0' .*? 'force-refresh-sprixels'/,
+        'run loop guards on threshold > 0e0 and calls force-refresh-sprixels';
+};
+
+done-testing;

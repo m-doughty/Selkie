@@ -202,7 +202,13 @@ All three use `$id` as a unique key — re-subscribing with the same id overwrit
 Mutation safety
 ---------------
 
-It's safe for a subscription's callback to call `unsubscribe` (its own id, or any sibling) — the per-tick subscription walk snapshots the key set up front and re-resolves each entry through an existence-guarded lookup, so deletions during iteration don't corrupt the loop. This matters whenever a callback closes a modal (which destroys the modal's widget tree, which calls `unsubscribe-widget` for every child), since a tick can otherwise crash with "expected Associative but got Mu" on the next pair-bind. The same applies to `flush-push-subs` for path subscriptions.
+It's safe for a subscription's callback to call `unsubscribe`, `unsubscribe-widget`, or any cascade thereof (closing a modal, clearing a container, swapping a pane) while a tick is in progress. `unsubscribe` calls made from inside `!check-subscriptions` or `!flush-push-subs` are queued into a pending set; the actual hash deletions are applied after the walk exits, via a `LEAVE` block that runs whether the walk returns normally or unwinds via an exception. During the walk, queued ids are skipped in the dispatch loop, so a sub unsubscribed by an earlier callback in the same tick does **not** fire later in that same tick — matching the observable behaviour callers depended on before the defer mechanism existed.
+
+Re-subscribing the same id during a walk (`unsubscribe('foo')` followed by `subscribe-with-callback('foo', ...)` in the same callback) cancels the queued removal and tears down the old entry cleanly before installing the new one, so the deferred flush never clobbers the new registration.
+
+Mutations from outside a walk — the common case, a handler running in `!process-queue` or app code calling `unsubscribe` directly — take effect immediately as before. The defer mechanism is invisible to that path.
+
+The invariant the walks maintain: `%!subscriptions` and `%!push-subs-by-key` are never mutated while a walk is iterating them. Earlier implementations relied on `:exists` guards plus `.keys.List` snapshots, but neither survived realistic load (App::Cantina character changes cascade ~120 `unsubscribe` calls through one callback firing); the typed eager Array snapshot (`my Str:D @ids = %!subscriptions.keys`) plus the queued-mutation discipline above is what actually holds.
 
 Equality semantics
 ------------------
@@ -405,7 +411,7 @@ method unsubscribe(
 ) returns Mu
 ```
 
-Remove a subscription by its id. No-op if the id isn't registered.
+Remove a subscription by its id. No-op if the id isn't registered. During a subscription walk (`!check-subscriptions` / `!flush-push-subs`), the actual removal is deferred to walk exit; the queued id is skipped in the dispatch loop, so an earlier callback's unsubscribe is observed in the same tick. Outside a walk, removal is immediate as before.
 
 ### method unsubscribe-widget
 
