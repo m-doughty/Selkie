@@ -4,16 +4,19 @@ use lib 'lib';
 use Selkie::Store;
 use Selkie::Widget;
 
-# Subscription :deep-equality-check semantics. Covers all four
-# subscribe variants (subscribe, subscribe-path-callback,
-# subscribe-computed, subscribe-with-callback) and the suppression-
-# by-default behaviour around in-place container mutation.
+# Subscription change-detection semantics. As of Selkie 0.8.0:
+#  - All four subscribe variants default to structural (:!identity-check-only)
+#    comparison plus a per-fire snapshot so deep in-place mutations
+#    are observed correctly. This is the safe path.
+#  - :identity-check-only is the opt-out for hot paths where the
+#    compute is known to return a fresh value each call. It skips the
+#    snapshot cost and uses === then eqv.
 #
-# The trap: assoc-in mutates the live nested Hash in place. A sub
-# watching an ancestor path holds a reference to that same Hash; the
-# default === shortcut in !values-equal returns True after the
-# mutation and silently suppresses the fire. :deep-equality-check
-# takes a structural snapshot per fire so eqv detects the change.
+# The trap that motivated the default flip: assoc-in mutates the live
+# nested Hash in place. A sub watching an ancestor path holds a
+# reference to that same Hash; an identity-only shortcut returns True
+# after the mutation and silently suppresses the fire. The default
+# now snapshots so eqv detects the change.
 
 class TestWidget does Selkie::Widget {
     method render() { self.clear-dirty }
@@ -21,59 +24,56 @@ class TestWidget does Selkie::Widget {
 
 plan 9;
 
-subtest "subscribe — default suppresses ancestor-fire on in-place deep write" => {
+subtest "subscribe — default DETECTS ancestor-fire on in-place deep write" => {
     plan 2;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
-    $s.assoc-in('a', 'b', 'c', value => 1);  # seed the subtree
+    $s.assoc-in('a', 'b', 'c', value => 1);
     $s.subscribe('watch-a', ['a'], $w);
     $w.render;
     nok $w.is-dirty, "clean after prime";
 
     $s.assoc-in('a', 'b', 'c', value => 42);
     $s.tick;
-    nok $w.is-dirty,
-        "default: deep assoc-in does NOT fire the ancestor sub (=== shortcut suppressed it)";
+    ok $w.is-dirty,
+        "default (structural compare): deep assoc-in FIRES the ancestor sub";
 };
 
-subtest "subscribe — :deep-equality-check fires ancestor sub on in-place deep write" => {
+subtest "subscribe — :identity-check-only restores fast-path suppression" => {
     plan 2;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
     $s.assoc-in('a', 'b', 'c', value => 1);
-    $s.subscribe('watch-a', ['a'], $w, :deep-equality-check);
+    $s.subscribe('watch-a', ['a'], $w, :identity-check-only);
     $w.render;
     nok $w.is-dirty, "clean after prime";
 
     $s.assoc-in('a', 'b', 'c', value => 42);
     $s.tick;
-    ok $w.is-dirty,
-        ":deep-equality-check: deep assoc-in fires the ancestor sub";
+    nok $w.is-dirty,
+        ":identity-check-only: live-ref ancestor mutation is suppressed (=== shortcut)";
 };
 
-subtest "subscribe — :deep-equality-check still suppresses no-op writes" => {
+subtest "subscribe — default suppresses no-op writes" => {
     plan 1;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
     $s.assoc-in('a', 'b', 'c', value => 7);
-    $s.subscribe('watch-a', ['a'], $w, :deep-equality-check);
+    $s.subscribe('watch-a', ['a'], $w);
     $w.render;
 
-    # Write the same leaf value back. assoc-in still records the path
-    # in dirty-paths, so the sub IS evaluated; the eqv compare against
-    # the captured snapshot returns True; the fire is correctly
-    # suppressed.
     $s.assoc-in('a', 'b', 'c', value => 7);
     $s.tick;
-    nok $w.is-dirty, "no-op write doesn't spuriously fire even with :deep-equality-check";
+    nok $w.is-dirty,
+        "no-op write doesn't spuriously fire (eqv snapshot matches)";
 };
 
-subtest "subscribe — :deep-equality-check fires twice across two distinct deep writes" => {
+subtest "subscribe — default fires twice across two distinct deep writes" => {
     plan 3;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
     $s.assoc-in('a', 'b', 'c', value => 1);
-    $s.subscribe('watch-a', ['a'], $w, :deep-equality-check);
+    $s.subscribe('watch-a', ['a'], $w);
     $w.render;
 
     $s.assoc-in('a', 'b', 'c', value => 2);
@@ -82,15 +82,13 @@ subtest "subscribe — :deep-equality-check fires twice across two distinct deep
     $w.render;
     nok $w.is-dirty, "clean after second render";
 
-    # Snapshot must have been refreshed at the first fire — otherwise
-    # the second fire would compare against the stale prime snapshot
-    # and we'd lose the ability to detect "I just wrote 3 over 2".
     $s.assoc-in('a', 'b', 'c', value => 3);
     $s.tick;
-    ok $w.is-dirty, "second deep write also fires (snapshot refreshed at each fire)";
+    ok $w.is-dirty,
+        "second deep write also fires (snapshot refreshed at each fire)";
 };
 
-subtest "subscribe-path-callback — :deep-equality-check fires callback on deep write" => {
+subtest "subscribe-path-callback — default fires callback on deep write" => {
     plan 3;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
@@ -101,17 +99,18 @@ subtest "subscribe-path-callback — :deep-equality-check fires callback on deep
         'watch-a-cb', ['a'],
         -> $v { @callbacks.push: $v },
         $w,
-        :deep-equality-check,
     );
     is @callbacks.elems, 1, "primed once";
 
     $s.assoc-in('a', 'b', 'c', value => 42);
     $s.tick;
-    is @callbacks.elems, 2, "deep write triggered the callback";
-    is @callbacks[1]<b><c>, 42, "callback received the live current value";
+    is @callbacks.elems, 2,
+        "default: deep write triggered the callback";
+    is @callbacks[1]<b><c>, 42,
+        "callback received the live current value";
 };
 
-subtest "subscribe-path-callback — default suppresses callback on deep write" => {
+subtest "subscribe-path-callback — :identity-check-only suppresses on deep write" => {
     plan 2;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
@@ -122,41 +121,37 @@ subtest "subscribe-path-callback — default suppresses callback on deep write" 
         'watch-a-cb', ['a'],
         -> $v { @callbacks.push: $v },
         $w,
+        :identity-check-only,
     );
     is @callbacks.elems, 1, "primed once";
 
     $s.assoc-in('a', 'b', 'c', value => 42);
     $s.tick;
     is @callbacks.elems, 1,
-        "default: deep assoc-in does NOT trigger the path-callback";
+        ":identity-check-only: deep assoc-in does NOT trigger the path-callback";
 };
 
-subtest "subscribe-computed — :deep-equality-check on a live-ref compute" => {
+subtest "subscribe-computed — default detects live-ref compute change" => {
     plan 2;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
     $s.assoc-in('a', 'b', 'c', value => 1);
 
-    # Compute returns the live Hash ref — the case the flag is
-    # designed for. Without :deep-equality-check this would fail.
     $s.subscribe-computed(
         'computed-a',
         -> $store { $store.get-in('a') },
         $w,
-        :deep-equality-check,
     );
-    # Pull-side primes via tick.
     $s.tick;
     $w.render;
 
-    # Computed re-evaluates only on ticks with events processed. Use
-    # an event-driven write so the re-eval actually runs.
     $s.register-handler('write', -> $st, %p {
         ($st.assoc-in('a', 'b', 'c', value => %p<v>),)
     });
     $s.dispatch('write', v => 99);
     $s.tick;
-    ok $w.is-dirty, "computed sub fires on event-driven deep write";
+    ok $w.is-dirty,
+        "default: computed sub fires on event-driven deep write";
 
     $w.render;
     $s.dispatch('write', v => 99);  # no-op — same leaf value
@@ -164,7 +159,7 @@ subtest "subscribe-computed — :deep-equality-check on a live-ref compute" => {
     nok $w.is-dirty, "no-op deep write doesn't spuriously fire";
 };
 
-subtest "subscribe-computed — default suppresses live-ref compute change" => {
+subtest "subscribe-computed — :identity-check-only suppresses live-ref compute" => {
     plan 1;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
@@ -174,6 +169,7 @@ subtest "subscribe-computed — default suppresses live-ref compute change" => {
         'computed-a',
         -> $store { $store.get-in('a') },
         $w,
+        :identity-check-only,
     );
     $s.tick;
     $w.render;
@@ -184,10 +180,10 @@ subtest "subscribe-computed — default suppresses live-ref compute change" => {
     $s.dispatch('write', v => 99);
     $s.tick;
     nok $w.is-dirty,
-        "default: live-ref compute returns same Hash post-mutation, no fire";
+        ":identity-check-only: live-ref compute returns same Hash post-mutation, no fire";
 };
 
-subtest "subscribe-with-callback — :deep-equality-check delivers live value to callback" => {
+subtest "subscribe-with-callback — default delivers live value to callback" => {
     plan 2;
     my $s = Selkie::Store.new;
     my $w = TestWidget.new;
@@ -199,16 +195,16 @@ subtest "subscribe-with-callback — :deep-equality-check delivers live value to
         -> $store { $store.get-in('a') },
         -> $v { @callbacks.push: $v.gist },
         $w,
-        :deep-equality-check,
     );
     $s.register-handler('write', -> $st, %p {
         ($st.assoc-in('a', 'b', 'c', value => %p<v>),)
     });
-    $s.tick;   # primes — fires once with initial value
+    $s.tick;
 
     $s.dispatch('write', v => 7);
     $s.tick;
-    is @callbacks.elems, 2, "callback fired on event-driven deep write";
+    is @callbacks.elems, 2,
+        "callback fired on event-driven deep write";
     like @callbacks[1], /'c => 7'/,
         "callback received the live (un-snapshotted) compute result";
 };

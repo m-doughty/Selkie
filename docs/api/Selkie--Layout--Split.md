@@ -133,6 +133,17 @@ method handle-resize(
 
 Re-layout the two panes and the divider when the parent resizes. The split ratio is honoured exactly — first pane gets `floor(total * ratio)`, the divider takes 1 cell, the second gets the remainder. Idempotent on no-size-change calls.
 
+### method compute-split-sizes
+
+```raku
+method compute-split-sizes(
+    Int $total where { ... },
+    Rat $ratio
+) returns Hash
+```
+
+Pure-math helper that computes the split allocation for a given total length and ratio. Returns a Hash with `first`, `divider`, `second` keys — all UInt, all guaranteed non-negative. Exposed at class scope so the boundary math is unit-testable without needing a notcurses context. Used by `!layout-split`.
+
 ### method children
 
 ```raku

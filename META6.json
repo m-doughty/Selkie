@@ -6,7 +6,7 @@
   "build-depends": [
   ],
   "depends": [
-    "Notcurses::Native:ver<0.3.4+>:auth<zef:apogee>"
+    "Notcurses::Native:ver<0.4.0+>:auth<zef:apogee>"
   ],
   "description": "High-level TUI framework built on Notcurses",
   "license": "Artistic-2.0",
@@ -89,5 +89,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.7.4"
+  "version": "0.8.0"
 }

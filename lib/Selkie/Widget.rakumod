@@ -470,9 +470,28 @@ method effective-bounds(--> Selkie::EffectiveBounds) {
     coordinates. Marking dirty here ensures the next pass re-runs every
     affected widget; Image's cache check then short-circuits the
     re-blit when its own state didn't change. )
-method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
+method set-viewport(:$abs-y! is raw, :$abs-x! is raw, UInt :$rows!, UInt :$cols!) {
+    # Final-stop CATCH for spesh corruption that even safe-coord's
+    # NQP gate couldn't ride through. A frame-level skip is the
+    # right call — the parent layout re-passes coords every frame,
+    # so the next render gets fresh values. The alternative (letting
+    # the throw escape into the render loop) trips the App.run outer
+    # CATCH and kills the whole TUI, which is much worse than a
+    # one-frame stale position.
+    CATCH {
+        default {
+            note "Selkie::Widget.set-viewport: corruption escaped gate ({.message}); skipping frame";
+            return;
+        }
+    }
     # Defensive gate against MoarVM spesh corruption on the renderer's
-    # hot path. Two layers, both load-bearing:
+    # hot path. Three layers, all load-bearing:
+    #
+    # 0. The method's own CATCH (above) — final-stop frame-skip when
+    #    corruption escapes layers 1 + 2. The named params are bound
+    #    `is raw` so the slow-path binder doesn't try to type-check
+    #    against Int (which would call `get_boxed_ref` on a corrupt
+    #    Scalar BEFORE the body's CATCH could see it).
     #
     # 1. `position-changed` — boxed-Int comparison delegated to a free
     #    sub. An inlined `!=` here triggered a spesh mis-specialisation
@@ -490,10 +509,13 @@ method set-viewport(Int :$abs-y!, Int :$abs-x!, UInt :$rows!, UInt :$cols!) {
     #    View::TaskRow memoization, see its revert note for the "3274
     #    bit wide bigint" symptom) put a multi-thousand-bit value in
     #    the slot. The boxed comparison rode through fine but
-    #    Scalar.STORE's inlined unbox didn't. `safe-coord` checks
-    #    width via `nqp::isbig_I` (which doesn't take the corrupt
-    #    unbox path) and returns a freshly-reboxed clean Int when the
-    #    value fits in int64, or Nil when it doesn't.
+    #    Scalar.STORE's inlined unbox didn't. `safe-coord` takes its
+    #    argument as `\val` (capture binding — no type check, no
+    #    decont at the parameter boundary) and runs the width check
+    #    via `nqp::isbig_I` inside its own CATCH, returning a
+    #    freshly-reboxed clean Int when the value fits in int64,
+    #    Nil when it doesn't or when the value is too corrupt to
+    #    introspect.
     #
     # When safe-coord rejects either coord, we emit a structured
     # diagnostic via `!corruption-note` and skip the update. The
@@ -565,13 +587,28 @@ method !corruption-note(Int $abs-y, Int $abs-x --> Str) {
 # Bounds-via-bigint-width gate. Returns a freshly-reboxed clean Int
 # when the value fits in int64 (so the subsequent attribute STORE in
 # `set-viewport` operates on a value spesh hasn't mis-specialised),
-# or Nil when the bigint exceeds int64 — the corruption signal:
-# screen coordinates can't legitimately need >int64 storage, so
-# anything wider is upstream spesh corruption. `nqp::isbig_I` does
-# the width check at the NQP level, sidestepping the spesh-corrupt
-# Raku unbox path that the direct assignment used to crash on.
-sub safe-coord(Int $n) {
-    my $d := nqp::decont($n);
+# or Nil when the bigint exceeds int64 OR when the value is too
+# corrupt to even introspect — both are upstream-corruption signals;
+# screen coordinates can't legitimately need >int64 storage.
+#
+# IMPORTANT: the parameter is a capture (\val) rather than `Int $n`
+# because Rakudo's slow-path positional binder type-checks against
+# Int by calling `get_boxed_ref` on the caller's Scalar — and on a
+# spesh-corrupt P6bigint slot that exact op throws
+# "P6opaque: get_boxed_ref could not unbox for the representation
+# 'P6bigint' of type Scalar" BEFORE the sub body runs. Capture
+# binding aliases the variable without any decont / type-check, so
+# we can do those steps manually inside a CATCH.
+sub safe-coord(\val) {
+    return Nil unless val.defined;
+    CATCH {
+        # Decont / istype / isbig_I touching a wide-enough corrupt
+        # P6bigint can crash at the MoarVM repr level. Treat that as
+        # "too corrupt to use" and tell the caller to skip the frame.
+        default { return Nil }
+    }
+    my $d := nqp::decont(val);
+    return Nil unless nqp::istype($d, Int);
     nqp::isbig_I($d)
         ?? Nil
         !! nqp::box_i(nqp::unbox_i($d), Int);
@@ -657,6 +694,18 @@ method !apply-resize(UInt $rows, UInt $cols) {
 }
 
 method !destroy-plane() {
+    # Unsubscribe from the store before tearing the plane down. The
+    # subscription Hash holds widget references; without this step, a
+    # destroyed-but-subscribed widget can never be GC'd (the subs pin
+    # it alive) and its DESTROY/destroy chain never fires, leaking
+    # notcurses planes on every modal cycle / screen swap / dynamic
+    # widget rebuild. Doing this from destroy-plane (not destroy)
+    # catches subclass overrides that bypass the role's destroy — the
+    # convention is that every subclass's destroy ends with
+    # self!destroy-plane, so this is the universal chokepoint.
+    # Idempotent: store.unsubscribe-widget is a no-op on widgets with
+    # no subs (e.g. when called twice during a remove → destroy path).
+    .unsubscribe-widget(self) with self.store;
     if $!plane && $!owns-plane {
         ncplane_destroy($!plane);
     }

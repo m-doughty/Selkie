@@ -257,56 +257,52 @@ if that fails. C<eqv> does deep comparison on arrays and hashes, so
 subscriptions that return the same content in a fresh array instance
 don't fire spuriously.
 
-=head2 Mutable nested data and C<:deep-equality-check>
+=head2 Mutable nested data and C<:identity-check-only>
 
-The default C<===>-then-C<eqv> equality has a subtle trap when a
-subscription watches a mutable container that callers update I<in
-place>. The canonical case: a subscription on path C<a>, and a
-caller doing C<$store.assoc-in('a', 'b', 'c', :value(42))>.
-C<assoc-in> walks into the live nested Hash and mutates the leaf in
-place. The Hash at C<a> is the same in-memory object before and after
-the write, so:
+Change detection on subscriptions defaults to structural (C<eqv>)
+comparison plus a per-fire snapshot of mutable nested state. That
+default exists because of a subtle trap with the identity-only check:
+a subscription on path C<a>, plus a caller doing
+C<$store.assoc-in('a', 'b', 'c', :value(42))>. C<assoc-in> walks into
+the live nested Hash and mutates the leaf in place; the Hash at C<a>
+is the same in-memory object before and after the write, so:
 
 =item The subscription's C<last-value> still holds a reference to the same Hash.
 =item The fresh C<get-in('a')> at fire time returns the same reference.
-=item C<===> matches → the fire is silently suppressed.
+=item An C<===> identity check matches → the fire is silently suppressed.
 
-This is the right behaviour for immutable values (Strings, Ints, type
-objects) but wrong for mutable Hashes / Arrays. The framework can't
-detect the trap automatically — distinguishing "caller mutated in
-place" from "caller installed an unchanged value" requires a structural
-compare every time, which is the cost we're avoiding by short-circuiting
-on identity in the first place.
+The structural-comparison default sidesteps this. On every fire the
+framework:
 
-The opt-in fix is C<:deep-equality-check> on the C<subscribe*> methods.
-When set, the framework:
-
-=item Skips the C<===> shortcut, going straight to the C<eqv> path.
-=item Snapshots the value (deep clone of nested Hashes / Arrays; scalar leaves passed through) at every fire so subsequent in-place mutations don't compare equal to the captured snapshot.
+=item Snapshots the value (deep clone of nested Hashes / Arrays; scalar leaves passed through) so subsequent in-place mutations don't compare equal to the captured snapshot.
+=item Compares the next value structurally against the snapshot via C<eqv>.
 
 =begin code :lang<raku>
 
-# Watch a mutable nested hash. Without :deep-equality-check, deep
-# assoc-in writes under <prefs> would not fire this subscription.
-$store.subscribe('prefs-changed', <prefs>, $widget,
-    :deep-equality-check);
+# Watch a mutable nested hash. The default just works — deep
+# assoc-in writes under <prefs> are detected even though the prefs
+# Hash reference itself is unchanged.
+$store.subscribe('prefs-changed', <prefs>, $widget);
 
-# Writes that would have been suppressed without the flag:
+# Writes that would be suppressed under identity-only comparison
+# now fire correctly:
 $store.assoc-in('prefs', 'theme', :value('dark'));   # fires
 $store.assoc-in('prefs', 'lang',  :value('en'));     # fires
 
 =end code
 
-The flag is off by default because deep cloning every value on every
-fire is materially more expensive than a pointer compare. Turn it on
-only for subscriptions on paths whose value is a mutable container
-that callers update in place. Subscriptions over leaves (Strings,
-Ints, Bools), or computes that already produce a fresh value per call
-(C<.gist>, derived counts, freshly-constructed summary Hashes), do not
-need the flag — the default fast path is correct for them.
+Pass C<:identity-check-only> when the watched value is guaranteed to
+be a fresh allocation per write — a Str, an Int, a Bool, a derived
+count, a freshly-constructed summary Hash. That path skips the
+snapshot cost and uses C<===>-then-C<eqv> as the cheaper fast path.
 
-The same flag exists on C<subscribe>, C<subscribe-path-callback>,
+The flag exists on C<subscribe>, C<subscribe-path-callback>,
 C<subscribe-computed>, and C<subscribe-with-callback>.
+
+B<Migration from pre-0.8.0 Selkie>: the old C<:deep-equality-check>
+flag is removed. Drop the flag — the safe behaviour is now the
+default. Pass C<:identity-check-only> at any call site that was
+previously relying on the identity-only fast path.
 
 =head1 SEE ALSO
 
@@ -364,6 +360,15 @@ has Bool $!debug-dispatches    = False;
 has Bool $!debug-effects       = False;
 has Bool $!debug-subscriptions = False;
 
+# Async-effect tracking: every Promise produced by register-fx('async')
+# is registered here so App.shutdown can drain in-flight work before
+# tearing down notcurses. Without this the worker thread can complete
+# after notcurses_stop and dispatch into handlers whose native deps
+# are gone (SIGBUS on plane access, NPE on Nil $!nc).
+has @!async-effects;
+has Lock $!async-lock .= new;
+has Bool $!shutting-down = False;
+
 #|( Enable logging of dispatches, effects, and subscription fires. Output
     lines go to C<$log> (defaults to C<$*ERR>). Pass
     C<:!dispatches>, C<:!effects>, or C<:!subscriptions> to silence a
@@ -415,18 +420,53 @@ submethod TWEAK() {
     });
 
     self.register-fx('async', -> $store, %params {
-        my &work = %params<work>;
+        my &work       = %params<work>     // die "async fx requires :work";
         my $on-success = %params<on-success>;
         my $on-failure = %params<on-failure>;
-
-        start {
-            my $result = try { work() };
-            if $! {
-                $store.dispatch($on-failure, error => $!.message) if $on-failure;
-            } else {
-                $store.dispatch($on-success, result => $result) if $on-success;
-            }
+        # Only the SCHEDULING decision checks shutting-down: once
+        # drain-async is in progress, no new workers get spawned.
+        # In-flight workers keep running so their on-success /
+        # on-failure dispatches can complete while the store is still
+        # alive (the test "drain waits, then delivers on-success"
+        # depends on this). Stale dispatches arriving after the App's
+        # run loop has fully exited are harmless — the event queue
+        # just isn't drained again. No `return` from pointy blocks
+        # — they aren't Routines (memory: raku_return_in_closures).
+        unless $store.shutting-down {
+            my $p = start {
+                CATCH {
+                    default {
+                        my $msg = .message;
+                        my $bt  = .?backtrace.?full.?Str // '';
+                        $store!report-async-failure($msg, $bt);
+                        if $on-failure {
+                            $store.dispatch($on-failure,
+                                error     => $msg,
+                                exception => $_,
+                                backtrace => $bt,
+                            );
+                        }
+                    }
+                }
+                my $result = work();
+                if $on-success {
+                    $store.dispatch($on-success, result => $result);
+                }
+            };
+            $store!track-async-effect($p);
         }
+    });
+
+    # Default handler for handler-exception events: log to the store's
+    # log so apps don't have to register one to get diagnostics. Apps
+    # can register additional handlers via `register-handler` to display
+    # toasts / modals / send telemetry.
+    self.register-handler('__effect-error', -> $store, %payload {
+        $store!log-line(
+            "[effect-error] {%payload<effect-name>}: {%payload<error>}\n"
+          ~ (%payload<backtrace> // '')
+        );
+        ();
     });
 }
 
@@ -528,19 +568,16 @@ our sub key-path(Str $key --> List) {
     (marking the widget dirty so its first render happens) runs
     synchronously here.
 
-    C<:deep-equality-check> opts the change-gate into a structural
-    C<eqv> compare instead of the default fast C<===> identity check.
-    Default off because C<eqv> over a deep tree is significantly more
-    expensive than a pointer compare. Turn it on when the path's value
-    is a mutable container (Hash / Array) that callers update in place
-    via C<assoc-in> on a deep child — without this flag, the ancestor's
-    Hash reference is unchanged across the write, the C<===> shortcut
-    matches, and the subscription is silently suppressed. The
-    "subscribe to C<a>, fire on any write under C<a>" pattern requires
-    this flag whenever C<a> is a mutable container. See B<MUTABLE NESTED
-    DATA> in this module's Pod. )
+    Change detection defaults to structural (C<eqv>) comparison —
+    correct for mutable containers (Hash / Array) updated in place by
+    C<assoc-in> on a deep child, where the ancestor's reference is
+    unchanged across the write. The historical default was identity-
+    only (C<===>), which silently suppressed those writes; the safe
+    behaviour is now opt-out via C<:identity-check-only> for paths
+    whose value is guaranteed to be a fresh allocation on each write.
+    See B<MUTABLE NESTED DATA> in this module's Pod. )
 method subscribe(Str:D $id, @path, Selkie::Widget $widget,
-                 Bool :$deep-equality-check = False) {
+                 Bool :$identity-check-only = False) {
     # Re-subscribing an id that's queued for deferred removal: tear
     # down the old entry cleanly *now* and drop the queue marker, so
     # the end-of-walk flush doesn't clobber the new registration.
@@ -548,24 +585,25 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget,
         self!do-unsubscribe($id);
         $!pending-unsubscribes.unset($id);
     }
+    my $deep = !$identity-check-only;
     %!subscriptions{$id} = {
         type       => 'path',
         path       => @path.List,
         last-value => $UNSET,
         widget     => $widget,
-        deep       => $deep-equality-check,
+        deep       => $deep,
     };
     self!index-push-sub($id, @path);
     # Prime synchronously: mark the widget dirty so it renders with
     # its initial bound value without needing a synthetic event.
     $widget.mark-dirty if $widget.defined;
     # Record the initial value so the first actual write only fires
-    # if it represents a real change. When :deep-equality-check is set
-    # and the value is a mutable container, snapshot it so subsequent
-    # in-place mutations don't compare equal to a still-live reference.
+    # if it represents a real change. On the structural-comparison
+    # path snapshot the value so subsequent in-place mutations don't
+    # compare equal to a still-live reference.
     my $current = self.get-in(|@path);
     %!subscriptions{$id}<last-value> =
-        $deep-equality-check ?? self!snapshot-value($current) !! $current;
+        $deep ?? self!snapshot-value($current) !! $current;
 }
 
 #|( Subscribe to a state path with a callback — fires C<&callback($new-value)>
@@ -580,23 +618,25 @@ method subscribe(Str:D $id, @path, Selkie::Widget $widget,
     a trivial compute closure, but without the per-tick closure
     invocation cost — push-based like C<subscribe>.
 
-    C<:deep-equality-check> behaves the same way as on C<subscribe> —
-    see that method's docs and B<MUTABLE NESTED DATA> in this module's
-    Pod for when to set it. The callback always receives the live
-    current value; only the change-gate uses the snapshot. )
+    Change detection defaults to structural comparison, mirroring
+    C<subscribe>. Pass C<:identity-check-only> when the watched path's
+    value is a fresh allocation per write. The callback always
+    receives the live current value; only the change-gate uses the
+    snapshot. )
 method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widget,
-                               Bool :$deep-equality-check = False) {
+                               Bool :$identity-check-only = False) {
     if $!pending-unsubscribes{$id} {
         self!do-unsubscribe($id);
         $!pending-unsubscribes.unset($id);
     }
+    my $deep = !$identity-check-only;
     %!subscriptions{$id} = {
         type       => 'path-callback',
         path       => @path.List,
         callback   => &callback,
         last-value => $UNSET,
         widget     => $widget,
-        deep       => $deep-equality-check,
+        deep       => $deep,
     };
     self!index-push-sub($id, @path);
     # Prime: fire the callback with the current value so the widget
@@ -605,7 +645,7 @@ method subscribe-path-callback(Str:D $id, @path, &callback, Selkie::Widget $widg
     # always desired.
     my $current = self.get-in(|@path);
     %!subscriptions{$id}<last-value> =
-        $deep-equality-check ?? self!snapshot-value($current) !! $current;
+        $deep ?? self!snapshot-value($current) !! $current;
     $widget.mark-dirty if $widget.defined;
     &callback($current);
 }
@@ -625,21 +665,22 @@ method !unindex-push-sub(Str:D $id, @path) {
 
 #|( Subscribe a widget to a computed value. C<&compute> receives the
     store each tick and should return the value. The widget is marked
-    dirty when the return value changes (compared with C<eqv> /
-    identity).
+    dirty when the return value changes.
 
-    C<:deep-equality-check> turns on structural change detection for
-    compute functions that return mutable containers — without it, a
-    compute that returns C<$store.get-in('a')> after a deep
-    C<assoc-in> write under C<a> sees the same Hash reference and
-    silently suppresses the fire. With it, the result is snapshotted
-    after each fire and compared structurally. See B<MUTABLE NESTED
-    DATA> in this module's Pod. The flag is unnecessary — and an
-    avoidable cost — when compute already returns a fresh value per
-    call (a String, a derived count, a freshly-constructed Hash
-    summary). )
+    Change detection defaults to B<structural> comparison: the result
+    is snapshotted after each fire and the next fire compares against
+    the snapshot via C<eqv>. This correctly handles compute functions
+    that return references into mutable nested state — the common case
+    of C<$store.get-in('chat', 'messages')> after an C<assoc-in> deep-
+    write, where identity-only comparison sees the same Hash reference
+    and silently suppresses the fire. See B<MUTABLE NESTED DATA> in
+    this module's Pod.
+
+    Set C<:identity-check-only> when C<&compute> is known to return a
+    fresh value per call (a Str, a Bool, a derived count, a freshly-
+    built Hash) — this skips the snapshot cost. )
 method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
-                          Bool :$deep-equality-check = False) {
+                          Bool :$identity-check-only = False) {
     if $!pending-unsubscribes{$id} {
         self!do-unsubscribe($id);
         $!pending-unsubscribes.unset($id);
@@ -649,7 +690,7 @@ method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
         compute    => &compute,
         last-value => $UNSET,
         widget     => $widget,
-        deep       => $deep-equality-check,
+        deep       => !$identity-check-only,
     };
     $!subs-primed = False;
 }
@@ -659,12 +700,13 @@ method subscribe-computed(Str:D $id, &compute, Selkie::Widget $widget,
     be re-configured (e.g. C<set-items> on a list, C<set-text> on a
     label), not just re-rendered.
 
-    C<:deep-equality-check> behaves the same way as on
-    C<subscribe-computed>; see that method's docs. The callback
-    always receives the live (un-snapshotted) compute result so it
-    can install or read the value directly. )
+    Change detection defaults to structural comparison; see
+    C<subscribe-computed>. Pass C<:identity-check-only> when the
+    compute function is guaranteed to return fresh values. The
+    callback always receives the live (un-snapshotted) compute
+    result. )
 method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $widget,
-                               Bool :$deep-equality-check = False) {
+                               Bool :$identity-check-only = False) {
     if $!pending-unsubscribes{$id} {
         self!do-unsubscribe($id);
         $!pending-unsubscribes.unset($id);
@@ -675,7 +717,7 @@ method subscribe-with-callback(Str:D $id, &compute, &callback, Selkie::Widget $w
         callback   => &callback,
         last-value => $UNSET,
         widget     => $widget,
-        deep       => $deep-equality-check,
+        deep       => !$identity-check-only,
     };
     $!subs-primed = False;
 }
@@ -721,6 +763,14 @@ method !flush-pending-unsubscribes() {
 method unsubscribe-widget(Selkie::Widget $widget) {
     my @to-remove = %!subscriptions.grep(*.value<widget> === $widget).map(*.key);
     self.unsubscribe($_) for @to-remove;
+}
+
+#| Total number of active subscriptions. Excludes ids that have been
+#| queued for deferred removal but not yet flushed (so counts reflect
+#| the post-walk state). Primarily useful for tests asserting that
+#| destroy / unsubscribe-widget cleanup ran.
+method subscription-count(--> Int) {
+    %!subscriptions.elems - $!pending-unsubscribes.elems
 }
 
 # --- Frame tick ---
@@ -813,7 +863,7 @@ method !flush-push-subs() {
         next unless %!subscriptions{$sub-id}:exists;
         my %sub := %!subscriptions{$sub-id};
         my $current = self.get-in(|%sub<path>);
-        # On the :deep-equality-check path, capture a fresh structural
+        # On the structural-comparison path (default), capture a fresh
         # snapshot for both the comparison and the new last-value.
         # The live $current would alias the previous last-value when
         # callers update via assoc-in (which mutates in place), making
@@ -858,8 +908,31 @@ method !process-queue(--> Bool) {
                 self!log-line("  (no handler)");
             }
             for @handlers -> &handler {
-                my @effects = handler(self, %payload);
-                self!apply-effects(@effects, :event($event));
+                # Event handlers get the same isolation as effect
+                # handlers — a buggy `register-handler` callback
+                # shouldn't kill the dispatch loop and crash the TUI.
+                # Re-entrance guard skips the route for failures
+                # inside the __effect-error chain itself.
+                my @effects;
+                {
+                    CATCH {
+                        default {
+                            self!log-line("[event-handler-error] $event: {.message}")
+                                if $!debug-dispatches;
+                            unless $event eq '__effect-error' {
+                                self.dispatch('__effect-error',
+                                    effect-name => "event-handler[$event]",
+                                    error       => .message,
+                                    exception   => $_,
+                                    backtrace   => .backtrace.full.Str,
+                                    params      => %payload,
+                                );
+                            }
+                        }
+                    }
+                    @effects = handler(self, %payload);
+                }
+                self!apply-effects(@effects, :event($event)) if @effects;
             }
         }
     }
@@ -886,10 +959,49 @@ method !run-effect(Str:D $fx-name, $fx-params, Str :$event) {
         self!log-line("  → $fx-name: " ~ self!fmt-value($fx-params));
     }
     my &handler = %!fx-handlers{$fx-name};
-    if &handler {
-        handler(self, $fx-params ~~ Associative ?? $fx-params !! { value => $fx-params });
-    } elsif $!debug-effects {
-        self!log-line("    (unknown effect '$fx-name')");
+    unless &handler {
+        self!log-line("    (unknown effect '$fx-name')") if $!debug-effects;
+        return;
+    }
+    {
+        # Isolate handler exceptions AND payload-shape violations: a
+        # buggy effect handler — or a handler that passes the wrong
+        # payload shape upstream — shouldn't tear out of the dispatch
+        # loop and bring down the whole app. The failure is logged
+        # and routed back into the event queue as `__effect-error`
+        # so apps can register a handler that surfaces failures
+        # (toast, modal, telemetry) instead of debugging through
+        # stderr behind notcurses's alt-screen.
+        CATCH {
+            default {
+                self!log-line("[effect-error] $fx-name: {.message}")
+                    if $!debug-effects;
+                # Re-entrance guard: if the failing effect IS the
+                # error-event handler chain, drop the failure to avoid
+                # infinite recursion. We've already logged it.
+                unless $fx-name eq '__effect-error' {
+                    self.dispatch('__effect-error',
+                        effect-name => $fx-name,
+                        error       => .message,
+                        exception   => $_,
+                        backtrace   => .backtrace.full.Str,
+                        params      => $fx-params,
+                    );
+                }
+            }
+        }
+        # Effect payloads must be Associative. The dispatcher used to
+        # wrap bare scalars as `{ value => $x }` automatically — but
+        # that silently rewrote the shape so handlers got payloads
+        # they didn't expect. Now we throw with a clear migration
+        # message. The throw is caught above and routed to
+        # __effect-error rather than killing the dispatch loop.
+        unless $fx-params ~~ Associative {
+            die "Effect '$fx-name' payload must be Associative, got "
+              ~ "{$fx-params.^name}. Wrap it: \{ value => \$x \}, "
+              ~ "or pass an empty Hash for no payload.";
+        }
+        handler(self, $fx-params);
     }
 }
 
@@ -947,8 +1059,9 @@ method !check-subscriptions() {
     skips the C<===> identity shortcut and forces a structural C<eqv>
     compare — necessary for subscriptions over mutable nested data
     where the in-place mutation leaves the container's identity
-    unchanged but its contents differ. See the C<:deep-equality-check>
-    flag on the C<subscribe*> methods for when to opt in. )
+    unchanged but its contents differ. Set by default on all subscribe
+    paths; opt out via C<:identity-check-only> on the C<subscribe*>
+    methods when the watched value is a fresh allocation per write. )
 method !values-equal($a, $b, Bool :$deep --> Bool) {
     return True if !$a.defined && !$b.defined;
     return False if !$a.defined || !$b.defined;
@@ -985,8 +1098,8 @@ method !values-equal($a, $b, Bool :$deep --> Bool) {
     mutations of the live store value can't alias back to the captured
     snapshot. Scalar leaves (Str, Int, Num, Bool, type objects) are
     returned as-is — they're immutable, so sharing the reference is
-    safe. Used only on the C<:deep-equality-check> path; the default
-    same-reference path skips this work. )
+    safe. Used on the structural-comparison path (the default); the
+    C<:identity-check-only> fast path skips this work. )
 method !snapshot-value($v) {
     return $v unless $v.defined;
     if $v ~~ Associative {
@@ -1022,4 +1135,38 @@ method !merge-into(%target, %source, @path-so-far) {
 
 method !mark-path-dirty(@path) {
     @!dirty-paths.push: @path.List;
+}
+
+# --- Async effect tracking ---
+
+#| True once C<drain-async> has flipped the store into shutdown mode.
+#| Callers (typically the `async` fx) can poll this to short-circuit
+#| dispatches that would race against a tearing-down App.
+method shutting-down(--> Bool) { $!shutting-down }
+
+method !track-async-effect(Promise $p) {
+    $!async-lock.protect: { @!async-effects.push: $p };
+}
+
+#|( Wait for every in-flight async-effect worker to complete (or for the
+    timeout to elapse), flip the store into shutdown mode so any further
+    `async` dispatches no-op, and clear the tracking list. Called from
+    C<Selkie::App.shutdown> before notcurses is torn down so completing
+    workers can't dispatch into handlers whose native deps are gone.
+
+    Idempotent — a second call is a fast no-op (the list is empty and
+    `$!shutting-down` is already True). )
+method drain-async(:$timeout = 5) {
+    $!shutting-down = True;
+    my @snapshot;
+    $!async-lock.protect: {
+        @snapshot = @!async-effects;
+        @!async-effects = ();
+    }
+    return unless @snapshot;
+    await Promise.anyof(Promise.allof(@snapshot), Promise.in($timeout));
+}
+
+method !report-async-failure(Str $message, Str $backtrace) {
+    self!log-line("[async-effect] $message\n$backtrace") if $!debug-effects;
 }

@@ -2030,6 +2030,26 @@ method !render-frame(Bool :$force = False) {
     notcurses_render($!nc) if $any-rendered || $force;
 }
 
+# Run a shutdown step inside its own CATCH so an exception in any one
+# step doesn't strand the steps below — particularly the escape-sequence
+# backstop, which is the user's last line of defense against a wedged
+# terminal. Logs to stderr (captured by !install-error-log if active)
+# instead of swallowing silently. Bare `try { }` would lose the
+# backtrace; this preserves it. The diagnostic writes are themselves
+# wrapped — if stderr is closed or jammed, we'd rather drop the log
+# than throw out of the CATCH and re-strand the shutdown.
+method !try-log(Str:D $step, &block) {
+    block();
+    CATCH {
+        default {
+            my $msg = .message;
+            my $bt  = .?backtrace.?full.?Str // '';
+            try $*ERR.say("[shutdown:$step] $msg");
+            try $*ERR.say($bt) if $bt;
+        }
+    }
+}
+
 #|( Shut down notcurses and destroy the active modal and screen manager.
     Idempotent — safe to call multiple times. Usually you don't call this
     directly; the event loop's CATCH, the END phaser, or C<DESTROY>
@@ -2038,12 +2058,12 @@ method !render-frame(Bool :$force = False) {
     Each cleanup step is best-effort: an exception thrown in modal
     destroy, screen-manager destroy, or C<notcurses_stop> (e.g. when a
     NativeCall dlopen fails because Notcurses-Native was reinstalled to
-    a new path mid-session) is caught and isolated so the later steps
-    — TTY restore, the escape-sequence backstop in
-    C<!emit-terminal-cleanup>, and C<!uninstall-error-log> — still run.
-    Without this isolation, a single failure mid-shutdown would strand
-    the terminal in raw mode / alt-screen / Kitty-kbd-protocol-pushed
-    state. )
+    a new path mid-session) is caught, logged via C<!try-log>, and
+    isolated so the later steps — TTY restore, the escape-sequence
+    backstop in C<!emit-terminal-cleanup>, and C<!uninstall-error-log>
+    — still run. Without this isolation, a single failure mid-shutdown
+    would strand the terminal in raw mode / alt-screen / Kitty-kbd-
+    protocol-pushed state. )
 method shutdown() {
     # Close the SIGWINCH tap before tearing down notcurses — if a
     # signal arrives after notcurses_stop but before the tap is
@@ -2062,6 +2082,14 @@ method shutdown() {
     .?close for @!crash-restore-taps;
     @!crash-restore-taps = ();
 
+    # Drain any in-flight async-effect workers before tearing down the
+    # widget tree / notcurses. Without this, a worker thread that
+    # completes after notcurses_stop can dispatch into handlers whose
+    # planes / native handles are already gone (SIGBUS on plane ops,
+    # NPE on the destroyed handle). The drain is bounded so a wedged
+    # worker can't strand shutdown — see Store.drain-async.
+    self!try-log('drain-async', { $.store.drain-async }) if $.store;
+
     # Tear down every modal in the stack, deepest-on-top first (so each
     # destroy sees a sane stack). Pop emptied so a re-entrant shutdown
     # is a no-op rather than a double-destroy. Each destroy is wrapped
@@ -2071,9 +2099,9 @@ method shutdown() {
     while @!modal-stack {
         my $m = @!modal-stack.pop;
         @!pre-modal-focus-stack.pop;
-        try { $m.destroy if $m.defined }
+        self!try-log("modal-destroy", { $m.destroy if $m.defined });
     }
-    try { $!screen-manager.destroy }
+    self!try-log('screen-manager-destroy', { $!screen-manager.destroy });
     # Restore before and after notcurses_stop. The first restore protects
     # users if notcurses_stop itself aborts; the second restore wins if
     # notcurses restores a stale termios snapshot.
@@ -2083,7 +2111,7 @@ method shutdown() {
     # binaries-notcurses-3.0.17-r{N} path mid-session, NativeCall's
     # lazy dlopen fails here and the exception would otherwise skip the
     # entire backstop below.
-    try { notcurses_stop($!nc) if $!nc }
+    self!try-log('notcurses-stop', { notcurses_stop($!nc) if $!nc });
     $!nc = NotcursesHandle;
     self!restore-tty-state;
     # Escape-sequence backstop on top of notcurses_stop. Catches

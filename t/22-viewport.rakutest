@@ -126,15 +126,20 @@ subtest "set-viewport rejects pathological Int values via safe-coord gate" => {
     is $w.abs-x, 11, "baseline abs-x stored cleanly";
 
     my Int $huge = 2 ** 3273;
-    # Suppress the expected `note` so prove6 output stays clean. The
-    # log message itself is part of the contract — see line 422 in
-    # Selkie::Widget — but we don't need to parse it here.
-    my $captured-note;
-    quietly {
+    # Suppress the expected corruption diagnostic so prove6 output
+    # (and `zef install` output) stays clean. `quietly` only catches
+    # Raku-level `warn` calls — the diagnostic is a `note` to
+    # `$*ERR`, so we redirect that handle for just the rejected call.
+    # The log message itself is part of the contract (Widget.rakumod
+    # line 511) but we don't need to parse it here.
+    my $devnull = open($*SPEC.devnull, :w);
+    {
+        my $*ERR = $devnull;
         lives-ok {
             $w.set-viewport(:abs-y($huge), :abs-x(0), :rows(10), :cols(10));
         }, "huge abs-y is rejected without crashing";
     }
+    $devnull.close;
     is $w.abs-y, 7, "rejected coord doesn't overwrite the prior clean abs-y";
     is $w.abs-x, 11, "rejected coord doesn't overwrite the prior clean abs-x";
 

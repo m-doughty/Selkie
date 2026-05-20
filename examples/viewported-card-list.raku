@@ -14,11 +14,10 @@
 #
 # Image source priority:
 #   1. SELKIE_DEMO_IMAGES=/path/a.png:/path/b.png …   (colon-separated list)
-#   2. The notcurses sample-data directory bundled in this monorepo at
-#      ../Notcurses-Native/vendor/notcurses/data/ — picks a handful of
-#      real photos / illustrations.
+#   2. examples/data/ — sample images vendored alongside this example
+#      (see examples/data/README.md for attribution).
 #   3. A 1x1 PNG written to $TMPDIR as a placeholder, so the example still
-#      runs on a clean Selkie install with no images available.
+#      runs even if examples/data/ has been pruned or moved.
 
 use Selkie::App;
 use Selkie::Layout::VBox;
@@ -70,9 +69,8 @@ sub demo-image-paths(--> List) {
         return @paths.List if @paths;
     }
 
-    # Try the notcurses sample-data dir bundled with this monorepo.
-    # The example lives at Selkie/examples/, so the sibling Notcurses-Native
-    # checkout is two directories up.
+    # Vendored sample images in examples/data/ — see that dir's README
+    # for attribution.
     my $here = $?FILE.IO.parent.absolute;
     my @candidates = <
         atma.png
@@ -86,7 +84,7 @@ sub demo-image-paths(--> List) {
         fonts.jpg
         aidsrobots.jpeg
     >.map: -> $name {
-        $here.IO.parent.parent.add('Notcurses-Native/vendor/notcurses/data').add($name).absolute;
+        $here.IO.add('data').add($name).absolute;
     };
     my @existing = @candidates.grep({ .IO.f });
     return @existing.List if @existing;

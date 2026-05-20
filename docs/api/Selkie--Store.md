@@ -215,39 +215,40 @@ Equality semantics
 
 Subscription computes are compared against the previous value with a two-stage check: identity (`===`) first, then value equality (`eqv`) if that fails. `eqv` does deep comparison on arrays and hashes, so subscriptions that return the same content in a fresh array instance don't fire spuriously.
 
-Mutable nested data and `:deep-equality-check`
+Mutable nested data and `:identity-check-only`
 ----------------------------------------------
 
-The default `===`-then-`eqv` equality has a subtle trap when a subscription watches a mutable container that callers update *in place*. The canonical case: a subscription on path `a`, and a caller doing `$store.assoc-in('a', 'b', 'c', :value(42))`. `assoc-in` walks into the live nested Hash and mutates the leaf in place. The Hash at `a` is the same in-memory object before and after the write, so:
+Change detection on subscriptions defaults to structural (`eqv`) comparison plus a per-fire snapshot of mutable nested state. That default exists because of a subtle trap with the identity-only check: a subscription on path `a`, plus a caller doing `$store.assoc-in('a', 'b', 'c', :value(42))`. `assoc-in` walks into the live nested Hash and mutates the leaf in place; the Hash at `a` is the same in-memory object before and after the write, so:
 
   * The subscription's `last-value` still holds a reference to the same Hash.
 
   * The fresh `get-in('a')` at fire time returns the same reference.
 
-  * `===` matches → the fire is silently suppressed.
+  * An `===` identity check matches → the fire is silently suppressed.
 
-This is the right behaviour for immutable values (Strings, Ints, type objects) but wrong for mutable Hashes / Arrays. The framework can't detect the trap automatically — distinguishing "caller mutated in place" from "caller installed an unchanged value" requires a structural compare every time, which is the cost we're avoiding by short-circuiting on identity in the first place.
+The structural-comparison default sidesteps this. On every fire the framework:
 
-The opt-in fix is `:deep-equality-check` on the `subscribe*` methods. When set, the framework:
+  * Snapshots the value (deep clone of nested Hashes / Arrays; scalar leaves passed through) so subsequent in-place mutations don't compare equal to the captured snapshot.
 
-  * Skips the `===` shortcut, going straight to the `eqv` path.
-
-  * Snapshots the value (deep clone of nested Hashes / Arrays; scalar leaves passed through) at every fire so subsequent in-place mutations don't compare equal to the captured snapshot.
+  * Compares the next value structurally against the snapshot via `eqv`.
 
 ```raku
-# Watch a mutable nested hash. Without :deep-equality-check, deep
-# assoc-in writes under <prefs> would not fire this subscription.
-$store.subscribe('prefs-changed', <prefs>, $widget,
-    :deep-equality-check);
+# Watch a mutable nested hash. The default just works — deep
+# assoc-in writes under <prefs> are detected even though the prefs
+# Hash reference itself is unchanged.
+$store.subscribe('prefs-changed', <prefs>, $widget);
 
-# Writes that would have been suppressed without the flag:
+# Writes that would be suppressed under identity-only comparison
+# now fire correctly:
 $store.assoc-in('prefs', 'theme', :value('dark'));   # fires
 $store.assoc-in('prefs', 'lang',  :value('en'));     # fires
 ```
 
-The flag is off by default because deep cloning every value on every fire is materially more expensive than a pointer compare. Turn it on only for subscriptions on paths whose value is a mutable container that callers update in place. Subscriptions over leaves (Strings, Ints, Bools), or computes that already produce a fresh value per call (`.gist`, derived counts, freshly-constructed summary Hashes), do not need the flag — the default fast path is correct for them.
+Pass `:identity-check-only` when the watched value is guaranteed to be a fresh allocation per write — a Str, an Int, a Bool, a derived count, a freshly-constructed summary Hash. That path skips the snapshot cost and uses `===`-then-`eqv` as the cheaper fast path.
 
-The same flag exists on `subscribe`, `subscribe-path-callback`, `subscribe-computed`, and `subscribe-with-callback`.
+The flag exists on `subscribe`, `subscribe-path-callback`, `subscribe-computed`, and `subscribe-with-callback`.
+
+**Migration from pre-0.8.0 Selkie**: the old `:deep-equality-check` flag is removed. Drop the flag — the safe behaviour is now the default. Pass `:identity-check-only` at any call site that was previously relying on the identity-only fast path.
 
 SEE ALSO
 ========
@@ -356,11 +357,11 @@ method subscribe(
     Str:D $id,
     @path,
     Selkie::Widget $widget,
-    Bool :$deep-equality-check = Bool::False
+    Bool :$identity-check-only = Bool::False
 ) returns Mu
 ```
 
-Subscribe a widget to a state path. When the value at the path changes, the widget is marked dirty on the next tick. The `$id` identifies the subscription for later `unsubscribe` — use a unique name per subscription. Push-based: the store pushes a notification to this subscription only when a write touches the path (exact, ancestor, or descendant — see the push-sub dispatch block at the top of the file). Idle ticks with no writes do zero work per subscription. Initial prime (marking the widget dirty so its first render happens) runs synchronously here. `:deep-equality-check` opts the change-gate into a structural `eqv` compare instead of the default fast `===` identity check. Default off because `eqv` over a deep tree is significantly more expensive than a pointer compare. Turn it on when the path's value is a mutable container (Hash / Array) that callers update in place via `assoc-in` on a deep child — without this flag, the ancestor's Hash reference is unchanged across the write, the `===` shortcut matches, and the subscription is silently suppressed. The "subscribe to `a`, fire on any write under `a`" pattern requires this flag whenever `a` is a mutable container. See **MUTABLE NESTED DATA** in this module's Pod.
+Subscribe a widget to a state path. When the value at the path changes, the widget is marked dirty on the next tick. The `$id` identifies the subscription for later `unsubscribe` — use a unique name per subscription. Push-based: the store pushes a notification to this subscription only when a write touches the path (exact, ancestor, or descendant — see the push-sub dispatch block at the top of the file). Idle ticks with no writes do zero work per subscription. Initial prime (marking the widget dirty so its first render happens) runs synchronously here. Change detection defaults to structural (`eqv`) comparison — correct for mutable containers (Hash / Array) updated in place by `assoc-in` on a deep child, where the ancestor's reference is unchanged across the write. The historical default was identity- only (`===`), which silently suppressed those writes; the safe behaviour is now opt-out via `:identity-check-only` for paths whose value is guaranteed to be a fresh allocation on each write. See **MUTABLE NESTED DATA** in this module's Pod.
 
 ### method subscribe-path-callback
 
@@ -370,11 +371,11 @@ method subscribe-path-callback(
     @path,
     &callback,
     Selkie::Widget $widget,
-    Bool :$deep-equality-check = Bool::False
+    Bool :$identity-check-only = Bool::False
 ) returns Mu
 ```
 
-Subscribe to a state path with a callback — fires `&callback($new-value)` on any real change to the path (exact, ancestor write, or descendant write that replaced the subtree). No compute function needed: the path IS the watched expression. Also marks the owning widget dirty so it re-renders after the callback configures it. Use when your widget needs reconfiguration on change (e.g. `set-items` on a list, `set-text` on a label) rather than just re-rendering the same computed output. Equivalent to `subscribe-with-callback` with a trivial compute closure, but without the per-tick closure invocation cost — push-based like `subscribe`. `:deep-equality-check` behaves the same way as on `subscribe` — see that method's docs and **MUTABLE NESTED DATA** in this module's Pod for when to set it. The callback always receives the live current value; only the change-gate uses the snapshot.
+Subscribe to a state path with a callback — fires `&callback($new-value)` on any real change to the path (exact, ancestor write, or descendant write that replaced the subtree). No compute function needed: the path IS the watched expression. Also marks the owning widget dirty so it re-renders after the callback configures it. Use when your widget needs reconfiguration on change (e.g. `set-items` on a list, `set-text` on a label) rather than just re-rendering the same computed output. Equivalent to `subscribe-with-callback` with a trivial compute closure, but without the per-tick closure invocation cost — push-based like `subscribe`. Change detection defaults to structural comparison, mirroring `subscribe`. Pass `:identity-check-only` when the watched path's value is a fresh allocation per write. The callback always receives the live current value; only the change-gate uses the snapshot.
 
 ### method subscribe-computed
 
@@ -383,11 +384,11 @@ method subscribe-computed(
     Str:D $id,
     &compute,
     Selkie::Widget $widget,
-    Bool :$deep-equality-check = Bool::False
+    Bool :$identity-check-only = Bool::False
 ) returns Mu
 ```
 
-Subscribe a widget to a computed value. `&compute` receives the store each tick and should return the value. The widget is marked dirty when the return value changes (compared with `eqv` / identity). `:deep-equality-check` turns on structural change detection for compute functions that return mutable containers — without it, a compute that returns `$store.get-in('a')` after a deep `assoc-in` write under `a` sees the same Hash reference and silently suppresses the fire. With it, the result is snapshotted after each fire and compared structurally. See **MUTABLE NESTED DATA** in this module's Pod. The flag is unnecessary — and an avoidable cost — when compute already returns a fresh value per call (a String, a derived count, a freshly-constructed Hash summary).
+Subscribe a widget to a computed value. `&compute` receives the store each tick and should return the value. The widget is marked dirty when the return value changes. Change detection defaults to **structural** comparison: the result is snapshotted after each fire and the next fire compares against the snapshot via `eqv`. This correctly handles compute functions that return references into mutable nested state — the common case of `$store.get-in('chat', 'messages')` after an `assoc-in` deep- write, where identity-only comparison sees the same Hash reference and silently suppresses the fire. See **MUTABLE NESTED DATA** in this module's Pod. Set `:identity-check-only` when `&compute` is known to return a fresh value per call (a Str, a Bool, a derived count, a freshly- built Hash) — this skips the snapshot cost.
 
 ### method subscribe-with-callback
 
@@ -397,11 +398,11 @@ method subscribe-with-callback(
     &compute,
     &callback,
     Selkie::Widget $widget,
-    Bool :$deep-equality-check = Bool::False
+    Bool :$identity-check-only = Bool::False
 ) returns Mu
 ```
 
-Like `subscribe-computed`, but also invokes `&callback` with the new value whenever it changes. Use this when your widget needs to be re-configured (e.g. `set-items` on a list, `set-text` on a label), not just re-rendered. `:deep-equality-check` behaves the same way as on `subscribe-computed`; see that method's docs. The callback always receives the live (un-snapshotted) compute result so it can install or read the value directly.
+Like `subscribe-computed`, but also invokes `&callback` with the new value whenever it changes. Use this when your widget needs to be re-configured (e.g. `set-items` on a list, `set-text` on a label), not just re-rendered. Change detection defaults to structural comparison; see `subscribe-computed`. Pass `:identity-check-only` when the compute function is guaranteed to return fresh values. The callback always receives the live (un-snapshotted) compute result.
 
 ### method unsubscribe
 
@@ -422,6 +423,14 @@ method unsubscribe-widget(
 ```
 
 Remove every subscription bound to a widget. Called automatically by `Selkie::Container` when a child is removed — you rarely call this yourself.
+
+### method subscription-count
+
+```raku
+method subscription-count() returns Int
+```
+
+Total number of active subscriptions. Excludes ids that have been queued for deferred removal but not yet flushed (so counts reflect the post-walk state). Primarily useful for tests asserting that destroy / unsubscribe-widget cleanup ran.
 
 ### method tick
 
@@ -449,7 +458,7 @@ method values-equal(
 ) returns Bool
 ```
 
-Compare two subscription values for equality. The `:deep` flag skips the `===` identity shortcut and forces a structural `eqv` compare — necessary for subscriptions over mutable nested data where the in-place mutation leaves the container's identity unchanged but its contents differ. See the `:deep-equality-check` flag on the `subscribe*` methods for when to opt in.
+Compare two subscription values for equality. The `:deep` flag skips the `===` identity shortcut and forces a structural `eqv` compare — necessary for subscriptions over mutable nested data where the in-place mutation leaves the container's identity unchanged but its contents differ. Set by default on all subscribe paths; opt out via `:identity-check-only` on the `subscribe*` methods when the watched value is a fresh allocation per write.
 
 ### method snapshot-value
 
@@ -459,5 +468,23 @@ method snapshot-value(
 ) returns Mu
 ```
 
-Recursive deep clone for subscription change-detection. Returns a fresh Hash / Array at every container level so subsequent in-place mutations of the live store value can't alias back to the captured snapshot. Scalar leaves (Str, Int, Num, Bool, type objects) are returned as-is — they're immutable, so sharing the reference is safe. Used only on the `:deep-equality-check` path; the default same-reference path skips this work.
+Recursive deep clone for subscription change-detection. Returns a fresh Hash / Array at every container level so subsequent in-place mutations of the live store value can't alias back to the captured snapshot. Scalar leaves (Str, Int, Num, Bool, type objects) are returned as-is — they're immutable, so sharing the reference is safe. Used on the structural-comparison path (the default); the `:identity-check-only` fast path skips this work.
+
+### method shutting-down
+
+```raku
+method shutting-down() returns Bool
+```
+
+True once `drain-async` has flipped the store into shutdown mode. Callers (typically the `async` fx) can poll this to short-circuit dispatches that would race against a tearing-down App.
+
+### method drain-async
+
+```raku
+method drain-async(
+    :$timeout = 5
+) returns Mu
+```
+
+Wait for every in-flight async-effect worker to complete (or for the timeout to elapse), flip the store into shutdown mode so any further `async` dispatches no-op, and clear the tracking list. Called from `Selkie::App.shutdown` before notcurses is torn down so completing workers can't dispatch into handlers whose native deps are gone. Idempotent — a second call is a fast no-op (the list is empty and `$!shutting-down` is already True).
 

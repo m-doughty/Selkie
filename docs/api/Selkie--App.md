@@ -648,7 +648,7 @@ Render any dirty parts of the widget tree and, if anything actually rendered, co
 method shutdown() returns Mu
 ```
 
-Shut down notcurses and destroy the active modal and screen manager. Idempotent — safe to call multiple times. Usually you don't call this directly; the event loop's CATCH, the END phaser, or `DESTROY` takes care of it. Each cleanup step is best-effort: an exception thrown in modal destroy, screen-manager destroy, or `notcurses_stop` (e.g. when a NativeCall dlopen fails because Notcurses-Native was reinstalled to a new path mid-session) is caught and isolated so the later steps — TTY restore, the escape-sequence backstop in `!emit-terminal-cleanup`, and `!uninstall-error-log` — still run. Without this isolation, a single failure mid-shutdown would strand the terminal in raw mode / alt-screen / Kitty-kbd-protocol-pushed state.
+Shut down notcurses and destroy the active modal and screen manager. Idempotent — safe to call multiple times. Usually you don't call this directly; the event loop's CATCH, the END phaser, or `DESTROY` takes care of it. Each cleanup step is best-effort: an exception thrown in modal destroy, screen-manager destroy, or `notcurses_stop` (e.g. when a NativeCall dlopen fails because Notcurses-Native was reinstalled to a new path mid-session) is caught, logged via `!try-log`, and isolated so the later steps — TTY restore, the escape-sequence backstop in `!emit-terminal-cleanup`, and `!uninstall-error-log` — still run. Without this isolation, a single failure mid-shutdown would strand the terminal in raw mode / alt-screen / Kitty-kbd- protocol-pushed state.
 
 ### method set-error-log
 

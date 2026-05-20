@@ -162,31 +162,39 @@ method handle-resize(UInt $rows, UInt $cols) {
     self!layout-split if self.plane;
 }
 
+#|( Pure-math helper that computes the split allocation for a given
+    total length and ratio. Returns a Hash with C<first>, C<divider>,
+    C<second> keys — all UInt, all guaranteed non-negative. Exposed at
+    class scope so the boundary math is unit-testable without needing
+    a notcurses context. Used by C<!layout-split>. )
+method compute-split-sizes(UInt $total, Rat $ratio --> Hash) {
+    return %(first => 0, divider => 0, second => 0) if $total == 0;
+    my UInt $first   = (($total * $ratio).floor.UInt max 1) min $total;
+    my UInt $divider = $first min $total;
+    my UInt $second  = $total > $first + 1
+                          ?? ($total - $first - 1)
+                          !! 0;
+    %(:$first, :$divider, :$second)
+}
+
 method !layout-split() {
+    # Bail out before any UInt arithmetic when the parent has been
+    # squeezed to nothing. This can fire during the tear-down window
+    # where the parent is resized to 0×N before destruction.
+    return if self.rows == 0 || self.cols == 0;
+
     if $!orientation eq 'horizontal' {
-        my UInt $total = self.cols;
-        my UInt $first-w = ($total * $!ratio).floor.UInt;
-        $first-w = $first-w max 1;
-        my UInt $divider-x = $first-w;
-        my UInt $second-w = $total - $first-w - 1;
-        $second-w = $second-w max 0;
+        my %s = self.compute-split-sizes(self.cols, $!ratio);
         my UInt $h = self.rows;
-
-        self!ensure-child-plane($!first, 0, 0, $h, $first-w) if $!first;
-        self!ensure-divider(0, $divider-x, $h, 1);
-        self!ensure-child-plane($!second, 0, $divider-x + 1, $h, $second-w) if $!second;
+        self!ensure-child-plane($!first, 0, 0, $h, %s<first>) if $!first;
+        self!ensure-divider(0, %s<divider>, $h, 1);
+        self!ensure-child-plane($!second, 0, %s<divider> + 1, $h, %s<second>) if $!second;
     } else {
-        my UInt $total = self.rows;
-        my UInt $first-h = ($total * $!ratio).floor.UInt;
-        $first-h = $first-h max 1;
-        my UInt $divider-y = $first-h;
-        my UInt $second-h = $total - $first-h - 1;
-        $second-h = $second-h max 0;
+        my %s = self.compute-split-sizes(self.rows, $!ratio);
         my UInt $w = self.cols;
-
-        self!ensure-child-plane($!first, 0, 0, $first-h, $w) if $!first;
-        self!ensure-divider($divider-y, 0, 1, $w);
-        self!ensure-child-plane($!second, $divider-y + 1, 0, $second-h, $w) if $!second;
+        self!ensure-child-plane($!first, 0, 0, %s<first>, $w) if $!first;
+        self!ensure-divider(%s<divider>, 0, 1, $w);
+        self!ensure-child-plane($!second, %s<divider> + 1, 0, %s<second>, $w) if $!second;
     }
 }
 

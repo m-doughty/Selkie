@@ -1,0 +1,81 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+use Selkie::Widget;
+use Selkie::Container;
+
+# Widget.destroy must unsubscribe the widget from the store. Without
+# this, the store's subscription Hash pins the widget alive (the sub
+# entry holds widget => $widget) and GC never collects it — so
+# DESTROY/destroy doesn't fire, the plane handle leaks, and on every
+# modal cycle / screen swap / dynamic rebuild we accumulate dead
+# notcurses planes.
+
+class W does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+class C does Selkie::Container {
+    method render() { self.clear-dirty }
+}
+
+plan 4;
+
+subtest "destroy unsubscribes a path subscription" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = W.new;
+    $w.set-store($s);
+
+    $s.subscribe('watch', ['path'], $w);
+    is $s.subscription-count, 1, "subscription registered";
+
+    $w.destroy;
+    is $s.subscription-count, 0,
+        "destroy removed the subscription via the !destroy-plane chokepoint";
+};
+
+subtest "destroy unsubscribes a computed subscription" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $w = W.new;
+    $w.set-store($s);
+
+    $s.subscribe-computed('computed', -> $st { $st.get-in('a') }, $w);
+    is $s.subscription-count, 1, "computed sub registered";
+
+    $w.destroy;
+    is $s.subscription-count, 0, "destroy removed the computed sub";
+};
+
+subtest "destroying a container cascades unsubscribe to children" => {
+    plan 3;
+    my $s = Selkie::Store.new;
+    my $c = C.new;
+    my $w1 = W.new;
+    my $w2 = W.new;
+    $c.set-store($s);
+    $c.add($w1);
+    $c.add($w2);
+
+    $s.subscribe('w1', ['a'], $w1);
+    $s.subscribe('w2', ['b'], $w2);
+    $s.subscribe('c',  ['root'], $c);
+    is $s.subscription-count, 3, "3 subscriptions registered";
+
+    $c.destroy;
+    is $s.subscription-count, 0,
+        "container destroy unsubscribes itself AND every child";
+
+    # The destroy cascade is also safe to repeat (idempotent) — used
+    # by re-entrant shutdown paths.
+    lives-ok { $c.destroy }, "second destroy is a no-op";
+};
+
+subtest "destroy is safe when the widget has no store" => {
+    plan 1;
+    my $w = W.new;   # no set-store call
+    lives-ok { $w.destroy },
+        "destroy on a store-less widget is a no-op";
+};

@@ -393,8 +393,8 @@ Compute this widget's [Selkie::EffectiveBounds](Selkie--EffectiveBounds.md) — 
 
 ```raku
 method set-viewport(
-    Int :$abs-y!,
-    Int :$abs-x!,
+    :$abs-y! is raw,
+    :$abs-x! is raw,
     Int :$rows! where { ... },
     Int :$cols! where { ... }
 ) returns Mu

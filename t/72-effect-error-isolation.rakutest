@@ -1,0 +1,109 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+use Selkie::Widget;
+
+# An exception thrown inside an effect handler must NOT tear out of
+# the dispatch loop. The framework catches it, logs it, and routes it
+# to a `__effect-error` event so apps can register handlers that
+# display the failure (toast / modal / telemetry) instead of staring
+# at stderr behind notcurses's alt-screen.
+
+class W does Selkie::Widget {
+    method render() { self.clear-dirty }
+}
+
+plan 4;
+
+subtest "handler-thrown exception is isolated; loop survives" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.register-fx('bad-fx', -> $store, %params {
+        die "intentional handler crash";
+    });
+    $s.register-handler('fire-bad', -> $store, %payload {
+        (('bad-fx' => { trigger => True }),);
+    });
+
+    # Dispatch should NOT propagate the exception out of tick.
+    $s.dispatch('fire-bad');
+    lives-ok { $s.tick }, "tick survived the throwing handler";
+
+    # And the store must still process subsequent dispatches.
+    my $seen = False;
+    $s.register-handler('ping', -> $store, %payload { $seen = True; () });
+    $s.dispatch('ping');
+    $s.tick;
+    ok $seen, "store still processes dispatches after a handler crashed";
+};
+
+subtest "handler crash dispatches __effect-error with diagnostics" => {
+    plan 4;
+    my $s = Selkie::Store.new;
+    my %caught;
+    $s.register-handler('__effect-error', -> $store, %payload {
+        %caught = %payload;
+        ();
+    });
+    $s.register-fx('crashy', -> $store, %params {
+        die "boom from crashy";
+    });
+    $s.register-handler('fire-crashy', -> $store, %payload {
+        (('crashy' => { x => 1 }),);
+    });
+
+    $s.dispatch('fire-crashy');
+    $s.tick;   # dispatch + run crashy + route to __effect-error
+    $s.tick;   # process the __effect-error dispatch
+
+    is %caught<effect-name>, 'crashy', "effect-name routed";
+    like %caught<error>, /'boom from crashy'/, "error message routed";
+    ok %caught<exception>.defined, "exception object routed";
+    is %caught<params><x>, 1, "params snapshot routed";
+};
+
+subtest "__effect-error handler that itself throws does not infinite-loop" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    # Register a __effect-error handler that itself crashes. The
+    # re-entrance guard inside !run-effect must prevent another
+    # __effect-error dispatch — otherwise we'd loop forever.
+    $s.register-handler('__effect-error', -> $store, %payload {
+        die "error handler also crashes";
+    });
+    $s.register-fx('crashy', -> $store, %params {
+        die "original crash";
+    });
+    $s.register-handler('fire', -> $store, %payload {
+        (('crashy' => {}),);
+    });
+
+    $s.dispatch('fire');
+    lives-ok { for ^5 { $s.tick } },
+        "5 ticks survive a recursive-error scenario without hanging";
+};
+
+subtest "scalar effect payload throws with a helpful message" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.register-fx('takes-hash', -> $store, %params { });
+    $s.register-handler('emit-scalar', -> $store, %payload {
+        (('takes-hash' => 42),);   # scalar — was auto-wrapped pre-0.7.0
+    });
+
+    my %caught;
+    $s.register-handler('__effect-error', -> $store, %payload {
+        %caught = %payload;
+        ();
+    });
+
+    $s.dispatch('emit-scalar');
+    $s.tick;   # run handler, hit the die
+    $s.tick;   # process __effect-error
+
+    like %caught<error>, /'must be Associative'/,
+        "scalar payload triggers a clear Associative-required error";
+    like %caught<error>, /'Wrap it'/,
+        "error message points at the fix";
+};

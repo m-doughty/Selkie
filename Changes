@@ -2,6 +2,109 @@ Revision history for Selkie
 
 {{$NEXT}}
 
+0.8.0  2026-05-20T18:53:56+01:00
+    - BREAKING: `Selkie::Store.subscribe`, `subscribe-path-callback`,
+      `subscribe-computed`, and `subscribe-with-callback` now default
+      to structural change detection (the previous opt-in
+      `:deep-equality-check` behaviour). The default flag is removed;
+      pass `:identity-check-only` to opt into the old fast-path
+      `===`-then-`eqv` comparison when the watched value is known to
+      be a fresh allocation per write. Migration: drop
+      `:deep-equality-check` at every call site (the safe behaviour
+      is now the default). Add `:identity-check-only` only where the
+      hot path can prove the watched value is fresh per call. This
+      fixes a long-standing silent suppression of ancestor-fire
+      subscriptions after deep `assoc-in` writes — the
+      "chat doesn't update until I press a key" class of bug.
+    - BREAKING: effect payloads must now be `Associative`. The
+      dispatcher used to wrap bare scalars as `{ value => $x }`
+      automatically, which silently reshaped the payload and produced
+      hours of debugging when a handler expected a Hash and got
+      `{ value => 0 }` instead. Now `!run-effect` throws with a
+      clear message and routes the throw to `__effect-error` so the
+      dispatch loop survives. Migration: wrap scalar payloads at
+      the call site, e.g. `(my-fx => { value => 42 })`, or pass an
+      empty Hash for no-payload effects.
+    - behavior fix: `Selkie::Widget.!destroy-plane` now unsubscribes
+      the widget from the store before tearing the plane down. Pre-
+      fix, subscriptions held a widget reference, GC never collected
+      the widget, `DESTROY`/`destroy` never fired, and notcurses
+      planes leaked on every modal cycle / screen swap / dynamic
+      widget rebuild. The store's `unsubscribe-widget` is the single
+      writer; calling it again from a Container's `clear`/`remove`
+      cascade is a no-op (idempotent). Subclass `destroy` overrides
+      that already end with `self!destroy-plane` (the documented
+      convention — Border, Modal, Image all comply) pick this up
+      automatically. New `Selkie::Store.subscription-count` accessor
+      for tests.
+    - behavior fix: effect-handler exceptions are now isolated. A
+      buggy `register-fx` handler used to tear out of `!run-effect`,
+      out of `tick`, and into `Selkie::App.run`'s outer CATCH —
+      one bad handler crashed the whole TUI. The framework now
+      catches handler exceptions, logs them, and routes them to a
+      new `__effect-error` event so apps can register a handler
+      that surfaces failures (toast, modal, telemetry). Event-
+      handler exceptions in `register-handler` callbacks get the
+      same isolation. A re-entrance guard prevents infinite
+      recursion if the `__effect-error` handler itself throws. The
+      framework ships a default `__effect-error` handler that logs
+      to the store's debug-log stream.
+    - behavior fix: `register-fx('async')` now tracks every Promise
+      it spawns. New `Selkie::Store.drain-async(:$timeout)` waits
+      for in-flight workers to complete (bounded), flips the store
+      into shutting-down mode so further async dispatches no-op,
+      and clears the tracking list. `Selkie::App.shutdown` calls
+      it before notcurses teardown so a long-running worker
+      (LLM inference, etc.) can't complete post-`notcurses_stop`
+      and dispatch into handlers whose native handles are gone.
+      Async-effect failures now route through the CATCH and include
+      the full backtrace; pre-fix the Promise was leaked entirely
+      and its broken-promise diagnostic went to stderr behind the
+      alt-screen.
+    - robustness fix: shutdown-time exceptions are no longer
+      silently swallowed by bare `try { }`. Each step (modal
+      destroys, screen-manager destroy, drain-async,
+      `notcurses_stop`) now runs through `App.!try-log(<step>, …)`
+      which catches inside, preserves the isolation invariant
+      (each step independent of the others), and writes a tagged
+      diagnostic to `$*ERR` (captured by `!install-error-log`
+      when active). Pre-fix, a shutdown failure left the user
+      with a wedged terminal and zero clue which step blew up.
+      `t/70-terminal-cleanup.rakutest` updated to assert the new
+      pattern; existing tests still pass.
+    - robustness fix: `Selkie::Layout::Split` no longer crashes on
+      1-cell, 0-cell, or extreme-ratio axes. The boundary math
+      moved out of `!layout-split` into a pure-math helper
+      `compute-split-sizes(UInt $total, Rat $ratio --> Hash)` that
+      clamps before subtraction and bails on 0-total. Pre-fix, a
+      tmux pane resize to 1×N threw `X::TypeCheck::Assignment`
+      out of `render()` (UInt rejected the wrapped-negative Int
+      assignment) and killed the whole frame. `t/74-split-extreme-
+      sizes.rakutest` covers 1×N, N×1, 1×1, 0×0, and extreme
+      ratios.
+    - new tests: `t/72-effect-error-isolation.rakutest`,
+      `t/73-widget-destroy-unsubscribes.rakutest`,
+      `t/74-split-extreme-sizes.rakutest`,
+      `t/75-store-async-drain.rakutest`. `t/63-deep-equality-check`
+      rewritten for the flipped default and the new
+      `:identity-check-only` flag.
+    - `examples/viewported-card-list.raku` no longer reaches into the
+      sibling Notcurses-Native checkout for sample images. The 10
+      referenced images are vendored verbatim under `examples/data/`
+      (~1.2 MB, see that dir's README for attribution) so the example
+      runs on a fresh Selkie install with no sibling repo present.
+      Companion change to Notcurses-Native 0.4.0 dropping its
+      `vendor/notcurses/` tree.
+
+    - Test cleanup: `t/22-viewport.rakutest`'s safe-coord regression
+      subtest no longer leaks its expected corruption diagnostic to
+      stderr during `prove6` / `zef install`. The previous `quietly`
+      wrapper had no effect (the diagnostic uses `note`, which goes
+      straight to `$*ERR` and bypasses `quietly`'s warn-only scope);
+      we now redirect `$*ERR` to `$*SPEC.devnull` for just the
+      rejected call. Cosmetic — the contract being tested is
+      unchanged.
+
 0.7.4  2026-05-19T17:10:03+01:00
     - Selkie::Store: subscription mutations made from inside the
       per-tick subscription walks (`!check-subscriptions` and

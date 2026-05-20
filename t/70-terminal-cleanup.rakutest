@@ -69,11 +69,16 @@ my $shutdown-body = ($src ~~ /'method shutdown()' \s* '{' (.*?) ^^ '}' /).[0].St
 ok $shutdown-body.defined && $shutdown-body.chars > 0,
     'shutdown method body extracted from source';
 
-like $shutdown-body, /'try' \s* '{' <-[}]>* '$m.destroy'/,
-    'modal-stack destroy is wrapped in try{}';
+# Selkie 0.8.0 replaced the bare `try { }` blocks with `self!try-log(...)`
+# which provides the same isolation (each step in its own CATCH) plus
+# diagnostic logging instead of silently swallowing the exception. The
+# invariant remains: each throw-prone shutdown step is wrapped so a
+# failure doesn't strand the escape-sequence backstop below.
+like $shutdown-body, /'try-log(' <-[)]>* 'modal-destroy' <-[)]>* '$m.destroy'/,
+    'modal-stack destroy is wrapped via !try-log';
 
-like $shutdown-body, /'try' \s* '{' \s* '$!screen-manager.destroy' \s* '}'/,
-    'screen-manager.destroy is wrapped in try{}';
+like $shutdown-body, /'try-log(' <-[)]>* 'screen-manager-destroy' <-[)]>* '$!screen-manager.destroy'/,
+    'screen-manager.destroy is wrapped via !try-log';
 
-like $shutdown-body, /'try' \s* '{' \s* 'notcurses_stop'/,
-    'notcurses_stop is wrapped in try{}';
+like $shutdown-body, /'try-log(' <-[)]>* 'notcurses-stop' <-[)]>* 'notcurses_stop'/,
+    'notcurses_stop is wrapped via !try-log';

@@ -1,0 +1,84 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Layout::Split;
+use Selkie::Sizing;
+
+# The boundary math in Selkie::Layout::Split must not underflow when
+# the parent axis is squeezed to 0 or 1 cells. Pre-fix, the
+# UInt-typed `$total - $first-w - 1` was assigned before the `max 0`
+# clamp ran, so a tmux pane resize to 1 cell threw X::TypeCheck::
+# Assignment out of render() and killed the whole TUI frame.
+
+plan 8;
+
+sub mk-split($ratio, $orientation = 'horizontal') {
+    Selkie::Layout::Split.new(
+        :$orientation,
+        :$ratio,
+        sizing => Sizing.flex,
+    );
+}
+
+subtest "1-cell axis with ratio 0.5 — no underflow" => {
+    plan 3;
+    my %s = mk-split(0.5).compute-split-sizes(1, 0.5);
+    is %s<first>, 1, "first clamped to 1 (the whole axis)";
+    is %s<divider>, 1, "divider lands at the end";
+    is %s<second>, 0, "second collapsed to 0 — no room";
+};
+
+subtest "1-cell axis with ratio 0.9 — no underflow" => {
+    plan 3;
+    my %s = mk-split(0.9).compute-split-sizes(1, 0.9);
+    is %s<first>, 1, "first clamped to 1";
+    is %s<divider>, 1, "divider at end";
+    is %s<second>, 0, "second collapsed";
+};
+
+subtest "2-cell axis — first + divider, no room for second" => {
+    plan 3;
+    my %s = mk-split(0.5).compute-split-sizes(2, 0.5);
+    is %s<first>, 1, "first gets 1 cell";
+    is %s<divider>, 1, "divider at column 1";
+    is %s<second>, 0, "second still has no room (2 - 1 - 1 = 0)";
+};
+
+subtest "3-cell axis — first + divider + second" => {
+    plan 3;
+    my %s = mk-split(0.5).compute-split-sizes(3, 0.5);
+    is %s<first>, 1, "first gets floor(1.5) = 1";
+    is %s<divider>, 1, "divider at column 1";
+    is %s<second>, 1, "second gets 1";
+};
+
+subtest "0-cell axis — every slot zero, no crash" => {
+    plan 3;
+    my %s = mk-split(0.5).compute-split-sizes(0, 0.5);
+    is %s<first>, 0, "first is 0";
+    is %s<divider>, 0, "divider is 0";
+    is %s<second>, 0, "second is 0";
+};
+
+subtest "extreme ratio 0.99 on 100 cells" => {
+    plan 3;
+    my %s = mk-split(0.99).compute-split-sizes(100, 0.99);
+    is %s<first>, 99, "first ≈ ratio × total";
+    is %s<divider>, 99, "divider at 99";
+    is %s<second>, 0, "second = 100 - 99 - 1 = 0";
+};
+
+subtest "extreme ratio 0.01 on 100 cells — first clamped to >=1" => {
+    plan 3;
+    my %s = mk-split(0.01).compute-split-sizes(100, 0.01);
+    is %s<first>, 1, "first clamped up from floor(1.0) = 1 (min)";
+    is %s<divider>, 1, "divider at 1";
+    is %s<second>, 98, "second gets the rest";
+};
+
+subtest "construction with edge ratios doesn't crash" => {
+    plan 3;
+    lives-ok { mk-split(0.0) },  "ratio 0.0 constructs";
+    lives-ok { mk-split(1.0) },  "ratio 1.0 constructs";
+    lives-ok { mk-split(0.5, 'vertical') }, "vertical orientation constructs";
+};

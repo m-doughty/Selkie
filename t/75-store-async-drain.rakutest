@@ -1,0 +1,92 @@
+use Test;
+use lib 'lib';
+
+use Selkie::Store;
+
+# register-fx('async') must track every Promise it spawns so
+# App.shutdown can drain in-flight workers before tearing notcurses
+# down. Without this, a worker thread completing post-stop dispatches
+# into handlers whose native deps are gone — segfault or NPE.
+
+plan 4;
+
+subtest "async fx returns success via dispatch" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    my $seen;
+    $s.register-handler('done', -> $store, %p { $seen = %p<result>; () });
+    $s.register-handler('start', -> $store, %p {
+        ('async' => {
+            work       => -> { 42 },
+            on-success => 'done',
+        }),
+    });
+    $s.dispatch('start');
+    $s.tick;
+    $s.drain-async(:timeout(2));
+    # The on-success dispatch was queued — tick again to deliver it.
+    $s.tick;
+    is $seen, 42, "async work completed and dispatched on-success";
+};
+
+subtest "drain-async waits for in-flight work to complete" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    my $delivered;
+    $s.register-handler('done', -> $store, %p { $delivered = True; () });
+    $s.register-handler('start', -> $store, %p {
+        ('async' => {
+            work       => -> { sleep 0.3; 'ok' },
+            on-success => 'done',
+        }),
+    });
+
+    my $t0 = now;
+    $s.dispatch('start');
+    $s.tick;
+    $s.drain-async(:timeout(5));
+    my $elapsed = now - $t0;
+
+    ok $elapsed >= 0.25, "drain blocked until work finished ({$elapsed.fmt('%.2f')}s)";
+    # Work completed before drain returned, so flushing one more tick
+    # delivers the on-success dispatch.
+    $s.tick;
+    ok $delivered, "on-success was delivered before drain returned";
+};
+
+subtest "drain-async respects timeout when work hangs" => {
+    plan 1;
+    my $s = Selkie::Store.new;
+    $s.register-handler('start', -> $store, %p {
+        ('async' => {
+            work => -> { sleep 5 },
+        }),
+    });
+    $s.dispatch('start');
+    $s.tick;
+
+    my $t0 = now;
+    $s.drain-async(:timeout(0.5));
+    my $elapsed = now - $t0;
+    ok $elapsed < 1.5,
+        "drain returned within timeout window ({$elapsed.fmt('%.2f')}s)";
+};
+
+subtest "shutting-down flag prevents new async dispatches" => {
+    plan 2;
+    my $s = Selkie::Store.new;
+    $s.drain-async;
+    ok $s.shutting-down, "shutting-down flag set after drain";
+
+    my $fired = False;
+    $s.register-handler('start', -> $store, %p {
+        ('async' => {
+            work       => -> { $fired = True },
+        }),
+    });
+    $s.dispatch('start');
+    $s.tick;
+    # The async fx should have no-op'd because we're shutting down.
+    sleep 0.05;
+    nok $fired, "post-shutdown async dispatch was suppressed";
+};
